@@ -7,6 +7,10 @@ const { buildImmersionDateList, loadExcludedDates } = require('../../utils/immer
 // drift apart on what "upcoming" vs "ongoing" means.
 const SCHEDULE_STATUSES = ['none', 'upcoming', 'ongoing', 'completed'];
 
+// Once a batch's immersion has started or finished, its details describe
+// something that already happened, so the coordinator can no longer edit it.
+const EDIT_LOCKED_STATUSES = ['ongoing', 'completed'];
+
 /**
  * Resolve a stored schedule row into the batch-level summary the coordinator
  * sees: the real first/last immersion day plus a status derived from today.
@@ -65,6 +69,76 @@ function summarizeSchedule(row, blockedDates) {
     supervisor_id: row.supervisor_id ?? null,
     supervisor_name: supervisorName,
   };
+}
+
+/**
+ * Resolve a batch's immersion schedule status the same way the batch list does,
+ * so an edit guard can never disagree with the badge the coordinator sees.
+ * `batchSupervisorId` picks the schedule row belonging to the batch's current
+ * supervisor when several rows exist for the batch.
+ */
+async function resolveScheduleStatus(client, batchId, batchSupervisorId) {
+  let scheduleRows = { rows: [] };
+  try {
+    scheduleRows = await client.query(
+      `SELECT wis.supervisor_id, wis.duration_type, wis.duration_value,
+              to_char(wis.start_date, 'YYYY-MM-DD') AS start_date,
+              to_char(wis.end_date, 'YYYY-MM-DD') AS end_date
+         FROM work_immersion_schedules wis
+        WHERE wis.teacher_batch_id = $1`,
+      [batchId]
+    );
+  } catch (err) {
+    // Table not migrated yet means "no schedule", not "locked".
+    if (err.code !== '42P01') throw err;
+    return 'none';
+  }
+
+  const rows = scheduleRows.rows || [];
+  if (rows.length === 0) return 'none';
+
+  const scoped = rows.find(
+    (r) => r.supervisor_id !== null && Number(r.supervisor_id) === Number(batchSupervisorId)
+  );
+  const scheduleRow = scoped || rows.find((r) => r.supervisor_id == null) || rows[0];
+  const { blocked } = await loadExcludedDates(batchId, scheduleRow?.supervisor_id ?? null);
+  return summarizeSchedule(scheduleRow, blocked).status;
+}
+
+/**
+ * archived_at is what turns "remove batch" into a reversible archive. This
+ * project has no migration runner, so the column is created on first use with
+ * the same idempotent-DDL pattern the other controllers rely on - otherwise
+ * every batch read would fail with a 42703 on a database that has not run
+ * 032_teacher_batch_archived_at.sql yet. Memoised: the DDL runs at most once
+ * per process, and a failure clears the memo so the next request retries.
+ */
+let archiveColumnPromise = null;
+function ensureBatchArchiveColumn() {
+  if (archiveColumnPromise) return archiveColumnPromise;
+  archiveColumnPromise = pool
+    .query('ALTER TABLE teacher_batches ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP')
+    .catch((err) => {
+      archiveColumnPromise = null;
+      throw err;
+    });
+  return archiveColumnPromise;
+}
+
+/**
+ * What the coordinator may do with a batch, derived from its schedule status
+ * and roster size:
+ *   - 'remove'  : no immersion has started, so the batch is still a draft.
+ *   - 'locked'  : immersion is under way (or has students and is about to
+ *                 start); removing would discard real immersion data.
+ *   - 'archive' : immersion is over; the batch is history and is archived
+ *                 instead of removed so its record survives.
+ */
+function resolveBatchRemoval({ status, studentCount }) {
+  if (status === 'completed') return 'archive';
+  if (status === 'ongoing') return 'locked';
+  if (status === 'upcoming' && Number(studentCount || 0) > 0) return 'locked';
+  return 'remove';
 }
 
 const createTeacherBatch = async (req, res) => {
@@ -254,6 +328,28 @@ const updateTeacherBatch = async (req, res) => {
       return res.status(400).json({ error: 'No updatable fields provided.' });
     }
 
+    // The batch must exist, and once its immersion is ongoing or completed its
+    // details are locked. Any failure while resolving the schedule is treated as
+    // locked so an unknown state can never allow an edit through.
+    const batchRow = await client.query(
+      'SELECT supervisor_id FROM teacher_batches WHERE id = $1',
+      [batchId]
+    );
+    if (batchRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Batch not found or insufficient permissions.' });
+    }
+    let scheduleStatus = 'ongoing';
+    try {
+      scheduleStatus = await resolveScheduleStatus(client, batchId, batchRow.rows[0].supervisor_id);
+    } catch (_) {
+      scheduleStatus = 'ongoing';
+    }
+    if (EDIT_LOCKED_STATUSES.includes(scheduleStatus)) {
+      return res.status(409).json({
+        error: 'This batch can no longer be edited because its immersion schedule is already ongoing or completed.',
+      });
+    }
+
     const sql = `
       UPDATE teacher_batches
       SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
@@ -285,6 +381,7 @@ const updateTeacherBatch = async (req, res) => {
 const deleteTeacherBatch = async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensureBatchArchiveColumn();
     const coordinatorUserId = req.user.id;
 
     const coordinatorRow = await client.query(
@@ -298,7 +395,10 @@ const deleteTeacherBatch = async (req, res) => {
     const { batchId } = req.params;
 
     const batchCheck = await client.query(
-      `SELECT id FROM teacher_batches WHERE id = $1 AND coordinator_id = $2`,
+      `SELECT b.id, b.supervisor_id,
+              (SELECT COUNT(*) FROM teacher_batch_students tbs WHERE tbs.teacher_batch_id = b.id) AS student_count
+         FROM teacher_batches b
+        WHERE b.id = $1 AND b.coordinator_id = $2`,
       [batchId, coordinatorId]
     );
 
@@ -306,15 +406,130 @@ const deleteTeacherBatch = async (req, res) => {
       return res.status(404).json({ error: 'Batch not found or insufficient permissions.' });
     }
 
+    const batch = batchCheck.rows[0];
+    const studentCount = Number(batch.student_count || 0);
+
+    let scheduleStatus = 'none';
+    try {
+      scheduleStatus = await resolveScheduleStatus(client, batchId, batch.supervisor_id);
+    } catch (_) {
+      scheduleStatus = 'ongoing';
+    }
+
+    const removal = resolveBatchRemoval({ status: scheduleStatus, studentCount });
+    if (removal === 'archive') {
+      return res.status(409).json({
+        error: 'This batch is already completed, so it can no longer be removed. Archive it instead so its immersion record is kept.',
+      });
+    }
+    if (removal === 'locked') {
+      return res.status(409).json({
+        error: 'This batch cannot be removed while its immersion is upcoming or ongoing.',
+      });
+    }
+
     await client.query('BEGIN');
     await client.query(`DELETE FROM teacher_batch_students WHERE teacher_batch_id = $1`, [batchId]);
     await client.query(`DELETE FROM teacher_batches WHERE id = $1`, [batchId]);
     await client.query('COMMIT');
 
-    res.json({ message: 'Batch deleted successfully.' });
+    res.json({ message: 'Batch removed successfully.' });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('deleteTeacherBatch error:', err);
+    res.status(500).json({ error: 'Server error.' });
+  } finally {
+    client.release();
+  }
+};
+
+// Archive a completed batch instead of removing it: the roster, schedule and
+// history stay intact and the batch moves to the archive modal.
+const archiveTeacherBatch = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureBatchArchiveColumn();
+    const coordinatorUserId = req.user.id;
+
+    const coordinatorRow = await client.query(
+      "SELECT id FROM coordinators WHERE user_id = $1",
+      [coordinatorUserId]
+    );
+    const coordinatorId = coordinatorRow.rows[0]?.id;
+    if (!coordinatorId) {
+      return res.status(400).json({ error: 'Coordinator profile not found.' });
+    }
+    const { batchId } = req.params;
+
+    const batchCheck = await client.query(
+      `SELECT id, supervisor_id, archived_at FROM teacher_batches
+        WHERE id = $1 AND coordinator_id = $2`,
+      [batchId, coordinatorId]
+    );
+
+    if (batchCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Batch not found or insufficient permissions.' });
+    }
+    if (batchCheck.rows[0].archived_at) {
+      return res.status(409).json({ error: 'This batch is already archived.' });
+    }
+
+    const scheduleStatus = await resolveScheduleStatus(
+      client,
+      batchId,
+      batchCheck.rows[0].supervisor_id
+    );
+    if (scheduleStatus !== 'completed') {
+      return res.status(409).json({
+        error: 'Only a batch whose immersion is already completed can be archived.',
+      });
+    }
+
+    await client.query(
+      'UPDATE teacher_batches SET archived_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [batchId]
+    );
+
+    res.json({ message: 'Batch archived successfully.' });
+  } catch (err) {
+    console.error('archiveTeacherBatch error:', err);
+    res.status(500).json({ error: 'Server error.' });
+  } finally {
+    client.release();
+  }
+};
+
+// Bring an archived batch back to the live deployment list.
+const restoreTeacherBatch = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureBatchArchiveColumn();
+    const coordinatorUserId = req.user.id;
+
+    const coordinatorRow = await client.query(
+      "SELECT id FROM coordinators WHERE user_id = $1",
+      [coordinatorUserId]
+    );
+    const coordinatorId = coordinatorRow.rows[0]?.id;
+    if (!coordinatorId) {
+      return res.status(400).json({ error: 'Coordinator profile not found.' });
+    }
+    const { batchId } = req.params;
+
+    const result = await client.query(
+      `UPDATE teacher_batches SET archived_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND coordinator_id = $2 AND archived_at IS NOT NULL
+      RETURNING id`,
+      [batchId, coordinatorId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Archived batch not found or insufficient permissions.' });
+    }
+
+    res.json({ message: 'Batch restored from archive.' });
+  } catch (err) {
+    console.error('restoreTeacherBatch error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
     client.release();
@@ -775,26 +990,15 @@ const getTeachersListForCoordinator = async (req, res) => {
   }
 };
 
-const getCoordinatorBatchesWithAssignedStudents = async (req, res) => {
-  try {
-    const coordinatorUserId = req.user.id;
-
-    const coordinatorRow = await pool.query(
-      "SELECT id FROM coordinators WHERE user_id = $1",
-      [coordinatorUserId]
-    );
-    const coordinatorId = coordinatorRow.rows[0]?.id;
-    if (!coordinatorId) {
-      return res.status(400).json({ error: 'Coordinator profile not found.' });
-    }
-
-    const rows = await pool.query(
-      `SELECT
+async function buildCoordinatorBatches(coordinatorId, { archivedOnly = false } = {}) {
+  const rows = await pool.query(
+    `SELECT
          tb.id AS batch_id,
          tb.batch_label,
          tb.max_students,
          tb.supervisor_id,
          tb.teacher_id,
+         tb.archived_at,
           t.first_name,
           t.last_name,
           t.employee_id,
@@ -817,48 +1021,53 @@ const getCoordinatorBatchesWithAssignedStudents = async (req, res) => {
         LEFT JOIN students st ON st.id = tbs.student_id
         LEFT JOIN users su ON su.id = st.user_id
         WHERE tb.coordinator_id = $1
+          AND (
+            ($2::boolean AND tb.archived_at IS NOT NULL)
+            OR (NOT $2::boolean AND tb.archived_at IS NULL)
+          )
        ORDER BY tb.created_at DESC, tbs.assigned_at DESC`,
-       [coordinatorId]
-    );
+    [coordinatorId, archivedOnly]
+  );
 
-    const batchesMap = new Map();
+  const batchesMap = new Map();
 
-    for (const r of rows.rows || []) {
-      if (!batchesMap.has(r.batch_id)) {
-        batchesMap.set(r.batch_id, {
-          id: r.batch_id,
-          batch_label: r.batch_label,
-          max_students: r.max_students,
-          supervisor_id: r.supervisor_id,
-          supervisor: r.supervisor_id
-            ? { first_name: r.supervisor_first_name, last_name: r.supervisor_last_name }
-            : null,
-          teacher: {
-            id: r.teacher_id,
-            user_id: r.teacher_user_id,
-            first_name: r.first_name,
-            last_name: r.last_name,
-            employee_id: r.employee_id,
-          },
-          teacher_user_id: r.teacher_user_id,
-          students: [],
-          created_at: r.created_at,
-          updated_at: r.updated_at,
-        });
-      }
-
-      if (r.student_id) {
-        batchesMap.get(r.batch_id).students.push({
-          id: r.student_id,
-          student_id: r.student_number,
-          first_name: r.student_first_name,
-          last_name: r.student_last_name,
-          email: r.student_email,
-          strand: r.student_strand,
-          assigned_at: r.assigned_at,
-        });
-      }
+  for (const r of rows.rows || []) {
+    if (!batchesMap.has(r.batch_id)) {
+      batchesMap.set(r.batch_id, {
+        id: r.batch_id,
+        batch_label: r.batch_label,
+        max_students: r.max_students,
+        supervisor_id: r.supervisor_id,
+        supervisor: r.supervisor_id
+          ? { first_name: r.supervisor_first_name, last_name: r.supervisor_last_name }
+          : null,
+        teacher: {
+          id: r.teacher_id,
+          user_id: r.teacher_user_id,
+          first_name: r.first_name,
+          last_name: r.last_name,
+          employee_id: r.employee_id,
+        },
+        teacher_user_id: r.teacher_user_id,
+        students: [],
+        archived_at: r.archived_at,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      });
     }
+
+    if (r.student_id) {
+      batchesMap.get(r.batch_id).students.push({
+        id: r.student_id,
+        student_id: r.student_number,
+        first_name: r.student_first_name,
+        last_name: r.student_last_name,
+        email: r.student_email,
+        strand: r.student_strand,
+        assigned_at: r.assigned_at,
+      });
+    }
+  }
 
     // A batch can carry one schedule per supervisor (the schema is keyed on
     // (teacher_batch_id, supervisor_id)), so this is a separate query rather
@@ -918,9 +1127,61 @@ const getCoordinatorBatchesWithAssignedStudents = async (req, res) => {
       if (!batch.schedule) batch.schedule = summarizeSchedule(null, new Set());
     }
 
-    res.json({ batches: Array.from(batchesMap.values()) });
+    return Array.from(batchesMap.values());
+}
+
+const getCoordinatorBatchesWithAssignedStudents = async (req, res) => {
+  try {
+    await ensureBatchArchiveColumn();
+    const coordinatorUserId = req.user.id;
+
+    const coordinatorRow = await pool.query(
+      "SELECT id FROM coordinators WHERE user_id = $1",
+      [coordinatorUserId]
+    );
+    const coordinatorId = coordinatorRow.rows[0]?.id;
+    if (!coordinatorId) {
+      return res.status(400).json({ error: 'Coordinator profile not found.' });
+    }
+
+    const batches = await buildCoordinatorBatches(coordinatorId, { archivedOnly: false });
+    res.json({ batches });
   } catch (err) {
+    if (err.code === '42703') {
+      return res.status(500).json({
+        error: 'Batch archive support is missing. Run migration 032_teacher_batch_archived_at.sql.',
+      });
+    }
     console.error('getCoordinatorBatchesWithAssignedStudents error:', err);
+    res.status(500).json({ error: 'Server error.' });
+  }
+};
+
+// Archived batches for the archive modal: completed batches the coordinator
+// archived instead of removed, with their roster and schedule intact.
+const getArchivedCoordinatorBatches = async (req, res) => {
+  try {
+    await ensureBatchArchiveColumn();
+    const coordinatorUserId = req.user.id;
+
+    const coordinatorRow = await pool.query(
+      "SELECT id FROM coordinators WHERE user_id = $1",
+      [coordinatorUserId]
+    );
+    const coordinatorId = coordinatorRow.rows[0]?.id;
+    if (!coordinatorId) {
+      return res.status(400).json({ error: 'Coordinator profile not found.' });
+    }
+
+    const batches = await buildCoordinatorBatches(coordinatorId, { archivedOnly: true });
+    res.json({ batches });
+  } catch (err) {
+    if (err.code === '42703') {
+      return res.status(500).json({
+        error: 'Batch archive support is missing. Run migration 032_teacher_batch_archived_at.sql.',
+      });
+    }
+    console.error('getArchivedCoordinatorBatches error:', err);
     res.status(500).json({ error: 'Server error.' });
   }
 };
@@ -929,11 +1190,14 @@ module.exports = {
   createTeacherBatch,
   updateTeacherBatch,
   deleteTeacherBatch,
+  archiveTeacherBatch,
+  restoreTeacherBatch,
   assignApprovedStudentsToBatch,
   getMyTeacherBatches,
   getTeacherBatchStudents,
   getTeachersListForCoordinator,
   getCoordinatorBatchesWithAssignedStudents,
+  getArchivedCoordinatorBatches,
   getRequirementCompletedStudentsForCoordinator,
   getTeacherBatchById,
 };

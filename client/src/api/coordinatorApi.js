@@ -214,6 +214,20 @@ export async function deleteTeacherBatch(batchId) {
   return apiFetch(`/teacher-batches/${batchId}`, { method: 'DELETE' });
 }
 
+// A completed batch is archived rather than removed, so its immersion record
+// survives and it can be restored from the archive modal.
+export async function archiveTeacherBatch(batchId) {
+  return apiFetch(`/teacher-batches/${batchId}/archive`, jsonBody({}));
+}
+
+export async function restoreTeacherBatch(batchId) {
+  return apiFetch(`/teacher-batches/${batchId}/restore`, jsonBody({}));
+}
+
+export async function getArchivedBatches() {
+  return apiFetch('/batches/archived');
+}
+
 export async function assignStudentsToBatch(batchId, student_ids) {
   return apiFetch(`/teacher-batches/${batchId}/assign`, jsonBody({ student_ids }));
 }

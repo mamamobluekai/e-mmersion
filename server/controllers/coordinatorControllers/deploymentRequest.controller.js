@@ -157,7 +157,7 @@ const createDeploymentRequest = async (req, res) => {
        JOIN student_requirement_submissions srs ON srs.user_id = u.id
        WHERE u.role = 'student'
          AND srs.progress = 100
-         AND srs.status NOT IN ('Rejected', 'Needs Revision')
+         AND srs.status NOT IN ('Rejected', 'Needs Revision', 'Hold')
          AND u.id = ANY($1::int[])`,
       [uniqueStudentIds]
     );
@@ -528,7 +528,7 @@ const fulfillSupervisorRequest = async (req, res) => {
        JOIN student_requirement_submissions srs ON srs.user_id = u.id
        WHERE u.role = 'student'
          AND srs.progress = 100
-         AND srs.status NOT IN ('Rejected', 'Needs Revision')
+         AND srs.status NOT IN ('Rejected', 'Needs Revision', 'Hold')
          AND u.id = ANY($1::int[])`,
       [uniqueStudentIds]
     );

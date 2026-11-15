@@ -1,4 +1,4 @@
-﻿const pool = require('../../db/');
+const pool = require('../../db/');
 const cloudinary = require('../../db/cloudinary');
 const { normalize, validateStudentPayload } = require('./regexes/validation');
 const {
@@ -7,6 +7,7 @@ const {
   calculateProgress,
   recalculateAllProgress,
   serializeRequirements,
+  ensureRevisionDocumentColumn,
 } = require('./regexes/requirementsHelpers');
 const streamifier = require('streamifier');
 
@@ -52,6 +53,7 @@ const upsertRequirements = async (req, res) => {
 const submitRequirements = async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensureRevisionDocumentColumn();
     await client.query('BEGIN');
     const student = await getOrCreateStudent(client, req.user.id, req.body);
     const submission = await getOrCreateSubmission(client, student, req.user.id);
@@ -64,7 +66,8 @@ const submitRequirements = async (req, res) => {
 
     await client.query(
       `UPDATE student_requirement_submissions
-       SET status = 'Pending Review', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+       SET status = 'Pending', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP),
+           revision_document_ids = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [submission.id]
     );
@@ -73,7 +76,7 @@ const submitRequirements = async (req, res) => {
       [submission.id, req.user.id]
     );
     await client.query('COMMIT');
-    res.json({ message: 'Requirements submitted successfully.', status: 'Pending Review' });
+    res.json({ message: 'Requirements submitted successfully.', status: 'Pending' });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('submitRequirements error:', err);
@@ -197,10 +200,22 @@ const deleteDocument = async (req, res) => {
 
 const listSubmissions = async (req, res) => {
   try {
+    await ensureDocumentTypesSchema();
     const { status = null, search = null, strand = null } = req.query;
     const result = await pool.query(
       `SELECT s.*, st.student_number, st.first_name, st.last_name, st.email, st.grade_level, st.track_strand,
          COUNT(sd.id) AS uploaded_documents,
+         -- How many active requirements this submission still lacks. A submission
+         -- can only be approved once this is zero, so the list carries it for
+         -- the row badge and the bulk approve guard.
+         (SELECT COUNT(*) FROM document_types dt
+           WHERE COALESCE(dt.is_active, TRUE)
+             AND NOT EXISTS (
+               SELECT 1 FROM student_documents sd2
+                WHERE sd2.document_type_id = dt.id
+                  AND sd2.submission_id = s.id
+             )) AS missing_documents,
+         (SELECT COUNT(*) FROM document_types dt WHERE COALESCE(dt.is_active, TRUE)) AS required_documents,
          COALESCE(json_agg(dt.code ORDER BY dt.code) FILTER (WHERE dt.code IS NOT NULL), '[]'::json) AS document_codes
         FROM student_requirement_submissions s
         JOIN students st ON st.id = s.student_id
@@ -220,18 +235,139 @@ const listSubmissions = async (req, res) => {
   }
 };
 
+/**
+ * A submission may only be approved once every active requirement has a
+ * document behind it - approving earlier is what lets an incomplete student
+ * through to deployment. Returns the names of the requirements still missing,
+ * so the caller can say exactly what is outstanding; an empty array means the
+ * submission is complete. `null` means the submission itself was not found.
+ */
+async function findMissingRequirements(client, submissionId) {
+  await ensureDocumentTypesSchema();
+  const submissionRow = await client.query(
+    'SELECT id FROM student_requirement_submissions WHERE id = $1',
+    [submissionId]
+  );
+  if (!submissionRow.rows.length) return null;
+
+  const result = await client.query(
+    `SELECT dt.name
+       FROM document_types dt
+      WHERE COALESCE(dt.is_active, TRUE)
+        AND NOT EXISTS (
+          SELECT 1 FROM student_documents sd
+           WHERE sd.document_type_id = dt.id
+             AND sd.submission_id = $1
+        )
+      ORDER BY dt.sort_order, dt.name`,
+    [submissionId]
+  );
+  return result.rows.map((r) => r.name);
+}
+
+/**
+ * Validate the "Needs Revision" checklist the coordinator ticked: the ids must
+ * be real document types. Returns the cleaned id array, or `null` when the
+ * payload is unusable (the caller turns that into a 400).
+ */
+async function normalizeRevisionDocumentIds(rawIds) {
+  if (rawIds === undefined || rawIds === null) return [];
+  if (!Array.isArray(rawIds)) return null;
+
+  const ids = Array.from(
+    new Set(rawIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))
+  );
+  if (ids.length === 0) return [];
+
+  await ensureDocumentTypesSchema();
+  const existing = await pool.query(
+    'SELECT id FROM document_types WHERE id = ANY($1::int[])',
+    [ids]
+  );
+  if (existing.rows.length !== ids.length) return null;
+  return ids;
+}
+
 const reviewSubmission = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { status, remarks } = req.body;
-    const allowed = ['Under Review', 'Approved', 'Rejected', 'Needs Revision'];
+    const { status, remarks, revision_document_ids } = req.body;
+    const allowed = ['Pending', 'Needs Revision', 'Approved', 'Hold'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid review status.' });
+
+    await ensureRevisionDocumentColumn();
+
+    const currentRow = await client.query(
+      'SELECT status FROM student_requirement_submissions WHERE id = $1',
+      [req.params.id]
+    );
+    if (!currentRow.rows.length) {
+      return res.status(404).json({ error: 'Submission not found.' });
+    }
+
+    // An approval is settled: the only move left is Hold, for when something
+    // turns up after the fact (a file found to be malicious, say). Sending a
+    // student back to Pending or Needs Revision would rewrite the approval
+    // instead of recording that it was later put on hold.
+    if (currentRow.rows[0].status === 'Approved' && !['Approved', 'Hold'].includes(status)) {
+      return res.status(400).json({
+        error: 'An approved submission can only stay approved or be put on hold.',
+      });
+    }
+
+    // Hold is a pause on an approval, not a review outcome in its own right, so
+    // it cannot be applied to a submission that was never approved.
+    if (status === 'Hold' && currentRow.rows[0].status !== 'Approved') {
+      return res.status(400).json({
+        error: 'Only an approved submission can be put on hold.',
+      });
+    }
+
+    // Approving certifies the student's requirements are complete, so it is
+    // refused while anything is still missing.
+    if (status === 'Approved') {
+      const missing = await findMissingRequirements(client, req.params.id);
+      if (missing === null) {
+        return res.status(404).json({ error: 'Submission not found.' });
+      }
+      if (missing.length > 0) {
+        return res.status(400).json({
+          error: `This student cannot be approved yet. Still missing: ${missing.join(', ')}.`,
+          missing,
+        });
+      }
+    }
+
+    // "Needs Revision" only means something if the coordinator says which
+    // documents have to change, so the checklist is required for that status and
+    // dropped for every other one.
+    let revisionIds = [];
+    if (status === 'Needs Revision') {
+      const normalized = await normalizeRevisionDocumentIds(revision_document_ids);
+      if (normalized === null) {
+        return res.status(400).json({ error: 'One or more selected requirements do not exist.' });
+      }
+      if (normalized.length === 0) {
+        return res.status(400).json({
+          error: 'Select at least one document that the student has to revise.',
+        });
+      }
+      revisionIds = normalized;
+    }
+
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE student_requirement_submissions
-       SET status = $1, coordinator_feedback = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       SET status = $1, coordinator_feedback = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP,
+           revision_document_ids = $5::jsonb, updated_at = CURRENT_TIMESTAMP
        WHERE id = $4 RETURNING *`,
-      [status, remarks || null, req.user.id, req.params.id]
+      [
+        status,
+        remarks || null,
+        req.user.id,
+        req.params.id,
+        revisionIds.length > 0 ? JSON.stringify(revisionIds) : null,
+      ]
     );
     if (!result.rows.length) {
       await client.query('ROLLBACK');
@@ -254,7 +390,7 @@ const reviewSubmission = async (req, res) => {
 
 const bulkReviewSubmissions = async (req, res) => {
   const { submission_ids, status, remarks } = req.body;
-  const allowed = ['Under Review', 'Approved', 'Rejected', 'Needs Revision'];
+  const allowed = ['Pending', 'Needs Revision', 'Approved', 'Hold'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid review status.' });
   if (!Array.isArray(submission_ids) || submission_ids.length === 0) {
     return res.status(400).json({ error: 'No submission IDs provided.' });
@@ -262,6 +398,68 @@ const bulkReviewSubmissions = async (req, res) => {
 
   const client = await pool.connect();
   try {
+    // Same rule as a single review: an approved submission may only be moved to
+    // Hold, never back to Pending or Needs Revision.
+    if (!['Approved', 'Hold'].includes(status)) {
+      const approvedRows = await client.query(
+        `SELECT id FROM student_requirement_submissions
+          WHERE id = ANY($1) AND status = 'Approved'`,
+        [submission_ids]
+      );
+      if (approvedRows.rows.length > 0) {
+        return res.status(400).json({
+          error: `${approvedRows.rows.length} selected submission(s) are already approved and can only be put on hold.`,
+        });
+      }
+    }
+
+    // Hold only pauses an approval, so a bulk hold needs every selected
+    // submission to be approved already.
+    if (status === 'Hold') {
+      const approvedRows = await client.query(
+        `SELECT id FROM student_requirement_submissions
+          WHERE id = ANY($1) AND status = 'Approved'`,
+        [submission_ids]
+      );
+      if (approvedRows.rows.length !== submission_ids.length) {
+        return res.status(400).json({
+          error: 'Only approved submissions can be put on hold.',
+        });
+      }
+    }
+
+    // Bulk approval gets the same completeness rule as a single approval: the
+    // whole batch is refused and the blockers are named, so nothing incomplete
+    // slips through while the coordinator works down a long list.
+    if (status === 'Approved') {
+      const blockers = [];
+      for (const id of submission_ids) {
+        const missing = await findMissingRequirements(client, id);
+        if (missing === null) continue;
+        if (missing.length > 0) {
+          const row = await client.query(
+            `SELECT st.first_name, st.last_name, st.student_number
+               FROM student_requirement_submissions srs
+               JOIN students st ON st.id = srs.student_id
+              WHERE srs.id = $1`,
+            [id]
+          );
+          const student = row.rows[0];
+          const name = student
+            ? [student.first_name, student.last_name].filter(Boolean).join(' ') ||
+              student.student_number
+            : `Submission ${id}`;
+          blockers.push(`${name} (${missing.length} missing)`);
+        }
+      }
+      if (blockers.length > 0) {
+        return res.status(400).json({
+          error: `These students cannot be approved because their requirements are not complete yet: ${blockers.join(', ')}.`,
+          blockers,
+        });
+      }
+    }
+
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE student_requirement_submissions
@@ -313,15 +511,26 @@ const verifyDocument = async (req, res) => {
 
 /* ---------------- Document Types (Editable Requirements) ---------------- */
 
+let documentTypesSchemaPromise = null;
 async function ensureDocumentTypesSchema() {
-  await pool.query(`
-    ALTER TABLE document_types
-      ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
-      ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS description TEXT;
-    CREATE INDEX IF NOT EXISTS idx_document_types_active
-      ON document_types (is_active, sort_order);
-  `);
+  // Memoised: the submissions list and every review hit this, and the DDL is
+  // idempotent, so there is no reason to re-run it per request. A failure clears
+  // the memo so the next call retries.
+  if (documentTypesSchemaPromise) return documentTypesSchemaPromise;
+  documentTypesSchemaPromise = (async () => {
+    await pool.query(`
+      ALTER TABLE document_types
+        ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS description TEXT;
+      CREATE INDEX IF NOT EXISTS idx_document_types_active
+        ON document_types (is_active, sort_order);
+    `);
+  })().catch((err) => {
+    documentTypesSchemaPromise = null;
+    throw err;
+  });
+  return documentTypesSchemaPromise;
 }
 
 const listDocumentTypes = async (req, res) => {

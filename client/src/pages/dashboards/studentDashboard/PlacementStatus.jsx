@@ -90,6 +90,7 @@ function PlacementStatus() {
     Approved: { label: 'Approved', cls: styles.badgeApproved },
     Rejected: { label: 'Rejected', cls: styles.badgeRejected },
     'Needs Revision': { label: 'Needs Revision', cls: styles.badgeNeeds },
+    Hold: { label: 'On Hold', cls: styles.badgeNeeds },
   };
 
   const statusInfo = statusMap[submission?.status] || { label: submission?.status || 'Not started', cls: styles.badgePending };

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertCircle, ArrowRight, ChevronRight, RefreshCw } from 'lucide-react';
+import { AlertCircle, ArrowRight, RefreshCw } from 'lucide-react';
 import {
   CartesianGrid,
   Line,
@@ -28,60 +28,6 @@ function getGreeting() {
   return 'Good evening';
 }
 
-function getAttentionItems({ approvals, requirements, batches, deploymentRequests }) {
-  const items = [];
-
-  if (Number(approvals.pending || 0) > 0) {
-    items.push({
-      id: 'approvals',
-      type: 'Approvals',
-      title: `${approvals.pending} student account${Number(approvals.pending) === 1 ? '' : 's'} awaiting approval`,
-      detail: 'Review pending accounts so students can start their immersion.',
-      action: 'Review',
-      to: ROUTES.students,
-      tone: 'urgent',
-    });
-  }
-
-  if (Number(requirements.pendingReview || 0) > 0) {
-    items.push({
-      id: 'requirements',
-      type: 'Requirements',
-      title: `${requirements.pendingReview} submission${Number(requirements.pendingReview) === 1 ? '' : 's'} need review`,
-      detail: 'Requirement documents are waiting for your decision.',
-      action: 'Open',
-      to: ROUTES.requirements,
-      tone: 'urgent',
-    });
-  }
-
-  if (Number(batches.withoutSupervisor || 0) > 0) {
-    items.push({
-      id: 'supervisors',
-      type: 'Batches',
-      title: `${batches.withoutSupervisor} batch${Number(batches.withoutSupervisor) === 1 ? '' : 'es'} without a supervisor`,
-      detail: 'Assign a supervisor so deployed students have a point of contact.',
-      action: 'Assign',
-      to: ROUTES.batches,
-      tone: 'info',
-    });
-  }
-
-  if (Number(deploymentRequests.pending || 0) > 0) {
-    items.push({
-      id: 'deployment',
-      type: 'Deployment',
-      title: `${deploymentRequests.pending} deployment request${Number(deploymentRequests.pending) === 1 ? '' : 's'} in progress`,
-      detail: 'Follow up on requests sent to supervisors.',
-      action: 'View',
-      to: ROUTES.supervisors,
-      tone: 'info',
-    });
-  }
-
-  return items.slice(0, 4);
-}
-
 function LoadingCard() {
   return (
     <div className={styles.loadingCard} role="status">
@@ -99,22 +45,6 @@ function ErrorState({ message, onRetry }) {
       <button type="button" onClick={onRetry}>
         <RefreshCw size={15} /> Try again
       </button>
-    </div>
-  );
-}
-
-function AttentionItem({ item }) {
-  return (
-    <div className={styles.attentionItem}>
-      <div className={`${styles.attentionIcon} ${styles[item.tone]}`}>
-        {item.tone === 'urgent' ? <AlertCircle size={17} /> : <ChevronRight size={17} />}
-      </div>
-      <div className={styles.attentionCopy}>
-        <span className={styles.attentionType}>{item.type}</span>
-        <strong>{item.title}</strong>
-        <p>{item.detail}</p>
-      </div>
-      <Link className={styles.actionLink} to={item.to}>{item.action}<ArrowRight size={14} /></Link>
     </div>
   );
 }
@@ -143,17 +73,8 @@ function CoordinatorOverview() {
 
   const firstName = user?.first_name || user?.email?.split('@')[0] || 'Coordinator';
 
-  const approvals = useMemo(() => data?.approvals || {}, [data]);
   const requirements = useMemo(() => data?.requirements || {}, [data]);
-  const batches = useMemo(() => data?.batches || {}, [data]);
-  const deploymentRequests = useMemo(() => data?.deploymentRequests || {}, [data]);
   const requirementsTrend = useMemo(() => data?.requirementsTrend || [], [data]);
-
-  const attentionItems = useMemo(
-    () => getAttentionItems({ approvals, requirements, batches, deploymentRequests }),
-    [approvals, requirements, batches, deploymentRequests],
-  );
-
 
   return (
     <div className={styles.dashboard}>
@@ -175,21 +96,9 @@ function CoordinatorOverview() {
 
           <div className={styles.contentGrid}>
             <div className={styles.mainColumn}>
-              {attentionItems.length > 0 && (
-                <section className={styles.card}>
-                  <div className={styles.cardHeader}>
-                    <div><p className={styles.cardEyebrow}>TAKE ACTION</p><h2>Needs Your Attention</h2></div>
-                    {attentionItems.length > 1 && <span className={styles.attentionCount}>{attentionItems.length} items</span>}
-                  </div>
-                  <div className={styles.attentionList}>
-                    {attentionItems.map((item) => <AttentionItem key={item.id} item={item} />)}
-                  </div>
-                </section>
-              )}
-
               <section className={styles.card}>
                 <div className={`${styles.cardHeader} ${styles.chartHeader}`}>
-                  <h2>Requirements Trend</h2>
+                  <h2>Requirements Overview</h2>
                 </div>
                 <div className={styles.summaryRow} aria-label="Key coordinator metrics">
                   <div className={styles.summaryItem}><strong>{requirements.pendingReview || 0}</strong><span>Pending review</span></div>

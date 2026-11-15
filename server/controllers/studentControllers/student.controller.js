@@ -5,6 +5,7 @@ const {
   getOrCreateStudent,
   getOrCreateSubmission,
   serializeRequirements,
+  ensureRevisionDocumentColumn,
 } = require('../coordinatorControllers/regexes/requirementsHelpers');
 const streamifier = require('streamifier');
 const { buildImmersionDateList, loadExcludedDates } = require('../../utils/immersionDays');
@@ -50,6 +51,7 @@ const updateMyRequirements = async (req, res) => {
 const submitMyRequirements = async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensureRevisionDocumentColumn();
     await client.query('BEGIN');
     const student = await getOrCreateStudent(client, req.user.id, req.body);
     const submission = await getOrCreateSubmission(client, student, req.user.id);
@@ -62,7 +64,8 @@ const submitMyRequirements = async (req, res) => {
 
     await client.query(
       `UPDATE student_requirement_submissions
-       SET status = 'Pending Review', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+       SET status = 'Pending', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP),
+           revision_document_ids = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [submission.id]
     );
@@ -71,7 +74,7 @@ const submitMyRequirements = async (req, res) => {
       [submission.id, req.user.id]
     );
     await client.query('COMMIT');
-    res.json({ message: 'Requirements submitted successfully.', status: 'Pending Review' });
+    res.json({ message: 'Requirements submitted successfully.', status: 'Pending' });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('submitMyRequirements error:', err);

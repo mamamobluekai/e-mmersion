@@ -1,5 +1,26 @@
 const { requiredInfoFields } = require('../helpers/constant');
 const { normalize } = require('./validation');
+const pool = require('../../../db');
+
+/**
+ * The "Needs Revision" checklist column. This project applies migrations by
+ * hand, so the column is created on first use (idempotent DDL, memoised) rather
+ * than assumed - otherwise every review would 500 on a database that has not
+ * run 033_submission_revision_documents.sql yet.
+ */
+let revisionColumnPromise = null;
+async function ensureRevisionDocumentColumn() {
+  if (revisionColumnPromise) return revisionColumnPromise;
+  revisionColumnPromise = (async () => {
+    await pool.query(
+      'ALTER TABLE student_requirement_submissions ADD COLUMN IF NOT EXISTS revision_document_ids JSONB'
+    );
+  })().catch((err) => {
+    revisionColumnPromise = null;
+    throw err;
+  });
+  return revisionColumnPromise;
+}
 
 /**
  * Load the active requirement definitions.
@@ -167,11 +188,30 @@ const serializeRequirements = async (client, studentId) => {
   );
   const progress = await calculateProgress(client, studentId);
 
+  // The coordinator's "Needs Revision" checklist, resolved to names so the
+  // student page can list what to change without a second request. Legacy rows
+  // have no list, hence the empty array.
+  const submissionRow = submission.rows[0] || null;
+  let revisionDocuments = [];
+  const revisionIds = Array.isArray(submissionRow?.revision_document_ids)
+    ? submissionRow.revision_document_ids.map(Number).filter(Number.isFinite)
+    : [];
+  if (revisionIds.length > 0) {
+    const revisionDocs = await client.query(
+      `SELECT id, name, section, code FROM document_types
+        WHERE id = ANY($1::int[])
+        ORDER BY sort_order, name`,
+      [revisionIds]
+    );
+    revisionDocuments = revisionDocs.rows;
+  }
+
   return {
     student: student.rows[0] || null,
-    submission: submission.rows[0] || null,
+    submission: submissionRow,
     documents: documents.rows,
     logs: logs.rows,
+    revisionDocuments,
     ...progress,
   };
 };
@@ -183,4 +223,5 @@ module.exports = {
   calculateProgress,
   recalculateAllProgress,
   serializeRequirements,
+  ensureRevisionDocumentColumn,
 };

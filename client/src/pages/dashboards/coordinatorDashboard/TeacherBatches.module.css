@@ -49,7 +49,8 @@
 .message { border-color: #f0e1c8; background: #fffaf2; color: #77531f; }
 .error, .modalError { border-color: #efc2ca; background: var(--about-blush); color: var(--about-maroon); }
 
-.section { padding: 20px 22px; border-radius: 18px; }
+/* Extra bottom room so the floating archive button never sits on the last card. */
+.section { padding: 20px 22px 74px; border-radius: 18px; }
 .sectionHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
 .sectionHeading { min-width: 0; }
 .sectionTitle { margin: 0; color: var(--about-ink); font-size: 1.05rem; font-weight: 750; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -114,7 +115,9 @@
 
 .actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; margin-top: 12px; }
 .btnIcon, .btnIconDelete { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 1px solid var(--about-border); border-radius: 9px; background: #fff; color: var(--about-maroon); cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, transform 150ms ease; }
-.btnIcon:hover { background: var(--about-blush); border-color: #d7b8be; transform: translateY(-1px); }
+.btnIcon:hover:not(:disabled) { background: var(--about-blush); border-color: #d7b8be; transform: translateY(-1px); }
+
+.btnIcon:disabled { opacity: 0.45; cursor: not-allowed; }
 .btnIconDelete { color: var(--about-maroon); }
 .btnIconDelete:hover { background: var(--about-blush); border-color: #d7b8be; transform: translateY(-1px); }
 
@@ -183,6 +186,18 @@
 .deleteWarning strong { color: var(--about-maroon); }
 .deleteNote { margin: 0; color: var(--about-muted); font-size: 0.76rem; }
 
+/* Bottom-right archive entry point, matching the student approvals page. */
+.archiveToggleBtn { position: fixed; right: 28px; bottom: 28px; z-index: 1200; display: inline-flex; align-items: center; justify-content: center; width: 46px; height: 46px; border: 1px solid var(--about-border); border-radius: 50%; background: #fff; color: var(--about-maroon); cursor: pointer; box-shadow: 0 8px 16px rgb(23 32 51 / 8%); transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
+.archiveToggleBtn:hover { transform: translateY(-2px); border-color: #d7b8be; box-shadow: 0 12px 24px rgb(23 32 51 / 12%); }
+.archiveToggleBtn:active { transform: scale(0.96); }
+
+.archivedList { display: flex; flex-direction: column; gap: 10px; }
+.archivedItem { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid var(--about-border); border-radius: 13px; background: #fff; }
+.archivedCopy { flex: 1 1 220px; min-width: 0; }
+.archivedTitleRow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.archivedTitleRow strong { color: var(--about-ink); font-size: 0.9rem; font-weight: 750; }
+.archivedMeta { margin: 5px 0 0; color: var(--about-muted); font-size: 0.75rem; }
+
 @keyframes modalFade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modalRise { from { opacity: 0; transform: translateY(14px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
@@ -208,8 +223,9 @@
   .capacity, .personChip, .personChipMuted { max-width: none; }
   .summaryStats { width: 100%; }
   .summaryStats > div { flex: 1; }
+  .archiveToggleBtn { right: 14px; bottom: 14px; width: 40px; height: 40px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .listItem, .btn, .btnSecondary, .btnGhost, .btnDanger, .searchBtn, .btnIcon, .btnIconDelete { transition: none; }
+  .listItem, .btn, .btnSecondary, .btnGhost, .btnDanger, .searchBtn, .btnIcon, .btnIconDelete, .archiveToggleBtn { transition: none; }
   .loading::before, .spinner, .spinnerDark, .modalOverlay, .modal { animation: none; }
 }

@@ -159,6 +159,38 @@ function Requirements() {
   const progress = data?.progress ?? 0;
   const sections = data?.sections || {};
 
+  // Documents the coordinator ticked for revision when the submission was sent
+  // back. Comes resolved (id/name/section) from the API.
+  const revisionDocuments = data?.revisionDocuments || [];
+
+  // Status wording and colour, shared with the coordinator's vocabulary. Older
+  // rows still carry "Pending Review" / "Under Review" / "Rejected".
+  const statusLabel = (status) => {
+    switch (String(status || '').toLowerCase()) {
+      case 'approved':
+        return 'Approved';
+      case 'hold':
+        return 'On Hold';
+      case 'needs revision':
+        return 'Needs Revision';
+      case 'rejected':
+        return 'Rejected';
+      case 'under review':
+        return 'Under Review';
+      default:
+        return 'Pending';
+    }
+  };
+
+  const statusBadgeClass = (status) => {
+    const value = String(status || '').toLowerCase();
+    if (value === 'approved') return styles.badgeVerified;
+    if (value === 'hold' || value === 'needs revision' || value === 'rejected') {
+      return styles.badgeReview;
+    }
+    return styles.badgePending;
+  };
+
   const uploadCount = docTypes.filter((d) =>
     documents.some((sd) => sd.code === d.code)
   ).length;
@@ -735,7 +767,10 @@ function Requirements() {
     return <p className={styles.loading}>Loading requirements...</p>;
   }
 
-  const isSubmitted = ['Pending Review', 'Under Review', 'Approved'].includes(submission?.status) &&
+  // "Pending Review" is the value older submissions were saved with; both it and
+  // the current "Pending" mean the student has submitted and is waiting. "Hold"
+  // is a coordinator pause, so the submission still counts as filed.
+  const isSubmitted = ['Pending', 'Pending Review', 'Under Review', 'Approved', 'Hold'].includes(submission?.status) &&
     !!submission?.submitted_at;
 
   return (
@@ -756,6 +791,29 @@ function Requirements() {
       {message && <div className={styles.message}>{message}</div>}
       {error && <div className={styles.error}>{error}</div>}
 
+      {/* The coordinator's revision checklist: exactly which files to replace. */}
+      {revisionDocuments.length > 0 && (
+        <div className={styles.revisionNotice} role="status">
+          <strong>Changes needed on these documents</strong>
+          <p>
+            Your coordinator asked for the files below to be replaced. Upload a
+            new copy, then submit your requirements again.
+          </p>
+          <ul className={styles.revisionList}>
+            {revisionDocuments.map((doc) => (
+              <li key={doc.id}>
+                {doc.name}
+                {doc.section ? (
+                  <span className={styles.revisionSection}>
+                    {SECTION_META[doc.section]?.label || doc.section}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className={styles.section}>
         <div className={styles.progressLabel}>
           <span><strong>Progress</strong> &mdash; {progress}% complete</span>
@@ -767,12 +825,28 @@ function Requirements() {
         {submission?.status && (
           <div className={styles.statusRow}>
             <span className={styles.muted}>Submission status:</span>
-            <span className={`${styles.badge} ${styles.badgeReview}`}>{submission.status}</span>
-            {submission?.submitted_at && (
+            <span className={`${styles.badge} ${statusBadgeClass(submission.status)}`}>
+              {statusLabel(submission.status)}
+            </span>
+            {submission?.reviewed_at && (
+              <span className={styles.muted}>
+                Reviewed on {new Date(submission.reviewed_at).toLocaleDateString()}
+                {submission.reviewed_by_name ? ` by ${submission.reviewed_by_name}` : ''}
+              </span>
+            )}
+            {!submission?.reviewed_at && submission?.submitted_at && (
               <span className={styles.muted}>
                 Submitted on {new Date(submission.submitted_at).toLocaleDateString()}
               </span>
             )}
+          </div>
+        )}
+
+        {/* What the coordinator wrote when they reviewed the submission. */}
+        {submission?.coordinator_feedback && (
+          <div className={styles.feedbackNotice}>
+            <strong>Coordinator feedback</strong>
+            <p>{submission.coordinator_feedback}</p>
           </div>
         )}
       </div>

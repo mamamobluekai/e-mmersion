@@ -1,8 +1,7 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   listSubmissions,
   reviewSubmission,
-  bulkReviewSubmissions,
   verifyDocument,
   getRequirements,
   getStudentStrands,
@@ -20,7 +19,6 @@ import {
   XCircle,
   Download,
   Clock3,
-  Users,
   ClipboardCheck,
   ChevronRight,
   X,
@@ -30,21 +28,23 @@ import {
   Settings2,
   AlertCircle,
   CheckCircle,
-  CheckSquare,
-  Square,
-  ThumbsUp,
-  ThumbsDown,
   Archive,
   UserCheck,
 } from 'lucide-react';
 import styles from './RequirementsReview.module.css';
 
+// The review vocabulary a coordinator can set. Rows saved with an older value
+// ("Pending Review", "Under Review", "Rejected") still render through the badge
+// map below, they just cannot be picked any more.
 const REVIEW_STATUSES = [
-  'Under Review',
-  'Approved',
-  'Rejected',
+  'Pending',
   'Needs Revision',
+  'Approved',
 ];
+
+// Hold is not a review outcome, it is a pause applied to an approval, so it is
+// only offered once the submission is already approved.
+const HOLD_STATUS = 'Hold';
 
 const SECTION_LABELS = {
   guardian: 'Guardian & Consent',
@@ -60,6 +60,7 @@ const statusBadge = (status) => {
     approved: styles.badgeApproved,
     rejected: styles.badgeRejected,
     'needs revision': styles.badgeNeeds,
+    hold: styles.badgeHold,
   };
 
   return map[String(status || '').toLowerCase()] || styles.badgePending;
@@ -219,10 +220,9 @@ function RequirementsReview() {
 
   const [saving, setSaving] = useState(false);
   const [docLoading, setDocLoading] = useState(false);
-
-  // Bulk selection for quick approve/reject from the table.
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [bulkLoading, setBulkLoading] = useState(false);
+  // Documents the coordinator wants replaced. Only used when the review status
+  // is "Needs Revision"; the student sees this list on their Requirements page.
+  const [revisionIds, setRevisionIds] = useState([]);
 
   // Editable requirements configuration
   const [docTypes, setDocTypes] = useState(FALLBACK_DOC_TYPES);
@@ -259,13 +259,6 @@ function RequirementsReview() {
 
     return () => clearTimeout(timer);
   }, [search]);
-
-  // Selection is tied to the visible rows, so any change to what is shown
-  // (filter or search) drops it to avoid acting on rows that are no longer
-  // on screen.
-  useEffect(() => {
-    setSelectedIds([]);
-  }, [statusFilter, strandFilter, debouncedSearch]);
 
   useEffect(() => {
     let mounted = true;
@@ -320,11 +313,16 @@ function RequirementsReview() {
     setReviewStatus(sub.status);
     setRemarks('');
     setStudentData(null);
+    setRevisionIds([]);
     setDocLoading(true);
 
     try {
       const data = await getRequirements(sub.student_id);
       setStudentData(data);
+      // Reopening a "Needs Revision" case starts from the checklist already on
+      // record so the coordinator can add to or trim it.
+      const alreadyFlagged = (data?.revisionDocuments || []).map((doc) => Number(doc.id));
+      setRevisionIds(alreadyFlagged);
     } catch (err) {
       showError(err.message);
     } finally {
@@ -337,19 +335,31 @@ function RequirementsReview() {
     setStudentData(null);
     setReviewStatus('');
     setRemarks('');
+    setRevisionIds([]);
   };
 
   const handleReview = async () => {
     if (!selected) return;
+
+    if (reviewStatus === 'Needs Revision' && revisionIds.length === 0) {
+      showError('Tick at least one document the student has to revise.');
+      return;
+    }
 
     setSaving(true);
     try {
       await reviewSubmission(selected.id, {
         status: reviewStatus,
         remarks,
+        // Only "Needs Revision" carries a checklist; every other status clears it.
+        revision_document_ids: reviewStatus === 'Needs Revision' ? revisionIds : [],
       });
 
-      showSuccess('Submission review saved.');
+      showSuccess(
+        reviewStatus === 'Needs Revision'
+          ? 'Submission sent back for revision.'
+          : 'Submission review saved.',
+      );
       setSelected(null);
       setStudentData(null);
       loadSubmissions();
@@ -360,39 +370,10 @@ function RequirementsReview() {
     }
   };
 
-  const handleSelectAll = () => {
-    if (selectedIds.length === submissions.length) {
-      setSelectedIds([]);
-    } else {
-      setSelectedIds(submissions.map((s) => s.id));
-    }
-  };
-
-  const handleSelectOne = (id) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
-  };
-
-  // Quick approve/reject straight from the table - skips opening each
-  // student's review panel when the coordinator only needs to flip statuses.
-  const handleBulkReview = async (status) => {
-    if (selectedIds.length === 0) {
-      showError('Select at least one submission first.');
-      return;
-    }
-
-    setBulkLoading(true);
-    try {
-      const data = await bulkReviewSubmissions(selectedIds, { status });
-      showSuccess(data.message || `${selectedIds.length} submission(s) marked ${status.toLowerCase()}.`);
-      setSelectedIds([]);
-      await loadSubmissions();
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setBulkLoading(false);
-    }
+  const toggleRevisionId = (id) => {
+    setRevisionIds((prev) => (
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    ));
   };
 
   const refreshDocTypes = async () => {
@@ -541,6 +522,19 @@ function RequirementsReview() {
   const uploadedCount = checklist.filter((item) => item.uploaded).length;
   const missingCount = checklist.length - uploadedCount;
 
+  // Once a submission is approved it is settled: the only move left is Hold,
+  // for when something turns up afterwards (a file found to be malicious, for
+  // example). Pending and Needs Revision are no longer offered, so an approval
+  // cannot be quietly undone. Before approval, Hold is not offered at all.
+  const reviewStatusOptions = selected?.status === 'Approved'
+    ? ['Approved', HOLD_STATUS]
+    : REVIEW_STATUSES;
+
+  // Approving certifies the requirements are complete, so the panel refuses to
+  // save an approval while anything is still missing. The server enforces the
+  // same rule; this only keeps the coordinator from hitting a dead end.
+  const approvalBlocked = reviewStatus === 'Approved' && missingCount > 0;
+
   const pendingCount = submissions.filter((s) =>
     ['pending', 'pending review'].includes(
       String(s.status || '').toLowerCase(),
@@ -554,11 +548,6 @@ function RequirementsReview() {
   const revisionCount = submissions.filter(
     (s) =>
       String(s.status || '').toLowerCase() === 'needs revision',
-  ).length;
-
-  const reviewCount = submissions.filter(
-    (s) =>
-      String(s.status || '').toLowerCase() === 'under review',
   ).length;
 
   return (
@@ -591,26 +580,10 @@ function RequirementsReview() {
 
           <div>
             <span className={styles.statLabel}>
-              Pending Review
+              Pending
             </span>
 
             <strong>{pendingCount}</strong>
-          </div>
-        </div>
-
-        <div className={styles.statCard}>
-          <div
-            className={`${styles.statIcon} ${styles.statBlue}`}
-          >
-            <Users size={20} />
-          </div>
-
-          <div>
-            <span className={styles.statLabel}>
-              Under Review
-            </span>
-
-            <strong>{reviewCount}</strong>
           </div>
         </div>
 
@@ -697,24 +670,20 @@ function RequirementsReview() {
                 All Statuses
               </option>
 
-              <option value="Pending Review">
-                Pending Review
+              <option value="Pending">
+                Pending
               </option>
 
-              <option value="Under Review">
-                Under Review
+              <option value="Needs Revision">
+                Needs Revision
               </option>
 
               <option value="Approved">
                 Approved
               </option>
 
-              <option value="Rejected">
-                Rejected
-              </option>
-
-              <option value="Needs Revision">
-                Needs Revision
+              <option value="Hold">
+                Hold
               </option>
             </select>
           </div>
@@ -766,21 +735,6 @@ function RequirementsReview() {
 
                <thead>
                  <tr>
-                   <th className={styles.checkboxHeader}>
-                     <button
-                       className={styles.checkbox}
-                       type="button"
-                       onClick={handleSelectAll}
-                       aria-label="Select all submissions"
-                     >
-                       {selectedIds.length === submissions.length &&
-                       submissions.length > 0 ? (
-                         <CheckSquare size={16} />
-                       ) : (
-                         <Square size={16} />
-                       )}
-                     </button>
-                   </th>
                    <th>Student</th>
                    <th>Email</th>
                    <th>Strand</th>
@@ -795,21 +749,6 @@ function RequirementsReview() {
                  {submissions.map((student) => (
 
                   <tr key={student.id}>
-
-                    <td className={styles.checkboxCell}>
-                      <button
-                        className={styles.checkbox}
-                        type="button"
-                        onClick={() => handleSelectOne(student.id)}
-                        aria-label={`Select ${displayName(student.first_name, student.last_name)}`}
-                      >
-                        {selectedIds.includes(student.id) ? (
-                          <CheckSquare size={16} />
-                        ) : (
-                          <Square size={16} />
-                        )}
-                      </button>
-                    </td>
 
                     <td>
                       <div className={styles.studentCell}>
@@ -847,14 +786,20 @@ function RequirementsReview() {
                          <div
                            className={styles.docBarFill}
                            style={{
-                             width: `${((student.uploaded_documents ?? 0) / (activeDocTypes.length || 1)) * 100}%`,
+                             width: `${((student.uploaded_documents ?? 0) / (student.required_documents || activeDocTypes.length || 1)) * 100}%`,
                            }}
                          />
                        </div>
 
                        <span className={styles.docBarCount}>
                          {student.uploaded_documents ?? 0}/
-                         {activeDocTypes.length}
+                         {student.required_documents ?? activeDocTypes.length}
+                         {Number(student.missing_documents ?? 0) > 0 && (
+                           <span className={styles.missingTag}>
+                             {' '}
+                             · {student.missing_documents} missing
+                           </span>
+                         )}
                        </span>
                      </td>
 
@@ -894,46 +839,6 @@ function RequirementsReview() {
 
       </div>
 
-      {/* BULK APPROVE / REJECT — floats at the bottom-right while rows are
-          selected so it stays reachable no matter how far the table is scrolled. */}
-      {selectedIds.length > 0 && (
-        <div className={styles.bulkBar}>
-          <div className={styles.bulkActions}>
-            <button
-              type="button"
-              className={styles.bulkApproveBtn}
-              onClick={() => handleBulkReview('Approved')}
-              disabled={bulkLoading}
-            >
-              <ThumbsUp size={17} />
-              {bulkLoading ? 'Working...' : 'Approve Selected'}
-            </button>
-
-            <button
-              type="button"
-              className={styles.bulkRejectBtn}
-              onClick={() => handleBulkReview('Rejected')}
-              disabled={bulkLoading}
-            >
-              <ThumbsDown size={17} />
-              {bulkLoading ? 'Working...' : 'Reject Selected'}
-            </button>
-          </div>
-
-          <span className={styles.bulkCount}>
-            {selectedIds.length} selected
-          </span>
-
-          <button
-            type="button"
-            className={styles.bulkClearBtn}
-            onClick={() => setSelectedIds([])}
-            disabled={bulkLoading}
-          >
-            Clear
-          </button>
-        </div>
-      )}
 
       {/* MANAGE REQUIREMENTS MODAL */}
       {showReqModal && (
@@ -1192,7 +1097,7 @@ function RequirementsReview() {
                         }
                         className={styles.formInput}
                       >
-                        {REVIEW_STATUSES.map(
+                        {reviewStatusOptions.map(
                           (status) => (
                             <option
                               key={status}
@@ -1248,6 +1153,71 @@ function RequirementsReview() {
                     </div>
                   </div>
 
+                  {selected?.status === 'Approved' && reviewStatus === 'Hold' && (
+                    <p
+                      className={`${styles.checklistSummary} ${styles.summaryIncomplete}`}
+                      role="alert"
+                    >
+                      Saving will put this student on hold: they stay approved on
+                      record but cannot be deployed until the hold is cleared.
+                    </p>
+                  )}
+
+                  {reviewStatus === 'Needs Revision' && (
+                    <div className={styles.revisionPicker}>
+                      <div className={styles.revisionPickerHead}>
+                        <strong>Documents to revise</strong>
+                        <span>
+                          {revisionIds.length} selected — the student sees this
+                          checklist on their Requirements page.
+                        </span>
+                      </div>
+
+                      <ul className={styles.revisionList}>
+                        {checklist.map((item) => {
+                          const checked = revisionIds.includes(Number(item.id));
+                          return (
+                            <li key={item.code}>
+                              <label className={styles.revisionItem}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleRevisionId(Number(item.id))}
+                                />
+                                <span className={styles.revisionLabel}>
+                                  {String(item.label || '').replace(/^RM\s+/i, '')}
+                                </span>
+                                <span className={styles.revisionSection}>
+                                  {SECTION_LABELS[item.section] || item.section || 'Academic'}
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+
+                      {revisionIds.length === 0 && (
+                        <p
+                          className={`${styles.checklistSummary} ${styles.summaryIncomplete}`}
+                          role="alert"
+                        >
+                          Tick at least one document the student has to revise.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {approvalBlocked && (
+                    <p
+                      className={`${styles.checklistSummary} ${styles.summaryIncomplete}`}
+                      role="alert"
+                    >
+                      {missingCount} required document
+                      {missingCount !== 1 ? 's are' : ' is'} still missing, so
+                      this student cannot be approved yet.
+                    </p>
+                  )}
+
                   {submission.coordinator_feedback && (
                     <div className={styles.previousFeedback}>
                       <strong>
@@ -1264,8 +1234,13 @@ function RequirementsReview() {
 
                     <button
                       className={styles.primaryButton}
-                      disabled={saving}
+                      disabled={saving || approvalBlocked}
                       onClick={handleReview}
+                      title={
+                        approvalBlocked
+                          ? 'Approve only after every required document is submitted'
+                          : undefined
+                      }
                     >
                       <CheckCircle2 size={17} />
 

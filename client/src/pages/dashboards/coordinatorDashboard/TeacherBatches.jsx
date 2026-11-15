@@ -7,9 +7,22 @@ import {
   createTeacherBatch,
   updateTeacherBatch,
   deleteTeacherBatch,
+  archiveTeacherBatch,
+  restoreTeacherBatch,
+  getArchivedBatches,
   assignStudentsToBatch,
 } from '../../../api/coordinatorApi';
-import { Pencil, Plus, Search, Trash2, UserRound, Users, X } from 'lucide-react';
+import {
+  Archive,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Search,
+  Trash2,
+  UserRound,
+  Users,
+  X,
+} from 'lucide-react';
 import styles from './TeacherBatches.module.css';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -46,6 +59,30 @@ const SCHEDULE_STATUS_META = {
 
 function scheduleStatusMeta(status) {
   return SCHEDULE_STATUS_META[status] || SCHEDULE_STATUS_META.none;
+}
+
+// A batch whose immersion is already under way or over is history in the
+// making: its label, teacher, supervisor and capacity no longer describe what
+// actually happened, so editing is blocked once it reaches these statuses.
+const EDIT_LOCKED_STATUSES = ['ongoing', 'completed'];
+
+function isBatchEditLocked(status) {
+  return EDIT_LOCKED_STATUSES.includes(status || 'none');
+}
+
+// Mirrors `resolveBatchRemoval` in teacherBatch.controller.js. The server is the
+// authority; this only decides which of the three actions the trash button
+// offers so the coordinator is never sent down a path that will be rejected.
+//   remove  -> batch is still a draft, it can be deleted outright
+//   locked  -> immersion is under way, nothing may be removed
+//   archive -> immersion is over, the batch is archived instead of removed
+function batchRemovalMode(batch) {
+  const status = batch?.schedule?.status || 'none';
+  const studentCount = (batch?.students || []).length;
+  if (status === 'completed') return 'archive';
+  if (status === 'ongoing') return 'locked';
+  if (status === 'upcoming' && studentCount > 0) return 'locked';
+  return 'remove';
 }
 
 // How full a batch is, as a whole percentage. Clamped so a batch that is
@@ -95,6 +132,14 @@ function TeacherBatches() {
   const [deleting, setDeleting] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+
+  // Archiving (completed batches) and the archived section.
+  const [archivingId, setArchivingId] = useState(null);
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [archivedBatches, setArchivedBatches] = useState([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError, setArchivedError] = useState('');
+  const [restoringId, setRestoringId] = useState(null);
 
   // Single source of truth for loading the page data. `background` keeps the
   // current list on screen (used after create/edit/delete) so the coordinator
@@ -219,7 +264,7 @@ function TeacherBatches() {
   };
 
   // Close the open modal on Escape and stop the page behind it scrolling.
-  const modalOpen = Boolean(viewing || editing || deleting || showCreateModal);
+  const modalOpen = Boolean(viewing || editing || deleting || showCreateModal || archivedOpen);
   useEffect(() => {
     if (!modalOpen) return undefined;
     const onKey = (e) => {
@@ -227,6 +272,7 @@ function TeacherBatches() {
       closeViewStudents();
       setEditing(null);
       setShowCreateModal(false);
+      setArchivedOpen(false);
       if (!deleteLoading) {
         setDeleting(null);
         setDeleteError('');
@@ -261,6 +307,59 @@ function TeacherBatches() {
       setDeleteError(err.message);
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  // The archived list is only needed when the modal is open, so it is loaded on
+  // demand (and refreshed after an archive or restore) rather than on every page
+  // load.
+  const loadArchived = useCallback(async () => {
+    setArchivedLoading(true);
+    setArchivedError('');
+    try {
+      const res = await getArchivedBatches();
+      setArchivedBatches(res.batches || []);
+    } catch (err) {
+      setArchivedError(err.message);
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, []);
+
+  const openArchived = () => {
+    setArchivedOpen(true);
+    loadArchived();
+  };
+
+  // Completed batches are archived, not removed: the roster and schedule stay
+  // intact and the batch moves to the archive modal where it can be restored.
+  const handleArchive = async (batch) => {
+    setArchivingId(batch.id);
+    setError('');
+    setMessage('');
+    try {
+      await archiveTeacherBatch(batch.id);
+      setMessage(`${batch.batch_label} archived.`);
+      await loadAll({ background: true });
+      await loadArchived();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
+  const handleRestore = async (batch) => {
+    setRestoringId(batch.id);
+    setArchivedError('');
+    try {
+      await restoreTeacherBatch(batch.id);
+      await loadAll({ background: true });
+      await loadArchived();
+    } catch (err) {
+      setArchivedError(err.message);
+    } finally {
+      setRestoringId(null);
     }
   };
 
@@ -473,6 +572,8 @@ function TeacherBatches() {
             const slotsFree = Math.max(0, maxStudents - studentCount);
             const isFull = maxStudents > 0 && studentCount >= maxStudents;
             const meta = scheduleStatusMeta(b.schedule?.status);
+            const editLocked = isBatchEditLocked(b.schedule?.status);
+            const removalMode = batchRemovalMode(b);
 
             return (
               <div
@@ -567,18 +668,192 @@ function TeacherBatches() {
                       Deploy students
                     </button>
                   )}
-                  <button className={styles.btnIcon} onClick={() => openEdit(b)} title="Edit batch">
+                  <button
+                    className={styles.btnIcon}
+                    onClick={() => openEdit(b)}
+                    disabled={editLocked}
+                    title={
+                      editLocked
+                        ? `Cannot edit this batch: immersion is ${b.schedule?.status || 'ongoing'}`
+                        : 'Edit batch'
+                    }
+                    aria-label={
+                      editLocked
+                        ? `Cannot edit ${b.batch_label}: immersion is ${b.schedule?.status || 'ongoing'}`
+                        : `Edit ${b.batch_label}`
+                    }
+                  >
                     <Pencil size={16} />
                   </button>
-                  <button className={styles.btnIconDelete} onClick={() => { setDeleting(b); setDeleteError(''); }} title="Delete batch">
-                    <Trash2 size={16} />
-                  </button>
+                  {/* One trash button, three outcomes: remove a draft batch,
+                      block while immersion is under way, or archive a finished
+                      batch. The server enforces the same rule. */}
+                  {removalMode === 'locked' ? (
+                    <button
+                      className={styles.btnIconDelete}
+                      type="button"
+                      disabled
+                      title={`Cannot remove batch: immersion is ${b.schedule?.status || 'ongoing'}`}
+                      aria-label={`Cannot remove batch ${b.batch_label}: immersion is ${b.schedule?.status || 'ongoing'}`}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  ) : removalMode === 'archive' ? (
+                    <button
+                      className={styles.btnIconDelete}
+                      type="button"
+                      onClick={() => handleArchive(b)}
+                      disabled={archivingId === b.id}
+                      title="Archive batch"
+                      aria-label={`Archive batch ${b.batch_label}`}
+                    >
+                      {archivingId === b.id
+                        ? <span className={styles.spinnerDark} aria-hidden="true" />
+                        : <Archive size={16} />}
+                    </button>
+                  ) : (
+                    <button
+                      className={styles.btnIconDelete}
+                      type="button"
+                      onClick={() => { setDeleting(b); setDeleteError(''); }}
+                      title="Remove batch"
+                      aria-label={`Remove batch ${b.batch_label}`}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
             );
           })
         )}
       </div>
+
+      {/* ARCHIVED ICON BUTTON (bottom) — completed batches live here. */}
+      <button
+        type="button"
+        className={styles.archiveToggleBtn}
+        onClick={openArchived}
+        title="View archived batches"
+        aria-label="View archived batches"
+      >
+        <Archive size={18} />
+      </button>
+
+      {/* Archived batches modal */}
+      {archivedOpen && (
+        <div
+          className={styles.modalOverlay}
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setArchivedOpen(false);
+          }}
+        >
+          <div
+            className={`${styles.modal} ${styles.modalNarrow}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="archived-batches-title"
+          >
+            <div className={styles.modalHeader}>
+              <div>
+                <h3 className={styles.modalTitle} id="archived-batches-title">
+                  Archived Batches
+                </h3>
+                <p className={styles.modalSubtitle}>
+                  Completed batches kept for their records. Restore one to edit or manage it again.
+                </p>
+              </div>
+              <button
+                type="button"
+                className={styles.modalClose}
+                onClick={() => setArchivedOpen(false)}
+                aria-label="Close"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className={styles.modalBody}>
+              {archivedError && <div className={styles.modalError}>{archivedError}</div>}
+
+              {archivedLoading ? (
+                <p className={styles.loading}>Loading archived batches…</p>
+              ) : archivedBatches.length === 0 ? (
+                <p className={styles.empty}>No archived batches.</p>
+              ) : (
+                <div className={styles.archivedList}>
+                  {archivedBatches.map((b) => (
+                    <div key={b.id} className={styles.archivedItem}>
+                      <div className={styles.archivedCopy}>
+                        <div className={styles.archivedTitleRow}>
+                          <strong>{b.batch_label}</strong>
+                          <span
+                            className={`${styles.statusBadge} ${styles[`status_${b.schedule?.status || 'none'}`]}`}
+                            title={scheduleStatusMeta(b.schedule?.status).meaning}
+                          >
+                            {scheduleStatusMeta(b.schedule?.status).label}
+                          </span>
+                        </div>
+                        <p className={styles.archivedMeta}>
+                          {b.teacher?.first_name} {b.teacher?.last_name}
+                          {' · '}
+                          {(b.students || []).length} of {b.max_students} students
+                          {b.supervisor
+                            ? ` · ${b.supervisor.first_name} ${b.supervisor.last_name}`
+                            : ''}
+                        </p>
+                        <p className={styles.archivedMeta}>
+                          {b.schedule?.has_schedule && b.schedule.start_date
+                            ? formatScheduleRange(b.schedule.start_date, b.schedule.end_date)
+                            : 'No schedule was set'}
+                          {b.archived_at
+                            ? ` · archived ${new Date(b.archived_at).toLocaleDateString(undefined, {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                              })}`
+                            : ''}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className={styles.btnSecondary}
+                        onClick={() => handleRestore(b)}
+                        disabled={restoringId === b.id}
+                        title="Restore from archive"
+                        aria-label={`Restore batch ${b.batch_label} from archive`}
+                      >
+                        {restoringId === b.id ? (
+                          <>
+                            <span className={styles.spinnerDark} aria-hidden="true" />
+                            Restoring...
+                          </>
+                        ) : (
+                          <>
+                            <RotateCcw size={15} /> Restore
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className={styles.modalFooter}>
+              <button
+                className={styles.btnSecondary}
+                type="button"
+                onClick={() => setArchivedOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Batch Students Modal — opened by clicking the batch card */}
       {viewing && (
@@ -945,7 +1220,7 @@ function TeacherBatches() {
                 </span>
                 <div>
                   <h3 className={styles.modalTitle} id="delete-batch-title">
-                    Delete this batch?
+                    Remove this batch?
                   </h3>
                   <p className={styles.modalSubtitle}>{deleting.batch_label}</p>
                 </div>
@@ -964,7 +1239,7 @@ function TeacherBatches() {
 
             <div className={styles.deleteBody}>
               <p className={styles.deleteWarning}>
-                Deleting this batch will unassign all{' '}
+                Removing this batch will unassign all{' '}
                 <strong>{(deleting.students || []).length}</strong> student
                 {(deleting.students || []).length === 1 ? '' : 's'} placed in it. The students keep
                 their records and become available for deployment again.
@@ -992,11 +1267,11 @@ function TeacherBatches() {
                 {deleteLoading ? (
                   <>
                     <span className={styles.spinner} aria-hidden="true" />
-                    Deleting...
+                    Removing...
                   </>
                 ) : (
                   <>
-                    <Trash2 size={16} /> Delete batch
+                    <Trash2 size={16} /> Remove batch
                   </>
                 )}
               </button>

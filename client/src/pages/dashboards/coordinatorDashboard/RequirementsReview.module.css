@@ -311,10 +311,13 @@
 .docBarFill { height: 100%; border-radius: 6px; background: var(--about-maroon); transition: width 0.3s ease; }
 .docBarCount { display: block; margin-top: 2px; color: var(--about-muted); font-size: 0.68rem; font-weight: 600; }
 
+.missingTag { color: var(--about-maroon); font-weight: 800; }
+
 .badge { display: inline-flex; align-items: center; min-height: 26px; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
 .badgePending, .badgeReview { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
 .badgeApproved, .badgeVerified { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
 .badgeRejected, .badgeNeeds { border: 1px solid #efc2ca; background: var(--about-blush); color: var(--about-maroon); }
+.badgeHold { border: 1px solid #c7d7f0; background: #e6eefb; color: #37568c; }
 
 .bulkBar {
   position: sticky;
@@ -426,6 +429,18 @@
 .checklistSummary { margin: 13px 0 0; padding: 11px 13px; border-radius: 12px; font-size: 0.84rem; font-weight: 700; }
 .summaryComplete { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
 .summaryIncomplete { border: 1px solid #efc2ca; background: var(--about-blush); color: var(--about-maroon); }
+
+/* "Needs Revision" file picker: which documents the student must replace. */
+.revisionPicker { margin-top: 14px; padding: 13px 14px; border: 1px solid var(--about-border); border-radius: 13px; background: #fff; }
+.revisionPickerHead { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.revisionPickerHead strong { color: var(--about-ink); font-size: 0.85rem; font-weight: 750; }
+.revisionPickerHead span { color: var(--about-muted); font-size: 0.76rem; }
+.revisionList { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.revisionItem { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--about-border); border-radius: 10px; background: #fff; cursor: pointer; }
+.revisionItem:hover { border-color: #d7b8be; background: var(--about-blush); }
+.revisionItem input { width: 15px; height: 15px; accent-color: var(--about-maroon); cursor: pointer; }
+.revisionLabel { color: var(--about-ink); font-size: 0.82rem; font-weight: 650; }
+.revisionSection { margin-left: auto; color: var(--about-muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 
 .documentGroups { display: flex; flex-direction: column; gap: 20px; }
 .documentGroup { display: flex; flex-direction: column; gap: 8px; }

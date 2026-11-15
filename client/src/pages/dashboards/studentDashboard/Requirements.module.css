@@ -77,6 +77,20 @@
   color: #b4233b;
 }
 
+/* Coordinator's "Needs Revision" checklist: what the student must replace. */
+.revisionNotice { margin-bottom: 14px; padding: 13px 15px; border: 1px solid #f0e1c8; border-radius: 12px; background: #fffaf2; color: #77531f; }
+.revisionNotice strong { font-size: 0.85rem; font-weight: 750; }
+.revisionNotice p { margin: 4px 0 9px; font-size: 0.79rem; line-height: 1.5; }
+.revisionList { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.revisionList li { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border: 1px solid #f0e1c8; border-radius: 10px; background: #fff; font-size: 0.81rem; font-weight: 650; }
+.revisionList li::before { content: '•'; color: var(--about-maroon); font-weight: 800; }
+.revisionSection { margin-left: auto; color: var(--about-muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* Coordinator's written feedback on the submission. */
+.feedbackNotice { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--about-border); border-radius: 12px; background: #fff; }
+.feedbackNotice strong { color: var(--about-ink); font-size: 0.78rem; font-weight: 750; }
+.feedbackNotice p { margin: 4px 0 0; color: var(--about-muted); font-size: 0.81rem; line-height: 1.55; white-space: pre-wrap; }
+
 /* ---------- Cards / sections ---------- */
 .section {
   position: relative;
@@ -172,6 +186,12 @@
   color: #15803d;
   background: #eaf8ef;
   border: 1px solid #bfe6cc;
+}
+
+.badgePending {
+  color: #77531f;
+  background: #fffaf2;
+  border: 1px solid #f0e1c8;
 }
 
 /* ---------- Tabs ---------- */

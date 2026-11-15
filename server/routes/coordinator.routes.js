@@ -29,6 +29,8 @@ const {
   createTeacherBatch,
   updateTeacherBatch,
   deleteTeacherBatch,
+  archiveTeacherBatch,
+  restoreTeacherBatch,
   assignApprovedStudentsToBatch,
   getMyTeacherBatches,
   getTeacherBatchStudents,
@@ -37,6 +39,7 @@ const {
   getSupervisorsListForCoordinator,
   getCoordinatorsForSupervisor,
   getCoordinatorBatchesWithAssignedStudents,
+  getArchivedCoordinatorBatches,
   getRequirementCompletedStudentsForCoordinator,
   createSupervisorRequest,
   createDeploymentRequest,
@@ -115,6 +118,8 @@ router.delete('/document-types/:id/permanent', authorize('coordinator', 'admin')
 router.post('/teacher-batches', authorize('coordinator', 'admin'), createTeacherBatch);
 router.put('/teacher-batches/:batchId', authorize('coordinator', 'admin'), updateTeacherBatch);
 router.delete('/teacher-batches/:batchId', authorize('coordinator', 'admin'), deleteTeacherBatch);
+router.post('/teacher-batches/:batchId/archive', authorize('coordinator', 'admin'), archiveTeacherBatch);
+router.post('/teacher-batches/:batchId/restore', authorize('coordinator', 'admin'), restoreTeacherBatch);
 router.post('/teacher-batches/:batchId/assign', authorize('coordinator', 'admin'), assignApprovedStudentsToBatch);
 router.get('/teacher-batches/me', authorize('teacher', 'coordinator', 'admin'), getMyTeacherBatches);
 router.get('/teacher-batches/:batchId', authorize('coordinator', 'admin'), getTeacherBatchById);
@@ -125,6 +130,7 @@ router.get('/teachers', authorize('coordinator', 'admin'), getTeachersListForCoo
 router.get('/supervisors', authorize('coordinator', 'admin'), getSupervisorsListForCoordinator);
 router.get('/coordinators', authorize('supervisor', 'coordinator', 'admin'), getCoordinatorsForSupervisor);
 router.get('/batches/assigned', authorize('coordinator', 'admin'), getCoordinatorBatchesWithAssignedStudents);
+router.get('/batches/archived', authorize('coordinator', 'admin'), getArchivedCoordinatorBatches);
 router.get('/students/completed', authorize('coordinator', 'admin'), getRequirementCompletedStudentsForCoordinator);
 
 router.post('/supervisor-requests', authorize('supervisor', 'coordinator', 'admin'), createSupervisorRequest);
