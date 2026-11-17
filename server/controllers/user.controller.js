@@ -13,6 +13,7 @@ const {
   getLockoutState,
 } = require('../utils/loginAttempts');
 const { sendLoginError } = require('../utils/loginErrors');
+const { DEFAULT_GRADE_LEVEL } = require('./coordinatorControllers/helpers/constant');
 const { readMaintenance } = require('../middleware/maintenance');
 const { logSecurityEvent, countRecentEvents, SECURITY_EVENTS, SEVERITY } = require('../utils/securityLogger');
 const tokenStore = require('../utils/tokenStore');
@@ -265,7 +266,8 @@ const registerStudent = async (req, res) => {
         firstName.trim(),
         String(middleName || '').trim(),
         lastName.trim(),
-        '12',
+        // Fixed at Grade 12; the registration form does not ask for it.
+        DEFAULT_GRADE_LEVEL,
         String(section || '').trim(),
         String(strand || '').trim(),
         String(school || '').trim(),

@@ -6,6 +6,10 @@ const {
   getOrCreateSubmission,
   serializeRequirements,
   ensureRevisionDocumentColumn,
+  ensureDefaultGradeLevel,
+  getActiveDocumentTypes,
+  buildRequirementStatuses,
+  describeOutstanding,
 } = require('../coordinatorControllers/regexes/requirementsHelpers');
 const streamifier = require('streamifier');
 const { buildImmersionDateList, loadExcludedDates } = require('../../utils/immersionDays');
@@ -36,6 +40,10 @@ const updateMyRequirements = async (req, res) => {
       );
     }
 
+    // Grade Level is fixed at Grade 12, so it is filled in here rather than
+    // asked for in the form.
+    await ensureDefaultGradeLevel(client, student.id);
+
     const data = await serializeRequirements(client, student.id);
     await client.query('COMMIT');
     res.json({ message: 'Requirements saved automatically.', ...data });
@@ -59,7 +67,10 @@ const submitMyRequirements = async (req, res) => {
 
     if (data.progress < 100) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Complete every required section before submitting.', missingDocuments: data.missingDocuments });
+      return res.status(400).json({
+        error: describeOutstanding(data.requirementStatuses),
+        missingDocuments: data.missingDocuments,
+      });
     }
 
     await client.query(
@@ -122,11 +133,20 @@ const uploadMyDocument = async (req, res) => {
     const resourceType = req.file.mimetype.startsWith('image/') ? 'image' : 'raw';
     const result = await uploadToCloudinary(req.file.buffer, resourceType);
 
+    // The document is returned with its requirement code and section, the same
+    // shape the requirements payload uses. Without the code the page cannot match
+    // the new row to its requirement, so the row keeps reading "Not uploaded"
+    // until the next full load.
     const inserted = await client.query(
-      `INSERT INTO student_documents
-       (submission_id, student_id, document_type_id, document_name, file_path, original_name, mime_type, file_size, cloudinary_public_id, cloudinary_url, resource_type, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Uploaded')
-       RETURNING *`,
+      `WITH ins AS (
+         INSERT INTO student_documents
+         (submission_id, student_id, document_type_id, document_name, file_path, original_name, mime_type, file_size, cloudinary_public_id, cloudinary_url, resource_type, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Uploaded')
+         RETURNING *
+       )
+       SELECT ins.*, dt.code, dt.section
+         FROM ins
+         JOIN document_types dt ON dt.id = ins.document_type_id`,
       [
         submission.id,
         student.id,
@@ -145,9 +165,12 @@ const uploadMyDocument = async (req, res) => {
       `INSERT INTO submission_logs (submission_id, actor_id, action, remarks) VALUES ($1,$2,'Uploaded document',$3)`,
       [submission.id, req.user.id, type.rows[0].name]
     );
-    const { progress } = await require('../coordinatorControllers/regexes/requirementsHelpers').calculateProgress(client, student.id);
+    // The whole progress payload, not just the percentage: the page keeps the
+    // per-requirement statuses and the completed/total counters in step with
+    // the upload without a reload.
+    const progressState = await require('../coordinatorControllers/regexes/requirementsHelpers').calculateProgress(client, student.id);
     await client.query('COMMIT');
-    res.status(201).json({ message: 'File uploaded successfully.', document: inserted.rows[0], progress });
+    res.status(201).json({ message: 'File uploaded successfully.', document: inserted.rows[0], ...progressState });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('uploadMyDocument error:', err);
@@ -167,7 +190,12 @@ const deleteMyDocument = async (req, res) => {
       [req.params.id, req.user.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Document not found or not authorized.' });
-    res.json({ message: 'Document deleted.' });
+    // Recompute so the page's requirement counters drop with the file.
+    const progressState = await require('../coordinatorControllers/regexes/requirementsHelpers').calculateProgress(
+      pool,
+      result.rows[0].student_id
+    );
+    res.json({ message: 'Document deleted.', ...progressState });
   } catch (err) {
     console.error('deleteMyDocument error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -229,19 +257,23 @@ const getProgress = async (req, res) => {
     const submission = await getOrCreateSubmission(client, student, req.user.id);
     const requirementsApproved = submission.status === 'Approved';
 
-    // Requirements checklist is driven by the coordinator's ACTIVE document
-    // types only, so deactivating a type immediately updates the student total.
-    const requirementsCounts = await client.query(
-      `SELECT
-         (SELECT COUNT(*)::int FROM document_types WHERE is_active = TRUE) AS required,
-         (SELECT COUNT(*)::int
-            FROM student_documents sd
-            JOIN document_types dt ON dt.id = sd.document_type_id
-           WHERE sd.student_id = $1 AND dt.is_active = TRUE) AS uploaded`,
+    // Requirements checklist is driven by the coordinator's ACTIVE requirement
+    // list only, so deactivating one immediately updates the student total.
+    // Form requirements (Personal Information, Guardian & Emergency) count as
+    // done once their fields are filled in; file requirements once uploaded.
+    const activeTypes = await getActiveDocumentTypes(client);
+    const studentRow = await client.query('SELECT * FROM students WHERE id = $1', [studentId]);
+    const uploadRows = await client.query(
+      `SELECT DISTINCT document_type_id FROM student_documents WHERE student_id = $1`,
       [studentId]
     );
-    const requiredRequirementCount = requirementsCounts.rows[0]?.required || 0;
-    const uploadedRequirementCount = requirementsCounts.rows[0]?.uploaded || 0;
+    const requirementStatuses = buildRequirementStatuses(
+      activeTypes,
+      studentRow.rows[0] || {},
+      new Set(uploadRows.rows.map((row) => row.document_type_id))
+    );
+    const requiredRequirementCount = requirementStatuses.length;
+    const uploadedRequirementCount = requirementStatuses.filter((status) => status.completed).length;
 
     // --- Scheduled days: expand work_immersion_schedules through the shared
     // builder, so weekends, Philippine holidays and supervisor-blocked dates

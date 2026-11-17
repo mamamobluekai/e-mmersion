@@ -47,7 +47,8 @@ const REVIEW_STATUSES = [
 const HOLD_STATUS = 'Hold';
 
 const SECTION_LABELS = {
-  guardian: 'Guardian & Consent',
+  personal: 'Personal Information',
+  guardian: 'Guardian & Emergency',
   medical: 'Medical',
   academic: 'Academic',
 };
@@ -103,56 +104,86 @@ const getFileType = (mime) => {
   return 'FILE';
 };
 
+// Open the file in a browser tab instead of saving it. Cloudinary serves raw
+// uploads as attachments unless asked otherwise, so fl_inline is added to the
+// delivery URL: PDFs and images then render in the tab, and nothing is written
+// to disk unless the user saves it from there.
+const viewUrl = (url) => String(url || '')
+  .replace('/upload/', '/upload/fl_inline/')
+  .replace('/upload/fl_inline/fl_inline/', '/upload/fl_inline/');
+
 const FALLBACK_DOC_TYPES = [
+  {
+    code: 'personal_information',
+    label: 'Personal Information',
+    section: 'personal',
+    inputType: 'form',
+  },
+  {
+    code: 'guardian_emergency',
+    label: 'Guardian & Emergency',
+    section: 'guardian',
+    inputType: 'form',
+  },
   {
     code: 'guardian_consent',
     label: 'Guardian Consent',
     section: 'guardian',
+    inputType: 'file',
   },
   {
     code: 'medical_certificate',
     label: 'Medical Certificate',
     section: 'medical',
+    inputType: 'file',
   },
   {
     code: 'accident_insurance',
     label: 'Accident Insurance',
     section: 'medical',
+    inputType: 'file',
   },
   {
     code: 'vaccination_record',
     label: 'Vaccination Record',
     section: 'medical',
+    inputType: 'file',
   },
   {
     code: 'emergency_contact_form',
     label: 'Emergency Contact',
     section: 'medical',
+    inputType: 'file',
   },
   {
     code: 'form_138',
     label: 'Form 138',
     section: 'academic',
+    inputType: 'file',
   },
   {
     code: 'good_moral',
     label: 'Good Moral',
     section: 'academic',
+    inputType: 'file',
   },
   {
     code: 'psa_birth_certificate',
     label: 'PSA Birth Certificate',
     section: 'academic',
+    inputType: 'file',
   },
   {
     code: 'id_picture',
     label: 'ID Picture',
     section: 'academic',
+    inputType: 'file',
   },
   {
     code: 'student_profile_form',
     label: 'Student Profile',
     section: 'academic',
+    inputType: 'file',
   },
 ];
 
@@ -284,6 +315,7 @@ function RequirementsReview() {
               label: dt.name,
               section: dt.section || 'academic',
               description: dt.description || '',
+              inputType: dt.input_type || 'file',
               isActive: dt.is_active !== false,
             })));
           }
@@ -376,6 +408,26 @@ function RequirementsReview() {
     ));
   };
 
+  // Shortcut on the checklist row: flag this requirement and open the review on
+  // "Needs Revision". Clicking again clears the flag; the student is never
+  // blocked on a status the coordinator did not save.
+  const handleFlagRevision = (item) => {
+    const typeId = Number(item.id);
+    if (!Number.isInteger(typeId) || typeId <= 0) return;
+
+    const alreadyFlagged = revisionIds.includes(typeId);
+
+    setRevisionIds((prev) => (
+      prev.includes(typeId)
+        ? prev.filter((id) => id !== typeId)
+        : [...prev, typeId]
+    ));
+
+    if (!alreadyFlagged) {
+      setReviewStatus('Needs Revision');
+    }
+  };
+
   const refreshDocTypes = async () => {
     try {
       const typesData = await getDocumentTypes({ all: true });
@@ -386,6 +438,7 @@ function RequirementsReview() {
           label: dt.name,
           section: dt.section || 'academic',
           description: dt.description || '',
+          inputType: dt.input_type || 'file',
           isActive: dt.is_active !== false,
         })));
       }
@@ -510,15 +563,33 @@ function RequirementsReview() {
     acc[key].push(doc);
     return acc;
   }, {});
+  // Form requirements (Personal Information, Guardian & Emergency) have no file
+  // behind them: the server reports them satisfied once the student filled in
+  // the matching fields, so the checklist follows that verdict instead of
+  // looking for an upload that will never exist.
+  const requirementStatusByCode = new Map(
+    (studentData?.requirementStatuses || []).map((status) => [
+      String(status.code || '').toLowerCase(),
+      status,
+    ]),
+  );
 
   const activeDocTypes = docTypes.filter((d) => d.isActive !== false);
-  const removedDocTypes = docTypes.filter((d) => d.isActive === false);
-  const checklist = activeDocTypes.map((type) => ({
-    ...type,
-    uploaded: uploadedCodes.has(type.code.toLowerCase()),
-    docs: documentsByCode[type.code.toLowerCase()] || [],
-  }));
 
+  const removedDocTypes = docTypes.filter((d) => d.isActive === false);
+
+  const checklist = activeDocTypes.map((type) => {
+    const key = String(type.code || '').toLowerCase();
+    const status = requirementStatusByCode.get(key);
+    const isForm = status?.input_type === 'form' || type.inputType === 'form';
+    return {
+      ...type,
+      isForm,
+      uploaded: isForm ? !!status?.completed : uploadedCodes.has(key),
+      missingFields: status?.missing_fields || [],
+      docs: documentsByCode[key] || [],
+    };
+  });
   const uploadedCount = checklist.filter((item) => item.uploaded).length;
   const missingCount = checklist.length - uploadedCount;
 
@@ -919,7 +990,8 @@ function RequirementsReview() {
                         >
                           <option value="academic">Academic</option>
                           <option value="medical">Medical</option>
-                          <option value="guardian">Guardian & Consent</option>
+                          <option value="personal">Personal Information</option>
+                          <option value="guardian">Guardian &amp; Emergency</option>
                           <option value="other">Other</option>
                         </select>
                       </div>
@@ -979,6 +1051,12 @@ function RequirementsReview() {
                           <span className={styles.configSectionTag}>
                             {SECTION_LABELS[dt.section] || dt.section || 'Academic'}
                           </span>
+
+                          {/* Form requirements are satisfied by the student's own
+                              information, not an upload, so they are labelled. */}
+                          {dt.inputType === 'form' && (
+                            <span className={styles.configSectionTag}>Form</span>
+                          )}
 
                           {dt.description && (
                             <span className={styles.configItemDesc}>
@@ -1269,7 +1347,8 @@ function RequirementsReview() {
 
                       <p>
                         Tick marks show which required documents were
-                        submitted. Review, verify, or reject uploaded files here.
+                        submitted. Review or verify uploaded files, or mark one
+                        for revision here.
                       </p>
                     </div>
 
@@ -1287,6 +1366,7 @@ function RequirementsReview() {
                   <ul className={styles.checklist}>
                     {checklist.map((item) => {
                       const primaryDoc = item.docs[0];
+                      const flagged = revisionIds.includes(Number(item.id));
                       return (
                         <li
                           key={item.code}
@@ -1308,6 +1388,13 @@ function RequirementsReview() {
                             <span className={styles.checklistLabel}>
                               {String(item.label || '').replace(/^RM\s+/i, '')}
                             </span>
+                            {item.isForm ? (
+                              <span className={styles.checklistMeta}>
+                                {item.uploaded
+                                  ? 'Filled in by the student'
+                                  : `Still to fill up: ${(item.missingFields || []).join(', ') || 'this section'}`}
+                              </span>
+                            ) : null}
                             {primaryDoc ? (
                               <span className={styles.checklistMeta}>
                                 {primaryDoc.original_name || primaryDoc.document_name || 'Document'}
@@ -1333,12 +1420,30 @@ function RequirementsReview() {
                               </button>
                               <button
                                 type="button"
-                                className={styles.rejectButton}
-                                onClick={() => handleVerifyDoc(primaryDoc.id, 'Rejected')}
+                                className={styles.revisionButton}
+                                aria-pressed={flagged}
+                                onClick={() => handleFlagRevision(item)}
+                                title={
+                                  flagged
+                                    ? 'Remove this requirement from the revision list'
+                                    : 'Ask the student to submit this requirement again'
+                                }
                               >
                                 <XCircle size={15} />
-                                Reject
+                                Needs Revision
                               </button>
+                              {primaryDoc.cloudinary_url ? (
+                                <a
+                                  className={styles.viewButton}
+                                  href={viewUrl(primaryDoc.cloudinary_url)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="Open the file in a new tab without saving it"
+                                >
+                                  <Eye size={15} />
+                                  View
+                                </a>
+                              ) : null}
                               {primaryDoc.cloudinary_url ? (
                                 <a
                                   className={styles.downloadButton}
@@ -1353,7 +1458,13 @@ function RequirementsReview() {
                               ) : null}
                             </div>
                           ) : (
-                            <span className={styles.checklistState}>Missing</span>
+                            <span className={styles.checklistState}>
+                              {item.isForm
+                                ? item.uploaded
+                                  ? 'Filled in'
+                                  : 'Not filled in'
+                                : 'Missing'}
+                            </span>
                           )}
                         </li>
                       );

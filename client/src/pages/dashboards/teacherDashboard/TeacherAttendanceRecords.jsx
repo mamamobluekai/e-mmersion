@@ -1,6 +1,6 @@
 import { RefreshCw } from 'lucide-react';
 import { useTeacherAttendanceReport } from '../../../hooks/useTeacherAttendanceReport';
-import { labelForStatus, hasAppeal, isFutureDate, formatShortDate } from '../../../utils/attendanceAnalytics';
+import { getAttendanceLabel, hasAppeal, isFutureDate, formatShortDate } from '../../../utils/attendanceAnalytics';
 import styles from './AttendanceReportsRecords.module.css';
 
 // Attendance records grid for the batch selected in the sidebar: every enrolled
@@ -41,7 +41,7 @@ function TeacherAttendanceRecords({ variant = 'panel', report: reportProp }) {
                         </td>
                       );
                     }
-                    const value = labelForStatus(record?.status);
+                    const value = getAttendanceLabel(record?.status, date);
                     return <td key={date} className={styles.statusCell}><span className={`${styles.status} ${value === 'Absent' ? styles.absent : value === 'Late' ? styles.late : value === 'Present' || value === 'In' ? styles.present : styles.unrecorded}`}>{value}</span>{appealed && <span className={styles.appealMark}>Appeal</span>}</td>;
                   })}
                 </tr>

@@ -130,8 +130,10 @@ export async function listSubmissions({ status = 'all', search = '', strand = ''
   return apiFetch(`/submissions${qs ? `?${qs}` : ''}`);
 }
 
-export async function reviewSubmission(id, { status, remarks }) {
-  return apiFetch(`/submissions/${id}/review`, jsonBody({ status, remarks }));
+export async function reviewSubmission(id, { status, remarks, revision_document_ids }) {
+  // revision_document_ids is what "Needs Revision" hangs on: dropping it here
+  // made the server reject a perfectly valid selection.
+  return apiFetch(`/submissions/${id}/review`, jsonBody({ status, remarks, revision_document_ids }));
 }
 
 export async function bulkReviewSubmissions(submissionIds, { status, remarks }) {

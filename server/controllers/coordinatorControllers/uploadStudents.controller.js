@@ -2,6 +2,7 @@ const xlsx = require('xlsx');
 const pool = require('../../db');
 const { NO_PASSWORD_SENTINEL } = require('../../utils/passwordPolicy');
 const { normalizeEmail } = require('../../utils/normalizeEmail');
+const { DEFAULT_GRADE_LEVEL } = require('./helpers/constant');
 
 const uploadStudentsExcel = async (req, res) => {
   try {
@@ -96,7 +97,8 @@ const uploadStudentsExcel = async (req, res) => {
             firstName,
             lastName,
             middleName,
-            '12',
+            // Fixed at Grade 12: the sheet does not carry it.
+            DEFAULT_GRADE_LEVEL,
             section,
             strand,
             school,

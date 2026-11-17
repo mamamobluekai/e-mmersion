@@ -66,8 +66,9 @@
 .primaryButton,
 .secondaryButton,
 .verifyButton,
-.rejectButton,
+.revisionButton,
 .downloadButton,
+.viewButton,
 .reviewButton,
 .addReqBtn,
 .saveReqBtn,
@@ -114,6 +115,7 @@
 .cancelReqBtn,
 .confirmCancel,
 .downloadButton,
+.viewButton,
 .bulkClearBtn {
   min-height: 38px;
   padding: 0 14px;
@@ -131,6 +133,7 @@
 .cancelReqBtn:hover,
 .confirmCancel:hover,
 .downloadButton:hover,
+.viewButton:hover,
 .bulkClearBtn:hover:not(:disabled) {
   transform: translateY(-1px);
   border-color: #d7b8be;
@@ -149,7 +152,7 @@
   font-weight: 700;
 }
 
-.rejectButton,
+.revisionButton,
 .bulkRejectBtn {
   min-height: 36px;
   padding: 0 12px;
@@ -163,9 +166,16 @@
 
 .verifyButton:hover,
 .bulkApproveBtn:hover:not(:disabled),
-.rejectButton:hover,
+.revisionButton:hover,
 .bulkRejectBtn:hover:not(:disabled) {
   transform: translateY(-1px);
+}
+
+/* Flagged rows show they are already on the revision list. */
+.revisionButton[aria-pressed='true'] {
+  border-color: var(--about-maroon);
+  background: var(--about-maroon);
+  color: #fff;
 }
 
 .primaryButton:disabled,

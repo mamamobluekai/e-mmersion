@@ -324,6 +324,9 @@ const getStudentProgress = async (req, res) => {
       teacherBatchId = tbsRes.rows[0]?.teacher_batch_id || null;
     }
     // ---- 1. REQUIREMENTS (each document type + the student's file state) ----
+    // Form requirements (Personal Information, Guardian & Emergency) are filled
+    // in on the Requirements page rather than uploaded, so they are left out of
+    // this upload list: there is no file for the supervisor to check.
     const reqRes = await pool.query(
       `SELECT dt.id, dt.code, dt.name, dt.section, dt.sort_order,
               sd.id AS document_id, sd.status AS document_status, sd.original_name,
@@ -332,6 +335,7 @@ const getStudentProgress = async (req, res) => {
        LEFT JOIN student_documents sd
               ON sd.document_type_id = dt.id AND sd.student_id = $1
        WHERE dt.is_active IS NOT FALSE
+         AND COALESCE(dt.input_type, 'file') <> 'form'
        ORDER BY dt.sort_order, dt.id`,
       [studentProfileId]
     );
@@ -468,8 +472,11 @@ const getSupervisorBatchStudents = async (req, res) => {
 
       // Summary rates for the list graph: requirements, attendance, documentation.
       // The same immersion days the detail modal uses, so the two always agree.
+      // Form requirements are excluded because they have no file to verify, and
+      // this rate is measured from verified uploads.
       const dtRes = await pool.query(
-        'SELECT COUNT(*)::int AS total FROM document_types WHERE is_active IS NOT FALSE'
+        `SELECT COUNT(*)::int AS total FROM document_types
+          WHERE is_active IS NOT FALSE AND COALESCE(input_type, 'file') <> 'form'`
       );
       const requirementsTotal = Number(dtRes.rows[0]?.total || 0);
 

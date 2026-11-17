@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   getMyRequirements,
   updateMyRequirements,
@@ -41,24 +41,50 @@ const FALLBACK_DOCS = [
   { code: 'student_profile_form', section: 'academic', name: 'Student Profile Form' },
 ];
 
-// Philippine mobile numbers: 09XXXXXXXXX, optionally +63 or 63 prefix, with
-// spaces/dashes/parentheses allowed. Anything else is rejected.
-const PHONE_PATTERN = /^(?:\+?63|0)?9\d{9}$/;
+// Philippine mobile numbers: 09XXXXXXXXX. Whatever is typed or pasted, the
+// stored value is reduced to those 11 digits - spaces, dashes, brackets and a
+// +63/63 country code are dropped, and a bare 9XXXXXXXXX gains its leading zero.
+const PHONE_MAX = 11;
+const PHONE_PATTERN = /^09\d{9}$/;
 
-function normalizePhone(value) {
-  return String(value || '').replace(/[\s\-().]/g, '');
-}
+const normalizePhoneInput = (value) => {
+  let digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.startsWith('63') && digits.length > 10) digits = digits.slice(2);
+  if (digits.length === 10 && digits.startsWith('9')) digits = `0${digits}`;
+  return digits.slice(0, PHONE_MAX);
+};
 
-function isValidPhone(value) {
-  const digits = normalizePhone(value);
-  return PHONE_PATTERN.test(digits);
-}
+// What is wrong with the number, in words. A blank field is not a problem here:
+// the required-field check reports that.
+const phoneProblem = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const digits = normalizePhoneInput(raw);
+  if (digits.length < PHONE_MAX) {
+    return `incomplete: ${digits.length} of ${PHONE_MAX} digits`;
+  }
+  if (!PHONE_PATTERN.test(digits)) return 'must start with 09 (e.g. 09171234567)';
+  return null;
+};
 
 const PHONE_FIELDS = [
   'contact_number',
   'guardian_contact',
   'emergency_contact_number',
 ];
+
+// Suffix is picked from a list, not typed, so the stored value stays one of
+// these. "None" is the default and is stored as an empty string: the name
+// builders join first/middle/last/suffix and drop the empty part.
+const SUFFIX_OPTIONS = ['', 'Jr.', 'Sr.'];
+
+// "November 15, 2026" rather than the locale's numeric 11/15/2026, which is
+// hard to read at a glance.
+const formatDate = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+};
 
 const PHONE_LABELS = {
   contact_number: 'Contact Number',
@@ -67,24 +93,35 @@ const PHONE_LABELS = {
 };
 
 // Whole-number fields: digits only, so letters/decimals can never be entered.
-const INT_FIELDS = {
-  age: { label: 'Age', min: 1, max: 120, placeholder: '18' },
-  student_number: { label: 'Student Number', min: null, max: null, placeholder: 'e.g., 2024-001' },
-};
+// A work immersion student is Grade 12, so the youngest accepted age is 17.
+const MIN_AGE = 17;
 
-const isValidInt = (value, { min, max }) => {
-  const trimmed = String(value ?? '').trim();
-  if (!/^\d+$/.test(trimmed)) return false;
-  const n = Number(trimmed);
-  if (min != null && n < min) return false;
-  if (max != null && n > max) return false;
-  return true;
+const INT_FIELDS = {
+  age: { label: 'Age', min: MIN_AGE, max: 120, placeholder: '18' },
+  student_number: { label: 'Student Number', min: null, max: null, placeholder: 'e.g., 2024-001' },
 };
 
 const isValidStudentNumber = (value) => {
   const trimmed = String(value ?? '').trim();
   // Allows "2024-00123" style ids; digits and separators only.
   return /^[\d]+([-/]\d+)*$/.test(trimmed);
+};
+
+// What is wrong with the value, in words, so both the field hint and the save
+// guard say the same specific thing. An empty field is not a problem here: the
+// required-field check reports that.
+const intProblem = (field, value) => {
+  const config = INT_FIELDS[field];
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return null;
+  if (field === 'student_number') {
+    return isValidStudentNumber(trimmed) ? null : `${config.label}: digits only (e.g. 2024-001)`;
+  }
+  if (!/^\d+$/.test(trimmed)) return `${config.label} must be a whole number`;
+  const n = Number(trimmed);
+  if (n < config.min) return `${config.label} must be ${config.min} or above`;
+  if (n > config.max) return `${config.label} must be ${config.max} or below`;
+  return null;
 };
 
 function Requirements() {
@@ -95,33 +132,33 @@ function Requirements() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [uploading, setUploading] = useState(null);
+  const [uploading, setUploading] = useState({});
   const [uploadFile, setUploadFile] = useState({});
   const [deleting, setDeleting] = useState(null);
   const [phoneErrors, setPhoneErrors] = useState({});
   const [intErrors, setIntErrors] = useState({});
+  // Which phone fields have been left, so a half-typed number is not flagged
+  // until the student has finished with it.
+  const [phoneTouched, setPhoneTouched] = useState({});
+  // The uploaded document a removal is waiting on, if any.
+  const [confirmRemove, setConfirmRemove] = useState(null);
+  // A filed submission locks the form until the student asks to edit it.
+  const [editingSubmission, setEditingSubmission] = useState(false);
 
-  // Live-check every phone field so the student sees the problem while typing.
+  // Live-check every phone field. The message says what is actually wrong - an
+  // all-digit number of the wrong length used to read as "numbers only", which
+  // is what made a correctly typed number look rejected.
   const validatePhone = (field, value) => {
-    if (!String(value || '').trim()) {
-      setPhoneErrors((prev) => {
-        if (!(field in prev)) return prev;
-        const next = { ...prev };
-        delete next[field];
-        return next;
-      });
-      return true;
-    }
-    const valid = isValidPhone(value);
+    const problem = phoneProblem(value);
     setPhoneErrors((prev) => {
-      if (valid && !(field in prev)) return prev;
-      if (valid && prev[field] === PHONE_LABELS[field]) return prev;
+      if (!problem && !(field in prev)) return prev;
+      if (problem && prev[field] === problem) return prev;
       const next = { ...prev };
-      if (valid) delete next[field];
-      else next[field] = PHONE_LABELS[field];
+      if (problem) next[field] = problem;
+      else delete next[field];
       return next;
     });
-    return valid;
+    return !problem;
   };
 
   useEffect(() => {
@@ -142,6 +179,9 @@ function Requirements() {
               name: dt.name,
               section: dt.section || 'academic',
               description: dt.description || '',
+              // 'form' requirements are typed into the tabs above, never
+              // uploaded, so the document lists have to skip them.
+              inputType: dt.input_type || 'file',
             })));
           }
         }
@@ -158,6 +198,10 @@ function Requirements() {
   const documents = data?.documents || [];
   const progress = data?.progress ?? 0;
   const sections = data?.sections || {};
+
+  // Anything outside the suffix list (rows saved before it became a dropdown)
+  // reads as None.
+  const suffixValue = SUFFIX_OPTIONS.includes(student.suffix) ? student.suffix : '';
 
   // Documents the coordinator ticked for revision when the submission was sent
   // back. Comes resolved (id/name/section) from the API.
@@ -195,6 +239,39 @@ function Requirements() {
     documents.some((sd) => sd.code === d.code)
   ).length;
 
+  // Every active requirement with whether the student has satisfied it. File
+  // requirements are done when uploaded; form requirements (Personal
+  // Information, Guardian & Emergency) when their fields are filled in, so the
+  // counter below reaches 100% without an upload for them.
+  const requirementStatuses = data?.requirementStatuses || [];
+  const requirementSummary = data?.requirementSummary || null;
+  const totalRequirements = requirementSummary?.total ?? docTypes.length;
+  const completedRequirements = requirementSummary?.completed ?? uploadCount;
+  const missingRequirements =
+    requirementSummary?.missing ?? totalRequirements - completedRequirements;
+
+  /**
+   * Fields a form requirement is still missing, rechecked against what is
+   * currently typed so the notice empties as the student fills the form in. File
+   * requirements have no fields, so the server's list is used as-is.
+   */
+  const missingFieldsFor = (status) => {
+    const fields = status.fields || [];
+    if (fields.length === 0) return status.missing_fields || [];
+    return fields
+      .filter((field) => !String(student[field.key] ?? '').trim())
+      .map((field) => field.label);
+  };
+
+  // Whether a requirement reads as satisfied right now. Form requirements follow
+  // the fields on screen; the server's verdict still decides whether submitting
+  // is allowed.
+  const isSatisfied = (status) =>
+    status.input_type === 'form' ? missingFieldsFor(status).length === 0 : !!status.completed;
+
+  const missingInSection = (section) =>
+    requirementStatuses.filter((status) => status.section === section && !isSatisfied(status)).length;
+
   // Maroon progress, turning gold then green as the uploads complete.
   const progressColor =
     progress >= 100
@@ -208,29 +285,24 @@ function Requirements() {
     const raw = String(value ?? '');
     // Drop invalid characters as they are typed so the box stays clean.
     const cleaned = field === 'student_number' ? raw.replace(/[^\d\-/]/g, '') : raw.replace(/\D/g, '');
-    if (cleaned !== raw) {
-      setData((prev) => ({ ...prev, student: { ...prev.student, [field]: cleaned } }));
-    }
-    if (!cleaned) {
-      setIntErrors((prev) => {
-        if (!(field in prev)) return prev;
-        const next = { ...prev };
-        delete next[field];
-        return next;
-      });
-      return true;
-    }
-    const config = INT_FIELDS[field];
-    const valid =
-      field === 'student_number' ? isValidStudentNumber(cleaned) : isValidInt(cleaned, config);
+    // Always write the cleaned value back, even when it is unchanged: these
+    // inputs are controlled, so a keystroke that leaves state untouched gives
+    // React nothing to render and it puts the old value straight back - which
+    // reads as "the field will not accept typing".
+    setData((prev) => ({ ...prev, student: { ...prev.student, [field]: cleaned } }));
+
+    // An age below the minimum is flagged as soon as it is typed, so the student
+    // is not told only after saving.
+    const problem = intProblem(field, cleaned);
     setIntErrors((prev) => {
-      if (valid && !(field in prev)) return prev;
+      if (!problem && !(field in prev)) return prev;
+      if (problem && prev[field] === problem) return prev;
       const next = { ...prev };
-      if (valid) delete next[field];
-      else next[field] = config.label;
+      if (problem) next[field] = problem;
+      else delete next[field];
       return next;
     });
-    return valid;
+    return !problem;
   };
 
   const intFieldProps = (field) => {
@@ -241,8 +313,6 @@ function Requirements() {
       onChange: (e) => validateInt(field, e.target.value),
       placeholder: config.placeholder,
       inputMode: 'numeric',
-      min: config.min ?? undefined,
-      max: config.max ?? undefined,
       'aria-invalid': !!error,
       'aria-describedby': error ? `${field}-error` : undefined,
       className: error ? `${styles.input} ${styles.inputError}` : styles.input,
@@ -250,16 +320,11 @@ function Requirements() {
   };
 
   const intErrorText = (field) => {
-    const error = intErrors[field];
-    if (!error) return null;
-    const config = INT_FIELDS[field];
-    const hint =
-      field === 'age'
-        ? `${config.label}: whole number between ${config.min} and ${config.max}`
-        : `${config.label}: digits only (e.g. 2024-00123)`;
+    const problem = intErrors[field];
+    if (!problem) return null;
     return (
       <div className={styles.fieldError} id={`${field}-error`}>
-        {hint}
+        {problem}
       </div>
     );
   };
@@ -272,27 +337,35 @@ function Requirements() {
     if (PHONE_FIELDS.includes(field)) validatePhone(field, value);
   };
 
-  // Shared props for the three phone inputs: numeric keypad, live error text.
+  // Shared props for the three phone inputs: digits only, numeric keypad.
   const phoneFieldProps = (field) => {
     const error = phoneErrors[field];
     return {
-      value: student[field] || '',
-      onChange: (e) => handleFieldChange(field, e.target.value),
+      value: normalizePhoneInput(student[field]),
+      onChange: (e) => handleFieldChange(field, normalizePhoneInput(e.target.value)),
+      onBlur: () => setPhoneTouched((prev) => (prev[field] ? prev : { ...prev, [field]: true })),
       placeholder: '09XXXXXXXXX',
-      inputMode: 'tel',
-      pattern: '[0-9+()\\- ]*',
+      inputMode: 'numeric',
+      maxLength: PHONE_MAX,
       'aria-invalid': !!error,
       'aria-describedby': error ? `${field}-error` : undefined,
       className: error ? `${styles.input} ${styles.inputError}` : styles.input,
     };
   };
 
-  const phoneErrorText = (field) =>
-    phoneErrors[field] ? (
+  const phoneErrorText = (field) => {
+    const problem = phoneErrors[field];
+    if (!problem) return null;
+    // Quiet until the student leaves the field or the number is complete: an
+    // error under a half-typed number reads as a rejection.
+    const digits = normalizePhoneInput(student[field]).length;
+    if (!phoneTouched[field] && digits < PHONE_MAX) return null;
+    return (
       <div className={styles.fieldError} id={`${field}-error`}>
-        {phoneErrors[field]}: numbers only (e.g. 09171234567)
+        {problem}
       </div>
-    ) : null;
+    );
+  };
 
   // Any phone or whole-number field still holding an invalid value blocks
   // saving and submitting, so bad data never reaches the server.
@@ -301,10 +374,10 @@ function Requirements() {
 
   const guardFields = () => {
     if (invalidPhoneField) {
-      return `${PHONE_LABELS[invalidPhoneField]} must be numbers only (e.g. 09171234567).`;
+      return `${PHONE_LABELS[invalidPhoneField]} ${phoneErrors[invalidPhoneField]}.`;
     }
     if (invalidIntField) {
-      return `${INT_FIELDS[invalidIntField].label} must be a valid whole number.`;
+      return `${intErrors[invalidIntField]}.`;
     }
     return null;
   };
@@ -319,7 +392,18 @@ function Requirements() {
     setError('');
     setMessage('');
     try {
-      const result = await updateMyRequirements(student);
+      // The suffix select only offers the list values, so whatever is on screen
+      // is what gets stored (older free-text values become None). Phone numbers
+      // are stored as the 11 digits the field shows, whatever the row held.
+      const phoneValues = PHONE_FIELDS.reduce(
+        (acc, field) => ({ ...acc, [field]: normalizePhoneInput(student[field]) }),
+        {}
+      );
+      const result = await updateMyRequirements({
+        ...student,
+        ...phoneValues,
+        suffix: suffixValue,
+      });
       setData((prev) => ({ ...prev, ...result }));
       setMessage('Progress saved automatically.');
     } catch (err) {
@@ -335,12 +419,35 @@ function Requirements() {
       setError(blocked);
       return;
     }
+    // Form requirements are satisfied by the fields above, so a student can be
+    // blocked here with nothing left to upload. Name what is outstanding instead
+    // of letting the request fail with a generic message.
+    if (missingRequirements > 0) {
+      const outstanding = requirementStatuses
+        .filter((status) => !status.completed)
+        .map((status) => status.name);
+      setError(
+        outstanding.length > 0
+          ? `Complete every required section before submitting. Still missing: ${outstanding.join(', ')}.`
+          : 'Complete every required section before submitting.'
+      );
+      return;
+    }
     setSubmitting(true);
     setError('');
     setMessage('');
     try {
       const result = await submitMyRequirements();
-      setData((prev) => ({ ...prev, submission: { ...prev.submission, status: result.status } }));
+      setData((prev) => ({
+        ...prev,
+        submission: { ...prev.submission, status: result.status },
+        // The coordinator's revision list is cleared server-side on submit, so
+        // the highlight goes with it.
+        revisionDocuments: [],
+      }));
+      // Back to read-only: the submission is filed again, so the primary action
+      // returns to "Edit Submission".
+      setEditingSubmission(false);
       setMessage(result.message);
     } catch (err) {
       setError(err.message);
@@ -352,7 +459,9 @@ function Requirements() {
   const handleUpload = async (docCode) => {
     const file = uploadFile[docCode];
     if (!file) return;
-    setUploading(docCode);
+    // Tracked per document: a single flag would be overwritten by the next
+    // upload, so the first file's spinner would stop while it was still going.
+    setUploading((prev) => ({ ...prev, [docCode]: true }));
     setError('');
     setMessage('');
     try {
@@ -361,26 +470,47 @@ function Requirements() {
         ...prev,
         documents: [...prev.documents, result.document],
         progress: result.progress,
-        missingDocuments: docTypes.map((d) => d.code),
+        missingDocuments: result.missingDocuments || docTypes.map((d) => d.code),
+        // Uploads change how many requirements are satisfied, so the counters
+        // and the tab flags are refreshed from the server response.
+        requirementStatuses: result.requirementStatuses || prev.requirementStatuses,
+        requirementSummary: result.requirementSummary || prev.requirementSummary,
+        sections: result.sections || prev.sections,
       }));
       setMessage(`${file.name} uploaded successfully.`);
       setUploadFile((p) => ({ ...p, [docCode]: null }));
     } catch (err) {
       setError(err.message);
     } finally {
-      setUploading(null);
+      setUploading((prev) => ({ ...prev, [docCode]: false }));
     }
   };
 
-  const handleDelete = async (docId) => {
-    if (!window.confirm('Remove this uploaded document?')) return;
-    setDeleting(docId);
+  const handleDelete = (doc) => {
+    if (!doc) return;
+    setError('');
+    setMessage('');
+    // A confirmation panel, not a browser pop-up: the row stays readable behind
+    // it and the student sees which file is about to go.
+    setConfirmRemove(doc);
+  };
+
+  const confirmRemoveFile = async () => {
+    const doc = confirmRemove;
+    if (!doc) return;
+    setConfirmRemove(null);
+    setDeleting(doc.id);
     setError('');
     try {
-      await deleteMyDocument(docId);
+      const result = await deleteMyDocument(doc.id);
       setData((prev) => ({
         ...prev,
-        documents: prev.documents.filter((d) => d.id !== docId),
+        documents: prev.documents.filter((d) => d.id !== doc.id),
+        progress: result.progress ?? prev.progress,
+        missingDocuments: result.missingDocuments || prev.missingDocuments,
+        requirementStatuses: result.requirementStatuses || prev.requirementStatuses,
+        requirementSummary: result.requirementSummary || prev.requirementSummary,
+        sections: result.sections || prev.sections,
       }));
       setMessage('Document removed.');
     } catch (err) {
@@ -399,26 +529,42 @@ function Requirements() {
       return;
     }
     setUploadFile((p) => ({ ...p, [docCode]: file }));
+    // Clear the picker so choosing the same file again still fires a change
+    // ("Edit File" invites exactly that).
+    e.target.value = '';
   };
 
   const docsBySection = (section) => {
-    return docTypes.filter((d) => d.section === section).map((type) => ({
-      ...type,
-      doc: documents.find((sd) => sd.code === type.code) || null,
-    }));
+    return docTypes
+      .filter((d) => d.section === section && String(d.inputType || 'file') !== 'form')
+      .map((type) => ({
+        ...type,
+        doc: documents.find((sd) => sd.code === type.code) || null,
+      }));
   };
 
   const renderDocItem = (item) => {
     const doc = item.doc;
     const disabled = !!doc;
-    const isUploadingDoc = uploading === item.code;
+    // Per document, so several files can be uploading at once and each keeps its
+    // own spinner.
+    const isUploadingDoc = !!uploading[item.code];
     const currentFile = uploadFile[item.code];
     const hasExisting = !!doc;
+    // Sent back for revision: the row is marked so the student sees which file
+    // the coordinator wants again, not just a list at the top.
+    const needsRevision = revisionCodes.has(String(item.code || '').toLowerCase());
 
     return (
-      <div key={item.code} className={styles.docItem}>
+      <div
+        key={item.code}
+        className={`${styles.docItem} ${needsRevision ? styles.docItemRevision : ''}`}
+      >
         <div className={styles.docInfo}>
-          <div className={styles.docName}>{item.name}</div>
+          <div className={styles.docName}>
+            {item.name}
+            {needsRevision && <span className={styles.revisionTag}>Needs revision</span>}
+          </div>
           <div className={styles.docMeta}>
             {hasExisting ? (
               <>
@@ -449,8 +595,8 @@ function Requirements() {
               )}
               <button
                 className={styles.btnDanger}
-                disabled={deleting === doc.id}
-                onClick={() => handleDelete(doc.id)}
+                disabled={deleting === doc.id || lockFields}
+                onClick={() => handleDelete(doc)}
               >
                 {deleting === doc.id ? 'Removing...' : 'Remove'}
               </button>
@@ -458,18 +604,43 @@ function Requirements() {
           ) : (
             <button
               className={styles.btnSuccess}
-              disabled={isUploadingDoc || !currentFile}
+              disabled={isUploadingDoc || !currentFile || lockFields}
               onClick={() => handleUpload(item.code)}
+              aria-busy={isUploadingDoc}
             >
-              {isUploadingDoc ? 'Uploading...' : 'Upload'}
+              {isUploadingDoc ? (
+                <>
+                  <span className={styles.spinnerSm} aria-hidden="true" />
+                  Uploading...
+                </>
+              ) : (
+                'Upload'
+              )}
             </button>
           )}
-          <span className={styles.fileName}>
+          <span className={styles.filePicker}>
+            {/* The caption lives on a label so it can say "Edit File" once a file
+                is attached - a native file input always reads "Choose File". */}
             <input
+              id={`requirement-file-${item.code}`}
+              className={styles.fileInput}
               type="file"
               onChange={(e) => handleFileChange(item.code, e)}
-              disabled={disabled || isUploadingDoc}
+              disabled={disabled || isUploadingDoc || lockFields}
             />
+            <label
+              htmlFor={`requirement-file-${item.code}`}
+              className={[
+                styles.fileButton,
+                currentFile ? styles.fileButtonEdit : '',
+                disabled || isUploadingDoc || lockFields ? styles.fileButtonDisabled : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              title={currentFile ? `Attached: ${currentFile.name}` : 'Attach a file'}
+            >
+              {currentFile ? 'Edit File' : 'Choose File'}
+            </label>
           </span>
         </div>
       </div>
@@ -482,7 +653,7 @@ function Requirements() {
         <label>Student Number <span className={styles.requiredDiamond}>*</span></label>
         <input
           {...intFieldProps('student_number')}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
         {intErrorText('student_number')}
       </div>
@@ -493,7 +664,7 @@ function Requirements() {
           value={student.first_name || ''}
           onChange={(e) => handleFieldChange('first_name', e.target.value)}
           placeholder="Juan"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -503,7 +674,7 @@ function Requirements() {
           value={student.middle_name || ''}
           onChange={(e) => handleFieldChange('middle_name', e.target.value)}
           placeholder="Dela"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -513,18 +684,22 @@ function Requirements() {
           value={student.last_name || ''}
           onChange={(e) => handleFieldChange('last_name', e.target.value)}
           placeholder="Cruz"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
         <label>Suffix</label>
-        <input
-          className={styles.input}
-          value={student.suffix || ''}
+        <select
+          className={styles.select}
+          value={suffixValue}
           onChange={(e) => handleFieldChange('suffix', e.target.value)}
-          placeholder="Jr./Sr."
-          readOnly={!!submission?.submitted_at}
-        />
+          readOnly={lockFields}
+          style={{ width: '100%' }}
+        >
+          <option value="">None</option>
+          <option value="Jr.">Jr.</option>
+          <option value="Sr.">Sr.</option>
+        </select>
       </div>
       <div className={styles.field}>
         <label>Gender <span className={styles.requiredDiamond}>*</span></label>
@@ -532,7 +707,7 @@ function Requirements() {
           className={styles.select}
           value={student.gender || ''}
           onChange={(e) => handleFieldChange('gender', e.target.value)}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
           style={{ width: '100%' }}
         >
           <option value="">Select</option>
@@ -547,14 +722,14 @@ function Requirements() {
           type="date"
           value={student.birthdate || ''}
           onChange={(e) => handleFieldChange('birthdate', e.target.value)}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
         <label>Age <span className={styles.requiredDiamond}>*</span></label>
         <input
           {...intFieldProps('age')}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
         {intErrorText('age')}
       </div>
@@ -562,7 +737,7 @@ function Requirements() {
         <label>Contact Number <span className={styles.requiredDiamond}>*</span></label>
         <input
           {...phoneFieldProps('contact_number')}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
         {phoneErrorText('contact_number')}
       </div>
@@ -574,7 +749,7 @@ function Requirements() {
           value={student.email || ''}
           onChange={(e) => handleFieldChange('email', e.target.value)}
           placeholder="student@example.com"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
@@ -584,30 +759,19 @@ function Requirements() {
           value={student.home_address || ''}
           onChange={(e) => handleFieldChange('home_address', e.target.value)}
           placeholder="Street, Barangay, City"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
+      {/* Grade Level is not asked for: every work immersion student is
+          Grade 12 and the server fills the value in on save. */}
       <div className={styles.field}>
-        <label>Grade Level <span className={styles.requiredDiamond}>*</span></label>
-        <select
-          className={styles.select}
-          value={student.grade_level || ''}
-          onChange={(e) => handleFieldChange('grade_level', e.target.value)}
-          readOnly={!!submission?.submitted_at}
-          style={{ width: '100%' }}
-        >
-          <option value="">Select</option>
-          <option value="Grade 12">Grade 12</option>
-        </select>
-      </div>
-      <div className={styles.field}>
-        <label>Section <span className={styles.requiredDiamond}>*</span></label>
+        <label>Section Name <span className={styles.requiredDiamond}>*</span></label>
         <input
           className={styles.input}
           value={student.section || ''}
           onChange={(e) => handleFieldChange('section', e.target.value)}
-          placeholder="A, B, C..."
-          readOnly={!!submission?.submitted_at}
+          placeholder="e.g., 12-A"
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -617,7 +781,7 @@ function Requirements() {
           value={student.track_strand || ''}
           onChange={(e) => handleFieldChange('track_strand', e.target.value)}
           placeholder="STEM, ABM, HUMSS..."
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -627,14 +791,9 @@ function Requirements() {
           value={student.school || ''}
           onChange={(e) => handleFieldChange('school', e.target.value)}
           placeholder="School name"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
-    </div>
-  );
-
-  const renderGuardianForm = () => (
-    <div className={styles.grid2}>
       <div className={styles.field}>
         <label>Preferred Industry <span className={styles.requiredDiamond}>*</span></label>
         <input
@@ -642,7 +801,7 @@ function Requirements() {
           value={student.preferred_industry || ''}
           onChange={(e) => handleFieldChange('preferred_industry', e.target.value)}
           placeholder="e.g., Information Technology"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -652,7 +811,7 @@ function Requirements() {
           value={student.preferred_company || ''}
           onChange={(e) => handleFieldChange('preferred_company', e.target.value)}
           placeholder="e.g., ABC Corporation"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
@@ -663,7 +822,7 @@ function Requirements() {
           onChange={(e) => handleFieldChange('career_goal', e.target.value)}
           placeholder="Describe your career goal..."
           rows={3}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
@@ -674,9 +833,14 @@ function Requirements() {
           onChange={(e) => handleFieldChange('industry_reason', e.target.value)}
           placeholder="Why are you interested in your preferred industry..."
           rows={3}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
+    </div>
+  );
+
+  const renderGuardianForm = () => (
+    <div className={styles.grid2}>
       <div className={styles.field}>
         <label>Guardian/Parent Name <span className={styles.requiredDiamond}>*</span></label>
         <input
@@ -684,7 +848,7 @@ function Requirements() {
           value={student.guardian_name || ''}
           onChange={(e) => handleFieldChange('guardian_name', e.target.value)}
           placeholder="Full name"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -694,14 +858,14 @@ function Requirements() {
           value={student.guardian_relationship || ''}
           onChange={(e) => handleFieldChange('guardian_relationship', e.target.value)}
           placeholder="e.g., Father"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
         <label>Guardian Contact <span className={styles.requiredDiamond}>*</span></label>
         <input
           {...phoneFieldProps('guardian_contact')}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
         {phoneErrorText('guardian_contact')}
       </div>
@@ -713,7 +877,7 @@ function Requirements() {
           value={student.guardian_email || ''}
           onChange={(e) => handleFieldChange('guardian_email', e.target.value)}
           placeholder="guardian@example.com"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
@@ -723,7 +887,7 @@ function Requirements() {
           value={student.guardian_address || ''}
           onChange={(e) => handleFieldChange('guardian_address', e.target.value)}
           placeholder="Street, Barangay, City"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
@@ -733,14 +897,14 @@ function Requirements() {
           value={student.emergency_contact || ''}
           onChange={(e) => handleFieldChange('emergency_contact', e.target.value)}
           placeholder="Full name"
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
       </div>
       <div className={styles.field}>
         <label>Emergency Contact Number <span className={styles.requiredDiamond}>*</span></label>
         <input
           {...phoneFieldProps('emergency_contact_number')}
-          readOnly={!!submission?.submitted_at}
+          readOnly={lockFields}
         />
         {phoneErrorText('emergency_contact_number')}
       </div>
@@ -753,6 +917,46 @@ function Requirements() {
       return <p className={styles.empty}>No medical documents configured.</p>;
     }
     return <div>{(items).map(renderDocItem)}</div>;
+  };
+
+  /**
+   * The Personal and Guardian tabs are forms, but a coordinator may also attach
+   * file requirements to those sections, so their uploads render here too.
+   */
+  const renderSectionDocs = (section) => {
+    const items = docsBySection(section);
+    if (items.length === 0) return null;
+    return (
+      <div className={styles.docBlock}>
+        <p className={styles.docBlockTitle}>Documents for this section</p>
+        {items.map(renderDocItem)}
+      </div>
+    );
+  };
+
+  /**
+   * Names the fields still missing from a form requirement so "fill this up
+   * before submitting" says exactly what to fill in.
+   */
+  const renderFillUpNotice = (section) => {
+    const rows = requirementStatuses
+      .filter((status) => status.section === section && status.input_type === 'form')
+      .map((status) => ({ ...status, missing: missingFieldsFor(status) }))
+      .filter((status) => status.missing.length > 0);
+
+    if (rows.length === 0) return null;
+    return (
+      <div className={styles.formNotice} role="status">
+        <strong>Fill up before submitting</strong>
+        <ul>
+          {rows.map((item) => (
+            <li key={item.code}>
+              <strong>{item.name}</strong>: {item.missing.join(', ')}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
   };
 
   const renderAcademicDocs = () => {
@@ -772,6 +976,20 @@ function Requirements() {
   // is a coordinator pause, so the submission still counts as filed.
   const isSubmitted = ['Pending', 'Pending Review', 'Under Review', 'Approved', 'Hold'].includes(submission?.status) &&
     !!submission?.submitted_at;
+
+  // Approved is final: nothing left to change, so the page offers no actions -
+  // not even "Edit Submission".
+  const isApproved = String(submission?.status || '').trim().toLowerCase() === 'approved';
+
+  // After submitting, the form locks until the student asks to edit it. That is
+  // what turns the primary button into "Edit Submission".
+  const lockFields = isApproved || (isSubmitted && !editingSubmission);
+
+  // Requirements the coordinator sent back for revision, by code, so the rows
+  // themselves can be highlighted rather than only listed in the notice.
+  const revisionCodes = new Set(
+    revisionDocuments.map((doc) => String(doc.code || '').toLowerCase()).filter(Boolean)
+  );
 
   return (
     <div className={styles.page}>
@@ -794,10 +1012,11 @@ function Requirements() {
       {/* The coordinator's revision checklist: exactly which files to replace. */}
       {revisionDocuments.length > 0 && (
         <div className={styles.revisionNotice} role="status">
-          <strong>Changes needed on these documents</strong>
+          <strong>Changes needed</strong>
           <p>
-            Your coordinator asked for the files below to be replaced. Upload a
-            new copy, then submit your requirements again.
+            Your coordinator asked for the items below to be completed again.
+            Fill in the information or upload a new copy, then submit your
+            requirements again.
           </p>
           <ul className={styles.revisionList}>
             {revisionDocuments.map((doc) => (
@@ -817,7 +1036,7 @@ function Requirements() {
       <div className={styles.section}>
         <div className={styles.progressLabel}>
           <span><strong>Progress</strong> &mdash; {progress}% complete</span>
-          <span>{uploadCount}/{docTypes.length} documents uploaded</span>
+          <span>{completedRequirements}/{totalRequirements} requirements completed</span>
         </div>
         <div className={styles.progressBar}>
           <div className={styles.progressFill} style={{ width: `${progress}%`, background: progressColor }} />
@@ -830,13 +1049,13 @@ function Requirements() {
             </span>
             {submission?.reviewed_at && (
               <span className={styles.muted}>
-                Reviewed on {new Date(submission.reviewed_at).toLocaleDateString()}
+                Reviewed on {formatDate(submission.reviewed_at)}
                 {submission.reviewed_by_name ? ` by ${submission.reviewed_by_name}` : ''}
               </span>
             )}
             {!submission?.reviewed_at && submission?.submitted_at && (
               <span className={styles.muted}>
-                Submitted on {new Date(submission.submitted_at).toLocaleDateString()}
+                Submitted on {formatDate(submission.submitted_at)}
               </span>
             )}
           </div>
@@ -854,36 +1073,12 @@ function Requirements() {
       <div className={styles.section}>
         <div className={styles.tabs}>
           {Object.entries(SECTION_META).map(([key, { label, shortLabel }]) => {
-            if (key === 'medical' || key === 'academic') {
-              const sectionDone = sections[`${key}Complete`];
-              const tabClass = `${styles.tab} ${activeTab === key ? styles.active : ''}`;
-              const totalSectionDocs = docTypes.filter((d) => d.section === key).length;
-              const uploadedSectionCodes = new Set(documents.map((d) => d.code));
-              const uploadedSectionDocs = docTypes.filter((d) => d.section === key && uploadedSectionCodes.has(d.code)).length;
-              const missing = totalSectionDocs - uploadedSectionDocs;
-              const indicator = sectionDone
-                ? '✓'
-                : missing > 0
-                  ? `${missing} missing`
-                  : '';
-              return (
-                <button
-                  key={key}
-                  className={tabClass}
-                  onClick={() => setActiveTab(key)}
-                >
-                  <span className={styles.tabLabelFull}>{label}</span>
-                  <span className={styles.tabLabelShort}>{shortLabel}</span>
-                  {indicator && (
-                    <span
-                      className={`${styles.tabFlag} ${sectionDone ? styles.tabFlagDone : styles.tabFlagMissing}`}
-                    >
-                      {indicator}
-                    </span>
-                  )}
-                </button>
-              );
-            }
+            // Every section carries a flag, not just the upload-based ones: the
+            // Personal and Guardian forms have to be filled in before the
+            // student can submit, so they need to show as missing too.
+            const sectionDone = sections[`${key}Complete`];
+            const missing = missingInSection(key);
+            const indicator = sectionDone ? '✓' : missing > 0 ? `${missing} missing` : '';
             return (
               <button
                 key={key}
@@ -892,32 +1087,135 @@ function Requirements() {
               >
                 <span className={styles.tabLabelFull}>{label}</span>
                 <span className={styles.tabLabelShort}>{shortLabel}</span>
+                {indicator && (
+                  <span
+                    className={`${styles.tabFlag} ${sectionDone ? styles.tabFlagDone : styles.tabFlagMissing}`}
+                  >
+                    {indicator}
+                  </span>
+                )}
               </button>
             );
           })}
         </div>
 
-        {activeTab === 'personal' && renderPersonalForm()}
-        {activeTab === 'guardian' && renderGuardianForm()}
+        {activeTab === 'personal' && (
+          <>
+            {renderFillUpNotice('personal')}
+            {renderPersonalForm()}
+            {renderSectionDocs('personal')}
+          </>
+        )}
+        {activeTab === 'guardian' && (
+          <>
+            {renderFillUpNotice('guardian')}
+            {renderGuardianForm()}
+            {renderSectionDocs('guardian')}
+          </>
+        )}
         {activeTab === 'medical' && renderMedicalDocs()}
         {activeTab === 'academic' && renderAcademicDocs()}
 
-        <div className={styles.saveBar}>
-          <div className={styles.saveBarActions}>
-            <button className={styles.submitBtn} disabled={submitting || isSubmitted} onClick={handleSubmit}>
-              {isSubmitted ? 'Already Submitted' : submitting ? 'Submitting...' : 'Submit Requirements'}
-            </button>
-            <button className={styles.btn} disabled={saving || isSubmitted} onClick={handleSave}>
-              {saving ? 'Saving...' : 'Save Progress'}
-            </button>
+        {/* Approved is final: no actions at all, the page is read-only. */}
+        {!isApproved && (
+          <div className={styles.saveBar}>
+            <div className={styles.saveBarActions}>
+              {/* Once submitted, the primary action becomes "Edit Submission";
+                  it unlocks the form and brings back Save Changes and Submit. */}
+              {isSubmitted && !editingSubmission ? (
+                <button
+                  className={styles.submitBtn}
+                  onClick={() => {
+                    setEditingSubmission(true);
+                    setError('');
+                    setMessage('');
+                  }}
+                >
+                  Edit Submission
+                </button>
+              ) : (
+                <>
+                  <button
+                    className={styles.submitBtn}
+                    disabled={submitting}
+                    onClick={handleSubmit}
+                  >
+                    {submitting
+                      ? 'Submitting...'
+                      : isSubmitted
+                        ? 'Submit Again'
+                        : 'Submit Requirements'}
+                  </button>
+                  <button className={styles.btn} disabled={saving} onClick={handleSave}>
+                    {saving ? 'Saving...' : isSubmitted ? 'Save Changes' : 'Save Progress'}
+                  </button>
+                  {isSubmitted && (
+                    <button
+                      type="button"
+                      className={styles.btnGhost}
+                      disabled={saving || submitting}
+                      onClick={() => setEditingSubmission(false)}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+            {isSubmitted && !editingSubmission && (
+              <p className={styles.muted}>
+                Submitted for review. Choose Edit Submission to change or replace a requirement,
+                then submit again.
+              </p>
+            )}
+            {isSubmitted && editingSubmission && (
+              <p className={styles.muted}>
+                Editing a submitted request. Save your changes, then submit it again for review.
+              </p>
+            )}
           </div>
-          {isSubmitted && (
-            <p className={styles.muted}>
-              Your requirements have been submitted for review. Contact your coordinator for changes.
-            </p>
-          )}
-        </div>
+        )}
       </div>
+
+      {/* Removal confirmation. A panel rather than a browser pop-up or a toast:
+          it names the file and stays until the student answers. */}
+      {confirmRemove && (
+        <div className={styles.modalOverlay}>
+          <div
+            className={styles.modalCard}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="remove-document-title"
+            aria-describedby="remove-document-text"
+          >
+            <h3 className={styles.modalTitle} id="remove-document-title">
+              Remove this file?
+            </h3>
+            <p className={styles.modalText} id="remove-document-text">
+              <strong>{confirmRemove.original_name || 'This file'}</strong> will be removed from your
+              requirements. You can upload it again afterwards.
+            </p>
+            <div className={styles.modalActions}>
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setConfirmRemove(null)}
+                disabled={deleting === confirmRemove.id}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={styles.btnDanger}
+                onClick={confirmRemoveFile}
+                disabled={deleting === confirmRemove.id}
+              >
+                {deleting === confirmRemove.id ? 'Removing...' : 'Remove File'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

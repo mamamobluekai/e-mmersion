@@ -1,6 +1,14 @@
-const { requiredInfoFields } = require('../helpers/constant');
+const { DEFAULT_GRADE_LEVEL } = require('../helpers/constant');
 const { normalize } = require('./validation');
 const pool = require('../../../db');
+const { ensureDocumentTypesSchema } = require('./documentTypeSchema');
+const {
+  formFieldsFor,
+  guardianEmergencyComplete,
+  isFormRequirement,
+  missingFormFieldLabels,
+  personalInformationComplete,
+} = require('./formRequirements');
 
 /**
  * The "Needs Revision" checklist column. This project applies migrations by
@@ -28,13 +36,60 @@ async function ensureRevisionDocumentColumn() {
  * remove requirements without a code change.
  */
 const getActiveDocumentTypes = async (client) => {
+  await ensureDocumentTypesSchema();
   const result = await client.query(
-    `SELECT id, code, name, section, sort_order
+    `SELECT id, code, name, section, input_type, sort_order
      FROM document_types
-     WHERE is_active = TRUE
+     WHERE COALESCE(is_active, TRUE)
      ORDER BY sort_order, id`
   );
   return result.rows;
+};
+
+/**
+ * One entry per active requirement, resolved to whether the student has
+ * satisfied it. File requirements are satisfied by an upload tied to the
+ * submission (`uploadedTypeIds`); form requirements are satisfied by the
+ * matching profile fields being filled in.
+ */
+const buildRequirementStatuses = (activeTypes, student, uploadedTypeIds = []) => {
+  // Callers pass either a Set or a plain array of ids.
+  const uploaded =
+    uploadedTypeIds instanceof Set ? uploadedTypeIds : new Set(uploadedTypeIds || []);
+
+  return activeTypes.map((type) => {
+    const form = isFormRequirement(type);
+    const missingFields = form ? missingFormFieldLabels(student || {}, type.code) : [];
+    return {
+      id: type.id,
+      code: type.code,
+      name: type.name,
+      section: type.section,
+      input_type: form ? 'form' : 'file',
+      completed: form ? missingFields.length === 0 : uploaded.has(type.id),
+      missing_fields: missingFields,
+      // Only form requirements carry fields; the page uses these to recheck the
+      // list as the student types.
+      fields: form ? formFieldsFor(type.code) : [],
+    };
+  });
+};
+
+/**
+ * The ids of the requirements a student still has to satisfy: unfilled form
+ * sections and files that were never uploaded.
+ */
+const missingRequirementCodes = (statuses) =>
+  statuses.filter((status) => !status.completed).map((status) => status.code);
+
+/**
+ * Shown when a student submits too early. Names the requirements still
+ * outstanding so the message says what to do rather than just "incomplete".
+ */
+const describeOutstanding = (statuses) => {
+  const names = (statuses || []).filter((status) => !status.completed).map((status) => status.name);
+  if (names.length === 0) return 'Complete every required section before submitting.';
+  return `Complete every required section before submitting. Still missing: ${names.join(', ')}.`;
 };
 
 const getOrCreateStudent = async (client, userId, body = {}) => {
@@ -54,8 +109,8 @@ const getOrCreateStudent = async (client, userId, body = {}) => {
   const studentNumber = normalize(body.student_number) || `S-${userId}`;
 
   const created = await client.query(
-    `INSERT INTO students (user_id, student_number, first_name, last_name, email, contact_number)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO students (user_id, student_number, first_name, last_name, email, contact_number, grade_level)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
     [
       userId,
@@ -64,10 +119,27 @@ const getOrCreateStudent = async (client, userId, body = {}) => {
       normalize(body.last_name) || 'User',
       user.email,
       user.phone || normalize(body.contact_number) || '',
+      DEFAULT_GRADE_LEVEL,
     ]
   );
 
   return created.rows[0];
+};
+
+/**
+ * Grade Level is fixed at "Grade 12" and no longer asked for on the
+ * Requirements page, so a row saved without one is backfilled rather than left
+ * blank for the coordinator and admin views to show as empty. Rows written by
+ * the older import paths hold a bare "12" and are normalised to the same label.
+ */
+const ensureDefaultGradeLevel = async (client, studentId) => {
+  await client.query(
+    `UPDATE students
+        SET grade_level = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+        AND (grade_level IS NULL OR BTRIM(grade_level) = '' OR grade_level = '12')`,
+    [studentId, DEFAULT_GRADE_LEVEL]
+  );
 };
 
 const getOrCreateSubmission = async (client, student, userId) => {
@@ -90,32 +162,32 @@ const calculateProgress = async (client, studentId) => {
   const studentResult = await client.query('SELECT * FROM students WHERE id = $1', [studentId]);
   const student = studentResult.rows[0] || {};
   const docs = await client.query(
-    `SELECT dt.code
-     FROM student_documents sd
-     JOIN document_types dt ON dt.id = sd.document_type_id
-     WHERE sd.student_id = $1 AND dt.is_active = TRUE`,
+    `SELECT dt.id
+       FROM student_documents sd
+       JOIN document_types dt ON dt.id = sd.document_type_id
+      WHERE sd.student_id = $1 AND COALESCE(dt.is_active, TRUE)`,
     [studentId]
   );
-  const uploadedCodes = new Set(docs.rows.map((row) => row.code));
+  const uploadedTypeIds = new Set(docs.rows.map((row) => row.id));
 
   // Active requirements drive completeness, so adding/removing a requirement
-  // immediately re-evaluates every student's progress.
+  // immediately re-evaluates every student's progress. Form requirements are
+  // complete when their fields are filled in, file requirements when the
+  // upload exists.
   const activeTypes = await getActiveDocumentTypes(client);
-  const codesForSection = (section) =>
-    activeTypes.filter((type) => type.section === section).map((type) => type.code);
+  const statuses = buildRequirementStatuses(activeTypes, student, uploadedTypeIds);
+  const sectionComplete = (section) =>
+    statuses.filter((status) => status.section === section).every((status) => status.completed);
 
-  const personalComplete = requiredInfoFields
-    .filter((field) => !field.startsWith('guardian_') && !field.startsWith('emergency_'))
-    .every((field) => normalize(student[field]));
+  // The two form sections stand on their own data: the section is only done
+  // when the fields are filled AND whatever else the coordinator attached to
+  // that section (file requirements) is uploaded.
+  const personalComplete = personalInformationComplete(student) && sectionComplete('personal');
 
-  const guardianComplete = [
-    'guardian_name', 'guardian_relationship', 'guardian_contact', 'guardian_email',
-    'guardian_address', 'emergency_contact', 'emergency_contact_number',
-  ].every((field) => normalize(student[field]))
-    && codesForSection('guardian').every((code) => uploadedCodes.has(code));
+  const guardianComplete = guardianEmergencyComplete(student) && sectionComplete('guardian');
 
-  const medicalComplete = codesForSection('medical').every((code) => uploadedCodes.has(code));
-  const academicComplete = codesForSection('academic').every((code) => uploadedCodes.has(code));
+  const medicalComplete = sectionComplete('medical');
+  const academicComplete = sectionComplete('academic');
 
   const sections = { personalComplete, guardianComplete, medicalComplete, academicComplete };
   const progress = Object.values(sections).filter(Boolean).length * 25;
@@ -124,11 +196,20 @@ const calculateProgress = async (client, studentId) => {
     [progress, studentId]
   );
 
-  const missingDocuments = activeTypes
-    .map((type) => type.code)
-    .filter((code) => !uploadedCodes.has(code));
+  const missingCodes = missingRequirementCodes(statuses);
+  const completedCount = statuses.length - missingCodes.length;
 
-  return { progress, sections, missingDocuments };
+  return {
+    progress,
+    sections,
+    missingDocuments: missingCodes,
+    requirementStatuses: statuses,
+    requirementSummary: {
+      total: statuses.length,
+      completed: completedCount,
+      missing: missingCodes.length,
+    },
+  };
 };
 
 /**
@@ -219,7 +300,11 @@ const serializeRequirements = async (client, studentId) => {
 module.exports = {
   getOrCreateStudent,
   getOrCreateSubmission,
+  ensureDefaultGradeLevel,
   getActiveDocumentTypes,
+  buildRequirementStatuses,
+  missingRequirementCodes,
+  describeOutstanding,
   calculateProgress,
   recalculateAllProgress,
   serializeRequirements,

@@ -17,6 +17,12 @@ export function labelForStatus(status) {
   return STATUS_LABELS[status] || status || 'Not recorded';
 }
 
+export function getAttendanceLabel(status, date) {
+  if (status) return STATUS_LABELS[status] || status;
+  if (date && !isFutureDate(date)) return 'Absent';
+  return 'Not Started';
+}
+
 export function isPresent(status) {
   return PRESENT_STATUSES.includes(status);
 }

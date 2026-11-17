@@ -142,6 +142,11 @@ CREATE TABLE document_types (
   code VARCHAR(100) NOT NULL UNIQUE,
   name VARCHAR(255) NOT NULL,
   section VARCHAR(100),
+  -- 'file' for requirements satisfied by an upload, 'form' for requirements the
+  -- student fills in on the Requirements page (Personal Information,
+  -- Guardian & Emergency). is_active/sort_order/description are added by
+  -- ensureDocumentTypesSchema() on first use.
+  input_type TEXT NOT NULL DEFAULT 'file',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -322,17 +327,20 @@ CREATE INDEX idx_teacher_batches_teacher ON teacher_batches(teacher_id);
 CREATE INDEX idx_deployment_requests_status ON deployment_requests(status);
 CREATE INDEX idx_login_attempts_email ON login_attempts(email);
 
-INSERT INTO document_types (code, name, section) VALUES
-  ('guardian_consent', 'Guardian Consent', 'guardian'),
-  ('medical_certificate', 'Medical Certificate', 'medical'),
-  ('accident_insurance', 'Accident Insurance', 'medical'),
-  ('vaccination_record', 'Vaccination Record', 'medical'),
-  ('emergency_contact_form', 'Emergency Contact Form', 'medical'),
-  ('form_138', 'Form 138', 'academic'),
-  ('good_moral', 'Good Moral Certificate', 'academic'),
-  ('psa_birth_certificate', 'PSA Birth Certificate', 'academic'),
-  ('id_picture', 'ID Picture', 'academic'),
-  ('student_profile_form', 'Student Profile Form', 'academic');
+INSERT INTO document_types (code, name, section, input_type) VALUES
+  ('guardian_consent', 'Guardian Consent', 'guardian', 'file'),
+  ('medical_certificate', 'Medical Certificate', 'medical', 'file'),
+  ('accident_insurance', 'Accident Insurance', 'medical', 'file'),
+  ('vaccination_record', 'Vaccination Record', 'medical', 'file'),
+  ('emergency_contact_form', 'Emergency Contact Form', 'medical', 'file'),
+  ('form_138', 'Form 138', 'academic', 'file'),
+  ('good_moral', 'Good Moral Certificate', 'academic', 'file'),
+  ('psa_birth_certificate', 'PSA Birth Certificate', 'academic', 'file'),
+  ('id_picture', 'ID Picture', 'academic', 'file'),
+  ('student_profile_form', 'Student Profile Form', 'academic', 'file'),
+  -- Filled in on the Requirements page instead of uploaded.
+  ('personal_information', 'Personal Information', 'personal', 'form'),
+  ('guardian_emergency', 'Guardian & Emergency', 'guardian', 'form');
 
 CREATE TABLE files (
   id SERIAL PRIMARY KEY,

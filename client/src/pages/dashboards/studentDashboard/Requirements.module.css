@@ -383,6 +383,57 @@
   line-height: 1.4;
 }
 
+/* ---------- Fill-in-the-form requirements ---------- */
+/* The Personal and Guardian tabs are forms rather than uploads, so the page
+   names the fields still empty: those sections block submission just like a
+   missing file does. */
+.formNotice {
+  margin-bottom: 14px;
+  padding: 13px 15px;
+  border: 1px solid #f0e1c8;
+  border-radius: 12px;
+  background: #fffaf2;
+  color: #77531f;
+}
+
+.formNotice strong {
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.formNotice ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.formNotice li {
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.formNotice li strong {
+  color: var(--about-ink);
+  font-weight: 750;
+}
+
+/* File requirements a coordinator attached to a form section. */
+.docBlock {
+  margin-top: 18px;
+}
+
+.docBlockTitle {
+  margin: 0 0 9px;
+  color: var(--about-muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 /* ---------- Document list ---------- */
 .docItem {
   display: flex;
@@ -399,6 +450,33 @@
 
 .docItem:last-child {
   margin-bottom: 0;
+}
+
+/* Sent back for revision: the row is marked, so the file the coordinator wants
+   again is obvious without reading the notice at the top. */
+.docItemRevision {
+  border-color: #e2b6bd;
+  background: #fffafb;
+  box-shadow: 0 0 0 2px rgba(139, 30, 45, 0.09);
+}
+
+.docItemRevision:hover {
+  border-color: #d7a3ad;
+  box-shadow: 0 8px 18px -14px rgba(139, 30, 45, 0.45);
+}
+
+.revisionTag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fbe9ec;
+  color: var(--about-maroon);
+  font-size: 0.64rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
 }
 
 .docItem:hover {
@@ -435,22 +513,31 @@
 }
 
 /* ---------- File input ---------- */
-.fileName {
+/* The caption is a label, not the browser's own "Choose File", so it can read
+   "Edit File" once a file is attached. */
+.filePicker {
+  position: relative;
   display: inline-flex;
   align-items: center;
   max-width: 100%;
 }
 
-.fileName input[type="file"] {
-  width: 210px;
-  max-width: 100%;
-  color: var(--about-muted);
-  font-family: inherit;
-  font-size: 0.75rem;
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.fileName input[type="file"]::file-selector-button {
-  margin-right: 8px;
+.fileButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 14px;
   border: 1px solid var(--about-border);
   border-radius: 8px;
@@ -463,9 +550,25 @@
   transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
 }
 
-.fileName input[type="file"]::file-selector-button:hover {
+.fileButton:hover {
   background: #fdf3f5;
   border-color: #d7b8be;
+}
+
+/* A file is attached: tinted so the state is visible, not just the caption. */
+.fileButtonEdit {
+  background: #fdf3f5;
+  border-color: #d7b8be;
+}
+
+.fileButtonDisabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.fileButtonDisabled:hover {
+  background: #fff;
+  border-color: var(--about-border);
 }
 
 /* ---------- Buttons ---------- */
@@ -550,6 +653,75 @@
   background: linear-gradient(140deg, #8b1e2d, #8b1e2d);
 }
 
+/* ---------- Uploading state ---------- */
+/* The spinner sits inside the row's own button, so each file being uploaded
+   spins on its own and several can spin at once. */
+.spinnerSm {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Remove confirmation ---------- */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(38, 20, 24, 0.42);
+}
+
+.modalCard {
+  width: 100%;
+  max-width: 420px;
+  padding: 20px;
+  border: 1px solid var(--about-border);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 24px 50px -24px rgba(38, 20, 24, 0.55);
+}
+
+.modalTitle {
+  margin: 0 0 6px;
+  color: var(--about-ink);
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.modalText {
+  margin: 0;
+  color: var(--about-muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.modalText strong {
+  color: var(--about-ink);
+  font-weight: 700;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
 /* ---------- Save bar ---------- */
 .saveBar {
   margin-top: 22px;
@@ -627,9 +799,41 @@
     justify-content: flex-start;
   }
 
-  .fileName,
-  .fileName input[type="file"] {
+  .filePicker {
     width: 100%;
+  }
+
+  .fileButton {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Readable and tappable on a phone. 16px text also stops iOS from zooming the
+     whole page when a field gets focus, which is what made the form look broken
+     on a phone. */
+  .input,
+  .select,
+  .textarea {
+    font-size: 1rem;
+  }
+
+  .input,
+  .select {
+    height: 44px;
+  }
+
+  .textarea {
+    min-height: 104px;
+    line-height: 1.55;
+  }
+
+  .fileButton {
+    min-height: 44px;
+    font-size: 0.9rem;
+  }
+
+  .field label {
+    font-size: 0.76rem;
   }
 
   /* Tabs wrap into a 2x2 grid so all four are visible without side-scrolling */

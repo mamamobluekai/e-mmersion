@@ -25,12 +25,16 @@ function isPastDate(value) {
 // rather than "absent" — the student cannot be marked absent for a day
 // that attendance has not covered yet. Once that day's date has passed,
 // however, an unrecorded day counts as absent.
+// If an appeal was approved (appeal_time_in_id or appeal_time_out_id present),
+// the day counts as present even without check-in/out timestamps.
 function dayStatus(day) {
   if (!day || day.recorded === false) {
     return isPastDate(day?.date) ? 'absent' : 'notstarted';
   }
+  const hasApprovedAppeal = day.appeal_time_in_id || day.appeal_time_out_id;
   if (day.check_in_time && day.check_out_time) return 'complete';
   if (day.check_in_time) return 'in';
+  if (hasApprovedAppeal || day.status === 'present') return 'complete';
   if (day.status === 'absent' || day.status === 'excused') return 'absent';
   return 'notstarted';
 }
