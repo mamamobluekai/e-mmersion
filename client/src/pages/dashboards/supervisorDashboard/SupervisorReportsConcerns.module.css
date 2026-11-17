@@ -301,15 +301,21 @@
 }
 
 .badge_pending {
-  background: #f1f5f9;
-  border-color: #eadde0;
-  color: #596579;
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #b45309;
 }
 
 .badge_resolved {
   background: #eaf8ef;
   border-color: #bfe6cc;
   color: #15803d;
+}
+
+.badge_archived {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
 }
 
 .expandIcon {

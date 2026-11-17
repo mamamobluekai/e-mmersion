@@ -237,6 +237,7 @@
 .statBlue { background: #fbebee; color: var(--about-maroon); }
 .statOrange, .statGreen { background: #fffaf2; color: var(--about-gold); border: 1px solid #f0e1c8; }
 .statRed { background: #fbebee; color: var(--about-maroon); }
+.statGreen { background: #eafbe9; color: #2e7d32; border: 1px solid #c6e6c0; }
 
 .statLabel { display: block; margin-bottom: 4px; color: var(--about-muted); font-size: 0.78rem; font-weight: 700; }
 .statCard strong { display: block; color: var(--about-ink); font-size: 1.45rem; font-weight: 760; letter-spacing: -0.03em; line-height: 1; }
@@ -325,7 +326,8 @@
 
 .badge { display: inline-flex; align-items: center; min-height: 26px; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
 .badgePending, .badgeReview { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
-.badgeApproved, .badgeVerified { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
+.badgeApproved { border: 1px solid #c6e6c0; background: #eafbe9; color: #2e7d32; }
+.badgeVerified { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
 .badgeRejected, .badgeNeeds { border: 1px solid #efc2ca; background: var(--about-blush); color: var(--about-maroon); }
 .badgeHold { border: 1px solid #c7d7f0; background: #e6eefb; color: #37568c; }
 

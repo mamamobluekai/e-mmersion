@@ -340,13 +340,14 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
   };
 
   const handleBulkRestore = async () => {
+    if (archivedSelectedIds.length === 0) return;
     setBulkLoading(true);
     setError('');
     setMessage('');
     try {
-      const data = await bulkRestoreStudents(selectedIds);
-      setMessage(data.message || `${selectedIds.length} student(s) restored from archive.`);
-      setSelectedIds([]);
+      const data = await bulkRestoreStudents(archivedSelectedIds);
+      setMessage(data.message || `${archivedSelectedIds.length} student(s) restored from archive.`);
+      setArchivedSelectedIds([]);
       await load();
     } catch (err) {
       setError(err.message);
@@ -356,13 +357,14 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
   };
 
   const handleBulkPermanentDelete = async () => {
+    if (archivedSelectedIds.length === 0) return;
     setBulkLoading(true);
     setError('');
     setMessage('');
     try {
-      const data = await bulkPermanentDeleteStudents(selectedIds);
-      setMessage(data.message || `${selectedIds.length} student(s) permanently deleted.`);
-      setSelectedIds([]);
+      const data = await bulkPermanentDeleteStudents(archivedSelectedIds);
+      setMessage(data.message || `${archivedSelectedIds.length} student(s) permanently deleted.`);
+      setArchivedSelectedIds([]);
       await load();
     } catch (err) {
       setError(err.message);

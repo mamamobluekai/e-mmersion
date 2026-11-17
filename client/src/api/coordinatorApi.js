@@ -92,7 +92,7 @@ export async function bulkDisapproveStudents(studentIds) {
 }
 
 export async function bulkArchiveStudents(studentIds) {
-  return apiFetch('/students/bulk', jsonBody({ student_ids: studentIds }, 'DELETE'));
+  return apiFetch('/students/bulk/archive', jsonBody({ student_ids: studentIds }, 'POST'));
 }
 
 export async function bulkRestoreStudents(studentIds) {

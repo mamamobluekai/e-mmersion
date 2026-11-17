@@ -9,6 +9,9 @@ const getPendingStudents = async (req, res) => {
     const params = [];
     let paramIdx = 1;
 
+    // Exclude archived students from the main approval list
+    whereClause += ` AND s.archived_at IS NULL`;
+
     if (status && status !== 'all') {
       whereClause += ` AND u.status = $${paramIdx}`;
       params.push(status);
