@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Camera,
@@ -857,7 +857,7 @@ export default function UserProfileSettings() {
                 {roleLabels[user?.role] || user?.role}
               </span>
 
-              <span className={styles.dot}>�</span>
+              <span className={styles.dot}>•</span>
 
               <span>{profile?.email}</span>
             </div>
@@ -970,3 +970,4 @@ export default function UserProfileSettings() {
     </div>
   );
 }
+
