@@ -10,6 +10,11 @@ import styles from './DeployStudents.module.css';
 
 const STRANDS = ['STEM', 'ABM', 'HUMSS', 'GAS', 'TVL', 'Arts and Design', 'Sports'];
 
+// Once the supervisor has set the immersion schedule the roster is frozen, so
+// the deploy page must not let the coordinator add or drop students. Mirrors
+// the guard in assignApprovedStudentsToBatch on the server.
+const ROSTER_LOCKED_STATUSES = ['upcoming', 'ongoing', 'completed'];
+
 function DeployStudents() {
   const { batchId } = useParams();
   const navigate = useNavigate();
@@ -67,6 +72,7 @@ function DeployStudents() {
   };
 
   const toggleStudent = (id) => {
+    if (ROSTER_LOCKED_STATUSES.includes(batch?.schedule?.status || 'none')) return;
     setSelectedStudents((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
@@ -74,6 +80,10 @@ function DeployStudents() {
 
   const handleAssign = async () => {
     if (!batch) return;
+    if (ROSTER_LOCKED_STATUSES.includes(batch.schedule?.status || 'none')) {
+      setAssignError('Students cannot be added or removed once the immersion schedule has been set.');
+      return;
+    }
     setAssignError('');
     if (selectedStudents.length > batch.max_students) {
       setAssignError(`Selected ${selectedStudents.length} exceeds max ${batch.max_students}.`);
@@ -141,17 +151,30 @@ function DeployStudents() {
     );
   }
 
+  const rosterLocked = ROSTER_LOCKED_STATUSES.includes(batch.schedule?.status || 'none');
+
   return (
     <div className={styles.page}>
       <div className={styles.header}>
         <div className={styles.headerText}>
           <h1 className={styles.title}>Deploy students</h1>
-          <p className={styles.subtitle}>
-            {batch.batch_label} — {batch.teacher?.first_name} {batch.teacher?.last_name}
-          </p>
+          <p className={styles.subtitle}>{batch.batch_label}</p>
+
+          <div className={styles.people}>
+            <span className={styles.personChip}>
+              <span className={styles.roleLabel}>Teacher</span>
+              {batch.teacher?.first_name} {batch.teacher?.last_name}
+            </span>
+            <span className={styles.personChip}>
+              <span className={styles.roleLabel}>Supervisor</span>
+              {batch.supervisor
+                ? `${batch.supervisor.first_name} ${batch.supervisor.last_name}`
+                : 'Not assigned'}
+            </span>
+          </div>
+
           <p className={styles.meta}>
             {batch.students?.length || 0}/{batch.max_students} students assigned
-            {batch.supervisor ? ` · Supervisor: ${batch.supervisor.first_name} ${batch.supervisor.last_name}` : ''}
           </p>
         </div>
         <button className={styles.btnBack} onClick={handleBack}>
@@ -162,6 +185,15 @@ function DeployStudents() {
       {message && <div className={styles.message}>{message}</div>}
       {error && <div className={styles.error}>{error}</div>}
       {assignError && <div className={styles.error}>{assignError}</div>}
+      {rosterLocked && (
+        <div className={styles.message}>
+          The supervisor has already set the immersion schedule
+          {batch.schedule?.start_date
+            ? ` (${batch.schedule.start_date} to ${batch.schedule.end_date || batch.schedule.start_date})`
+            : ''}
+          , so students can no longer be added or removed from this batch.
+        </div>
+      )}
 
       <div className={styles.filters}>
         <div className={styles.filterGroup}>
@@ -223,14 +255,15 @@ function DeployStudents() {
             )}
             {filteredStudents.map((s) => {
               const assignmentId = s.student_id || s.id;
-              const inThisBatch = Boolean(s.assigned_batch_id);
-              return (
+                const inThisBatch = Boolean(s.assigned_batch_id);
+                return (
                 <tr key={assignmentId} className={inThisBatch ? styles.rowInBatch : undefined}>
                   <td className={styles.checkCol}>
                     <input
                       type="checkbox"
                       checked={selectedStudents.includes(assignmentId)}
                       onChange={() => toggleStudent(assignmentId)}
+                      disabled={rosterLocked}
                     />
                   </td>
                   <td>{s.student_id}</td>
@@ -260,8 +293,13 @@ function DeployStudents() {
         <button
           className={styles.btnDeploy}
           type="button"
-          disabled={savingAssign || selectedStudents.length === 0}
+          disabled={rosterLocked || savingAssign || selectedStudents.length === 0}
           onClick={handleAssign}
+          title={
+            rosterLocked
+              ? 'Cannot add or remove students once the immersion schedule has been set'
+              : undefined
+          }
         >
           <Send size={18} />
           {savingAssign ? 'Deploying...' : `Deploy ${selectedStudents.length} student${selectedStudents.length === 1 ? '' : 's'}`}

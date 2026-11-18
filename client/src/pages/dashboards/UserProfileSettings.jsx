@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Camera,
@@ -371,6 +371,12 @@ export default function UserProfileSettings() {
 
   const roleFields = ROLE_FIELDS[user?.role] || [];
 
+  // Students, teachers, supervisors and coordinators cannot change their own
+  // profile details - those are managed by the administrator. The fields stay
+  // read-only, while password and app preferences remain editable below.
+  const canEditProfile = user?.role === 'admin';
+  const profileLocked = !canEditProfile;
+
   // The section cards, rendered either inline in the page (desktop) or inside
   // the phone-only modal. Defined once and mounted in a single place at a time, so
   // there is never a duplicate copy of these forms in the DOM - the shared input
@@ -388,7 +394,11 @@ export default function UserProfileSettings() {
 
             <div>
               <h3>Profile Information</h3>
-              <p>Update your personal information.</p>
+              <p>
+                {profileLocked
+                  ? 'Your profile details are managed by the administrator.'
+                  : 'Update your personal information.'}
+              </p>
             </div>
           </div>
 
@@ -410,7 +420,7 @@ export default function UserProfileSettings() {
                     name="first_name"
                     value={form.first_name}
                     onChange={handleFieldChange}
-                    disabled={!editing || saving}
+                    disabled={profileLocked || !editing || saving}
                   />
                 </div>
               </div>
@@ -425,7 +435,7 @@ export default function UserProfileSettings() {
                     name="last_name"
                     value={form.last_name}
                     onChange={handleFieldChange}
-                    disabled={!editing || saving}
+                    disabled={profileLocked || !editing || saving}
                   />
                 </div>
               </div>
@@ -441,7 +451,7 @@ export default function UserProfileSettings() {
                     type="email"
                     value={form.email}
                     onChange={handleFieldChange}
-                    disabled={!editing || saving}
+                    disabled={profileLocked || !editing || saving}
                   />
                 </div>
 
@@ -460,7 +470,7 @@ export default function UserProfileSettings() {
                     name="phone"
                     value={form.phone}
                     onChange={handleFieldChange}
-                    disabled={!editing || saving}
+                    disabled={profileLocked || !editing || saving}
                   />
                 </div>
               </div>
@@ -487,7 +497,7 @@ export default function UserProfileSettings() {
                             e.target.value
                           )
                         }
-                        disabled={!editing || saving}
+                        disabled={profileLocked || !editing || saving}
                       />
                     </div>
                   </div>
@@ -497,7 +507,13 @@ export default function UserProfileSettings() {
             </div>
 
             <div className={styles.formFooter}>
-              {editing ? (
+              {profileLocked ? (
+                <p className={styles.profileLockNote}>
+                  <Lock size={15} />
+                  Contact your administrator to update your name, email, phone,
+                  or other profile details.
+                </p>
+              ) : editing ? (
                 <>
                   <button
                     type="button"
@@ -625,7 +641,7 @@ export default function UserProfileSettings() {
             </div>
 
             <div className={styles.passwordHint}>
-              <span className={styles.checkCircle}>✓</span>
+              <span className={styles.checkCircle}>?</span>
               Password must contain at least 8 characters.
             </div>
 
@@ -841,7 +857,7 @@ export default function UserProfileSettings() {
                 {roleLabels[user?.role] || user?.role}
               </span>
 
-              <span className={styles.dot}>•</span>
+              <span className={styles.dot}>�</span>
 
               <span>{profile?.email}</span>
             </div>

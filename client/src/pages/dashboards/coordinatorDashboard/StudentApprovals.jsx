@@ -392,7 +392,8 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
 
           <p>
             Review pending accounts, approve student access, and manage uploaded
-            student records.
+            student records. Students already deployed to a batch are moved out
+            of this list and appear under Batches instead.
           </p>
         </div>
       </div>

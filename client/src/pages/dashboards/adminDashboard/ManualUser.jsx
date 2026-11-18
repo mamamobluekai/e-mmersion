@@ -139,6 +139,7 @@ export default function ManualUser() {
           <p>
             Create a teacher, supervisor, or coordinator account one at a time.
             Accounts are created as pending and stay inactive until approved.
+            Approving one emails the user a link to set their own password.
           </p>
         </div>
         <button
@@ -211,11 +212,6 @@ export default function ManualUser() {
                   required={field.required}
                   autoComplete="off"
                 />
-                {field.key === 'password' && (
-                  <p className={styles.fieldHint}>
-                    Must be at least 8 characters.
-                  </p>
-                )}
               </div>
             ))}
           </div>

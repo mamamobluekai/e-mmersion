@@ -70,6 +70,15 @@ function isBatchEditLocked(status) {
   return EDIT_LOCKED_STATUSES.includes(status || 'none');
 }
 
+// The roster is frozen once the supervisor has set the immersion schedule:
+// adding or removing students would change a plan that is already committed.
+// Mirrors the server guard in assignApprovedStudentsToBatch.
+const ROSTER_LOCKED_STATUSES = ['upcoming', 'ongoing', 'completed'];
+
+function isRosterLocked(status) {
+  return ROSTER_LOCKED_STATUSES.includes(status || 'none');
+}
+
 // Mirrors `resolveBatchRemoval` in teacherBatch.controller.js. The server is the
 // authority; this only decides which of the three actions the trash button
 // offers so the coordinator is never sent down a path that will be rejected.
@@ -599,6 +608,7 @@ function TeacherBatches() {
                     <p className={styles.batchPeople}>
                       <span className={styles.personChip} title={`Teacher: ${b.teacher?.first_name || ''} ${b.teacher?.last_name || ''}`.trim()}>
                         <UserRound size={13} aria-hidden="true" />
+                        <span className={styles.personRole}>Teacher</span>
                         {b.teacher?.first_name} {b.teacher?.last_name}
                       </span>
                       {b.supervisor ? (
@@ -607,12 +617,14 @@ function TeacherBatches() {
                           title={`Supervisor: ${b.supervisor.first_name} ${b.supervisor.last_name}`}
                         >
                           <Users size={13} aria-hidden="true" />
+                          <span className={styles.personRole}>Supervisor</span>
                           {b.supervisor.first_name} {b.supervisor.last_name}
                         </span>
                       ) : (
                         <span className={styles.personChipMuted} title="No supervisor assigned">
                           <Users size={13} aria-hidden="true" />
-                          No supervisor
+                          <span className={styles.personRole}>Supervisor</span>
+                          Not assigned
                         </span>
                       )}
                     </p>
@@ -664,7 +676,16 @@ function TeacherBatches() {
                       modal ("+ Add student") — hiding it here keeps a single,
                       unambiguous entry point. */}
                   {(b.students || []).length === 0 && (
-                    <button className={styles.btnGhost} onClick={() => openAssign(b)}>
+                    <button
+                      className={styles.btnGhost}
+                      onClick={() => openAssign(b)}
+                      disabled={isRosterLocked(b.schedule?.status)}
+                      title={
+                        isRosterLocked(b.schedule?.status)
+                          ? 'Cannot add students: the supervisor has already set the immersion schedule'
+                          : 'Deploy students'
+                      }
+                    >
                       Deploy students
                     </button>
                   )}
@@ -876,10 +897,10 @@ function TeacherBatches() {
                   {viewing.batch_label}
                 </h3>
                 <p className={styles.modalSubtitle}>
-                  {viewing.teacher?.first_name} {viewing.teacher?.last_name}
+                  Teacher: {viewing.teacher?.first_name} {viewing.teacher?.last_name}
                   {viewing.supervisor
                     ? ` · Supervisor: ${viewing.supervisor.first_name} ${viewing.supervisor.last_name}`
-                    : ''}
+                    : ' · Supervisor: not assigned'}
                 </p>
               </div>
               <button
@@ -912,7 +933,12 @@ function TeacherBatches() {
                   closeViewStudents();
                   openAssign(target);
                 }}
-                title="Add students to this batch"
+                disabled={isRosterLocked(viewing.schedule?.status)}
+                title={
+                  isRosterLocked(viewing.schedule?.status)
+                    ? 'Cannot add students: the supervisor has already set the immersion schedule'
+                    : 'Add students to this batch'
+                }
               >
                 + Add student
               </button>
@@ -920,9 +946,7 @@ function TeacherBatches() {
 
             {/* Work immersion schedule for this batch, as set by its supervisor. */}
             {(() => {
-              const removalLocked = ['upcoming', 'ongoing', 'completed'].includes(
-                viewing.schedule?.status || 'none'
-              );
+              const removalLocked = isRosterLocked(viewing.schedule?.status);
               return (
                 <>
             <div className={styles.schedulePanel}>
@@ -969,7 +993,7 @@ function TeacherBatches() {
               )}
               {removalLocked && (
                 <p className={styles.schedulePanelEmpty} style={{ marginTop: 8 }}>
-                  Students cannot be removed while immersion is upcoming, ongoing, or completed.
+                  Students cannot be added or removed while immersion is upcoming, ongoing, or completed.
                 </p>
               )}
             </div>
@@ -1070,6 +1094,12 @@ function TeacherBatches() {
                     closeViewStudents();
                     openAssign(target);
                   }}
+                  disabled={isRosterLocked(viewing.schedule?.status)}
+                  title={
+                    isRosterLocked(viewing.schedule?.status)
+                      ? 'Cannot add students: the supervisor has already set the immersion schedule'
+                      : 'Deploy students'
+                  }
                 >
                   Deploy students
                 </button>

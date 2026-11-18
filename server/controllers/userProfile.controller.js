@@ -74,9 +74,23 @@ const getMyProfile = async (req, res) => {
 };
 
 const updateMyProfile = async (req, res) => {
+  const body = req.body || {};
+
+  // Profile details are managed by the administrator for these roles. They can
+  // still flip app preferences (skip_splash_screen), which this same endpoint
+  // persists, but the personal/role fields stay locked.
+  const PROFILE_EDIT_LOCKED_ROLES = ['student', 'teacher', 'supervisor', 'coordinator'];
+  if (PROFILE_EDIT_LOCKED_ROLES.includes(req.user.role)) {
+    const deniedFields = Object.keys(body).filter((key) => key !== 'skip_splash_screen');
+    if (deniedFields.length > 0) {
+      return res.status(403).json({
+        error: 'Profile details are managed by the administrator and cannot be edited here.',
+      });
+    }
+  }
+
   const client = await pool.connect();
   try {
-    const body = req.body;
     await client.query('BEGIN');
 
     const userFields = [];

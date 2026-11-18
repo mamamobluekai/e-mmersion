@@ -7,6 +7,7 @@
 //
 // Design system: Lexend + the maroon palette from RequirementsReview.
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   getMyDeploymentRequests,
   getDeploymentRequestStudents,
@@ -14,6 +15,7 @@ import {
   deleteDeploymentRequest,
   getCompletedStudents,
   getTeachers,
+  getSupervisors,
 } from '../../../api/coordinatorApi';
 import {
   Search,
@@ -22,7 +24,6 @@ import {
   Inbox,
   Users,
   BriefcaseBusiness,
-  Send,
   Trash2,
   UserCheck,
   Tag,
@@ -48,9 +49,11 @@ const fmtDate = (value) => {
 };
 
 function DeploymentRequests() {
+  const navigate = useNavigate();
   const [requests, setRequests] = useState([]);
   const [eligible, setEligible] = useState([]);
   const [teachers, setTeachers] = useState([]);
+  const [supervisors, setSupervisors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -75,14 +78,16 @@ function DeploymentRequests() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [r, s, t] = await Promise.all([
+      const [r, s, t, sup] = await Promise.all([
         getMyDeploymentRequests(),
         getCompletedStudents(),
         getTeachers(),
+        getSupervisors(),
       ]);
       setRequests(r.deployment_requests || []);
       setEligible(s.students || []);
       setTeachers(t.teachers || []);
+      setSupervisors(sup.supervisors || []);
     } catch (err) {
       showError(err.message);
     } finally {
@@ -99,12 +104,13 @@ function DeploymentRequests() {
     return {
       awaiting: incoming.filter((r) => r.status === 'pending').length,
       labelled: incoming.filter((r) => r.status === 'fulfilled').length,
-      supervisors: new Set(
-        incoming.map((r) => `${r.supervisor_first_name}${r.supervisor_last_name}${r.supervisor_company}`)
-      ).size,
+      // Comes from the same list the Supervisors page renders, so the count
+      // matches what the coordinator sees there instead of only counting
+      // supervisors who happen to have submitted a request.
+      supervisors: supervisors.length,
       students: incoming.reduce((sum, r) => sum + Number(r.num_students || 0), 0),
     };
-  }, [requests]);
+  }, [requests, supervisors]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -244,35 +250,17 @@ function DeploymentRequests() {
               teacher. The supervisor is then attached to that batch.
             </p>
           </div>
-          {/* Sits at the trailing edge of the header. The inline margin is used
-              instead of a shared .headerLeft change so the supervisor's
-              CreateDeploymentRequest header keeps its original layout. */}
-          <div className={styles.headerIcon} style={{ marginLeft: 'auto' }} aria-hidden="true">
-            <Send size={23} />
-          </div>
         </div>
       </div>
 
       <div className={styles.statsGrid}>
-        <div className={styles.statCard}>
-          <div className={`${styles.statIcon} ${styles.statRed}`}>
-            <Inbox size={20} />
-          </div>
-          <div>
-            <span className={styles.statLabel}>Awaiting label</span>
-            <strong>{stats.awaiting}</strong>
-          </div>
-        </div>
-        <div className={styles.statCard}>
-          <div className={`${styles.statIcon} ${styles.statGreen}`}>
-            <Tag size={20} />
-          </div>
-          <div>
-            <span className={styles.statLabel}>Batches labelled</span>
-            <strong>{stats.labelled}</strong>
-          </div>
-        </div>
-        <div className={styles.statCard}>
+        <button
+          type="button"
+          className={`${styles.statCard} ${styles.statCardLink}`}
+          onClick={() => navigate('/dashboard/coordinator/supervisors')}
+          title="View supervisors"
+          aria-label="View the supervisors page"
+        >
           <div className={`${styles.statIcon} ${styles.statBlue}`}>
             <BriefcaseBusiness size={20} />
           </div>
@@ -280,16 +268,7 @@ function DeploymentRequests() {
             <span className={styles.statLabel}>Partner supervisors</span>
             <strong>{stats.supervisors}</strong>
           </div>
-        </div>
-        <div className={styles.statCard}>
-          <div className={`${styles.statIcon} ${styles.statOrange}`}>
-            <Users size={20} />
-          </div>
-          <div>
-            <span className={styles.statLabel}>Students requested</span>
-            <strong>{stats.students}</strong>
-          </div>
-        </div>
+        </button>
       </div>
 
       <div className={styles.card}>

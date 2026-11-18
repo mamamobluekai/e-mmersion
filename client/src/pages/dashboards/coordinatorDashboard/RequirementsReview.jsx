@@ -105,12 +105,19 @@ const getFileType = (mime) => {
 };
 
 // Open the file in a browser tab instead of saving it. Cloudinary serves raw
-// uploads as attachments unless asked otherwise, so fl_inline is added to the
-// delivery URL: PDFs and images then render in the tab, and nothing is written
-// to disk unless the user saves it from there.
-const viewUrl = (url) => String(url || '')
-  .replace('/upload/', '/upload/fl_inline/')
-  .replace('/upload/fl_inline/fl_inline/', '/upload/fl_inline/');
+// uploads as attachments unless asked otherwise, so fl_inline is added for
+// document types. Images must keep their plain delivery URL: Cloudinary rejects
+// fl_inline on image resources with a 400, which made View fail for uploads
+// like PNG/JPG.
+const INLINE_FLAG_TYPES = /\.(pdf|docx?|xlsx?|pptx?|txt|csv)$/i;
+
+const viewUrl = (url) => {
+  const raw = String(url || '');
+  if (!INLINE_FLAG_TYPES.test(raw)) return raw;
+  return raw
+    .replace('/upload/', '/upload/fl_inline/')
+    .replace('/upload/fl_inline/fl_inline/', '/upload/fl_inline/');
+};
 
 const FALLBACK_DOC_TYPES = [
   {
@@ -600,6 +607,10 @@ function RequirementsReview() {
   const reviewStatusOptions = selected?.status === 'Approved'
     ? ['Approved', HOLD_STATUS]
     : REVIEW_STATUSES;
+
+  // An approved submission is settled: the per-document Verify and Needs
+  // Revision controls are hidden so the checklist becomes read-only.
+  const checklistLocked = selected?.status === 'Approved';
 
   // Approving certifies the requirements are complete, so the panel refuses to
   // save an approval while anything is still missing. The server enforces the
@@ -1223,9 +1234,13 @@ function RequirementsReview() {
                       {submission.submitted_at && (
                         <span>
                           Submitted{' '}
-                          {new Date(
-                            submission.submitted_at
-                          ).toLocaleString()}
+                          {new Date(submission.submitted_at).toLocaleString('en-US', {
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit',
+                          })}
                         </span>
                       )}
                     </div>
@@ -1400,38 +1415,42 @@ function RequirementsReview() {
                                 {primaryDoc.original_name || primaryDoc.document_name || 'Document'}
                                 {fmtSize(primaryDoc.file_size) && ` · ${fmtSize(primaryDoc.file_size)}`}
                                 {primaryDoc.mime_type && ` · ${getFileType(primaryDoc.mime_type)}`}
-                                {primaryDoc.uploaded_date && ` · ${new Date(primaryDoc.uploaded_date).toLocaleDateString()}`}
+                                {primaryDoc.uploaded_date && ` · ${new Date(primaryDoc.uploaded_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`}
                               </span>
                             ) : null}
                           </div>
 
                           {primaryDoc ? (
                             <div className={styles.checklistActions}>
-                              <span className={`${styles.badge} ${docBadge(primaryDoc.status)}`}>
-                                {primaryDoc.status}
-                              </span>
-                              <button
-                                type="button"
-                                className={styles.verifyButton}
-                                onClick={() => handleVerifyDoc(primaryDoc.id, 'Verified')}
-                              >
-                                <CheckCircle2 size={15} />
-                                Verify
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.revisionButton}
-                                aria-pressed={flagged}
-                                onClick={() => handleFlagRevision(item)}
-                                title={
-                                  flagged
-                                    ? 'Remove this requirement from the revision list'
-                                    : 'Ask the student to submit this requirement again'
-                                }
-                              >
-                                <XCircle size={15} />
-                                Needs Revision
-                              </button>
+                              {!checklistLocked && (
+                                <>
+                                  <span className={`${styles.badge} ${docBadge(primaryDoc.status)}`}>
+                                    {primaryDoc.status}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className={styles.verifyButton}
+                                    onClick={() => handleVerifyDoc(primaryDoc.id, 'Verified')}
+                                  >
+                                    <CheckCircle2 size={15} />
+                                    Verify
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.revisionButton}
+                                    aria-pressed={flagged}
+                                    onClick={() => handleFlagRevision(item)}
+                                    title={
+                                      flagged
+                                        ? 'Remove this requirement from the revision list'
+                                        : 'Ask the student to submit this requirement again'
+                                    }
+                                  >
+                                    <XCircle size={15} />
+                                    Needs Revision
+                                  </button>
+                                </>
+                              )}
                               {primaryDoc.cloudinary_url ? (
                                 <a
                                   className={styles.viewButton}

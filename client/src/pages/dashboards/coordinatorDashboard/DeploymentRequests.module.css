@@ -36,6 +36,8 @@
 .statsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .statCard { display: flex; align-items: center; gap: 13px; min-height: 88px; padding: 17px; border-radius: 16px; transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
 .statCard:hover { transform: translateY(-2px); border-color: #d7b8be; box-shadow: 0 15px 32px -20px rgb(23 32 51 / 18%); }
+.statCardLink { cursor: pointer; font: inherit; text-align: left; }
+.statCardLink:focus-visible { outline: 2px solid var(--about-maroon); outline-offset: 2px; }
 .statIcon { display: flex; align-items: center; justify-content: center; width: 42px; height: 42px; flex-shrink: 0; border-radius: 12px; color: #fff; }
 .statRed { background: var(--about-maroon); }
 .statGreen { background: #15803d; }

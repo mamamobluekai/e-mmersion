@@ -1,17 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getSupervisors } from '../../../api/coordinatorApi';
-import { User, Mail, Briefcase, BriefcaseBusiness, Phone, Calendar } from 'lucide-react';
+import { Mail, Briefcase, BriefcaseBusiness, Phone, Calendar } from 'lucide-react';
 import styles from './Supervisors.module.css';
-
-const statusBadge = (status) => {
-  const map = {
-    pending: styles.badgePending,
-    accepted: styles.badgeAccepted,
-    rejected: styles.badgeRejected,
-    disapproved: styles.badgeRejected,
-  };
-  return map[String(status || '').toLowerCase()] || styles.badgePending;
-};
 
 function Supervisors() {
   const [supervisors, setSupervisors] = useState([]);
@@ -82,7 +72,6 @@ function Supervisors() {
                   <th>Email</th>
                   <th>Company</th>
                   <th>Designation</th>
-                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -94,11 +83,6 @@ function Supervisors() {
                     <td>{s.email}</td>
                     <td>{s.company_name || '-'}</td>
                     <td>{s.designation || '-'}</td>
-                    <td>
-                      <span className={`${styles.badge} ${statusBadge(s.status)}`}>
-                        {s.status === 'approved' ? 'Accepted' : s.status}
-                      </span>
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -112,14 +96,9 @@ function Supervisors() {
         <div className={styles.modalOverlay} onClick={closeModal}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
-              <div className={styles.modalAvatar}>
-                <User size={28} />
-              </div>
               <div>
+                <span className={styles.modalNameLabel}>Name</span>
                 <h3>{selectedSupervisor.first_name} {selectedSupervisor.last_name}</h3>
-                <span className={`${styles.badge} ${statusBadge(selectedSupervisor.status)}`}>
-                  {selectedSupervisor.status === 'approved' ? 'Accepted' : selectedSupervisor.status}
-                </span>
               </div>
               <button className={styles.modalClose} onClick={closeModal} aria-label="Close">
                 <span>×</span>
@@ -153,14 +132,6 @@ function Supervisors() {
                   <div className={styles.detailValue}>
                     <BriefcaseBusiness size={16} />
                     <span>{selectedSupervisor.designation || 'Not provided'}</span>
-                  </div>
-                </div>
-                <div className={styles.detailItem}>
-                  <label>Status</label>
-                  <div className={styles.detailValue}>
-                    <span className={`${styles.badge} ${statusBadge(selectedSupervisor.status)}`}>
-                      {selectedSupervisor.status === 'approved' ? 'Accepted' : selectedSupervisor.status}
-                    </span>
                   </div>
                 </div>
                 <div className={styles.detailItem}>

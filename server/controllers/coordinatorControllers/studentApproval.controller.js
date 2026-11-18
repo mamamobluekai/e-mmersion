@@ -12,6 +12,13 @@ const getPendingStudents = async (req, res) => {
     // Exclude archived students from the main approval list
     whereClause += ` AND s.archived_at IS NULL`;
 
+    // Students already deployed into a teacher batch are finished with
+    // approval, so keep them off this page. They reappear here only if the
+    // coordinator removes them from their batch.
+    whereClause += ` AND NOT EXISTS (
+      SELECT 1 FROM teacher_batch_students tbs WHERE tbs.student_id = s.id
+    )`;
+
     if (status && status !== 'all') {
       whereClause += ` AND u.status = $${paramIdx}`;
       params.push(status);

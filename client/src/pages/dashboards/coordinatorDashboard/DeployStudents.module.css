@@ -57,6 +57,10 @@
 .subtitle { margin: 10px 0 0; color: var(--about-muted); font-size: 0.96rem; font-weight: 600; }
 .meta { margin: 4px 0 0; color: var(--about-muted); font-size: 0.84rem; }
 
+.people { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.personChip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 12px 5px 6px; border: 1px solid var(--about-border); border-radius: 999px; background: var(--about-blush); color: var(--about-ink); font-size: 0.82rem; font-weight: 600; white-space: nowrap; }
+.roleLabel { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--about-maroon); color: #fff; font-size: 0.64rem; font-weight: 800; letter-spacing: 0.06em; line-height: 1.5; text-transform: uppercase; }
+
 .message, .error { padding: 12px 15px; border: 1px solid var(--about-border); border-radius: 14px; font-size: 0.88rem; font-weight: 600; }
 .message { border-color: #f0e1c8; background: #fffaf2; color: #77531f; }
 .error { border-color: #efc2ca; background: var(--about-blush); color: var(--about-maroon); }
@@ -113,6 +117,7 @@
 
 .checkCol { width: 44px; text-align: center; }
 .table input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--about-maroon); cursor: pointer; }
+.table input[type='checkbox']:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .currentBadge, .availableBadge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
 .currentBadge { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }

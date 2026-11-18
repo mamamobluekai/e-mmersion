@@ -5,7 +5,7 @@ const streamifier = require('streamifier');
 const PDFDocument = require('pdfkit');
 const XLSX = require('xlsx');
 const { hashPassword } = require('../../utils/hashPassword');
-const { validatePassword, validateConfirmation } = require('../../utils/passwordPolicy');
+const { validatePassword, validateConfirmation, NO_PASSWORD_SENTINEL } = require('../../utils/passwordPolicy');
 const { generateTemporaryPassword } = require('../../utils/generatePassword');
 const { login } = require('../user.controller');
 const adminService = require('../../services/admin.service');
@@ -302,15 +302,17 @@ const createUser = async (req, res) => {
       phone,
     } = req.body;
 
-    if (!firstName || !lastName || !email || !password || !role) {
-      return res.status(400).json({ error: 'First name, last name, email, password, and role are required.' });
+    if (!firstName || !lastName || !email || !role) {
+      return res.status(400).json({ error: 'First name, last name, email, and role are required.' });
     }
 
     if (!['teacher', 'supervisor', 'coordinator'].includes(role)) {
       return res.status(400).json({ error: 'Role must be teacher, supervisor, or coordinator.' });
     }
 
-    if (password.length < 8) {
+    // Same flow as the Excel upload: no password here. The account starts with
+    // the sentinel so approving it emails a one-time set-password link.
+    if (password && password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     }
 
@@ -320,51 +322,47 @@ const createUser = async (req, res) => {
       return res.status(409).json({ error: 'Email already registered.' });
     }
 
-    const roleTables = {
-      teacher: 'teachers',
-      supervisor: 'supervisors',
-      coordinator: 'coordinators',
-    };
-    const roleTable = roleTables[role];
-
-    const uniqueIdColumn = role === 'supervisor' ? 'employee_id' : role === 'coordinator' ? 'coordinator_id' : 'employee_id';
-
     if (role === 'supervisor' && !companyName) {
       return res.status(400).json({ error: 'Company name is required for supervisors.' });
     }
 
     await client.query('BEGIN');
 
+    // The manual form no longer collects a password (matching the Excel upload),
+    // so the sentinel is stored and the approval email carries the set-password
+    // link. A password is still honoured if an older caller sends one.
+    const passwordValue = password ? await hashPassword(password) : NO_PASSWORD_SENTINEL;
+
     const userResult = await client.query(
       `INSERT INTO users (email, password, role, phone, status)
        VALUES ($1, $2, $3, $4, 'pending')
        RETURNING id, email, role, status, phone, created_at`,
-      [trimmedEmail, await hashPassword(password), role, phone ? String(phone).trim() : null]
+      [trimmedEmail, passwordValue, role, phone ? String(phone).trim() : null]
     );
 
     const user = userResult.rows[0];
 
     const roleFields = {
-      teacher: `INSERT INTO teachers (user_id, first_name, last_name, employee_id, department, position)
+      teacher: `INSERT INTO teachers (user_id, first_name, last_name, employee_id, department, designation)
                 VALUES ($1, $2, $3, $4, $5, $6)`,
-      supervisor: `INSERT INTO supervisors (user_id, first_name, last_name, company_name, position, department, phone)
+      supervisor: `INSERT INTO supervisors (user_id, first_name, last_name, employee_id, company_name, designation, department)
                    VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      coordinator: `INSERT INTO coordinators (user_id, first_name, last_name, coordinator_id, department, position, phone)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      coordinator: `INSERT INTO coordinators (user_id, first_name, last_name, employee_id, department, designation)
+                    VALUES ($1, $2, $3, $4, $5, $6)`,
     }[role];
 
     const roleParams = role === 'teacher'
       ? [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, department ? String(department).trim() : null, position ? String(position).trim() : null]
       : role === 'supervisor'
-      ? [user.id, String(firstName).trim(), String(lastName).trim(), String(companyName).trim(), position ? String(position).trim() : null, department ? String(department).trim() : null, phone ? String(phone).trim() : null]
-      : [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, department ? String(department).trim() : null, position ? String(position).trim() : null, phone ? String(phone).trim() : null];
+      ? [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, String(companyName).trim(), position ? String(position).trim() : null, department ? String(department).trim() : null]
+      : [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, department ? String(department).trim() : null, position ? String(position).trim() : null];
 
     await client.query(roleFields, roleParams);
 
     await client.query('COMMIT');
 
     res.status(201).json({
-      message: `${role.charAt(0).toUpperCase() + role.slice(1)} account created. It stays pending until approved.`,
+      message: `${role.charAt(0).toUpperCase() + role.slice(1)} account created. It stays pending until approved; approving it emails a set-password link.`,
       user: {
         ...user,
         first_name: String(firstName).trim(),

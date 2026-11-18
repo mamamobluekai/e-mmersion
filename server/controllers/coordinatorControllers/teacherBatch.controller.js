@@ -654,6 +654,15 @@ const assignApprovedStudentsToBatch = async (req, res) => {
           });
         }
       }
+      // The roster is fixed as soon as the supervisor sets a schedule, so new
+      // students cannot be added once the immersion is upcoming or later.
+      for (const id of nextIds) {
+        if (!batchCheck.rows[0]._currentIds.has(id)) {
+          return res.status(409).json({
+            error: 'Students cannot be added while immersion is upcoming, ongoing, or completed.',
+          });
+        }
+      }
     }
 
     // Conflict rule: a student can only ever belong to ONE teacher batch.
@@ -805,6 +814,32 @@ const getTeacherBatchById = async (req, res) => {
       [r.batch_id]
     );
 
+    // The deploy page needs the schedule status too: once the supervisor has
+    // set a date the roster is locked, so adding students must be blocked.
+    let schedule = summarizeSchedule(null, new Set());
+    try {
+      const scheduleRows = await pool.query(
+        `SELECT wis.supervisor_id, wis.duration_type, wis.duration_value,
+                to_char(wis.start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(wis.end_date, 'YYYY-MM-DD') AS end_date
+           FROM work_immersion_schedules wis
+          WHERE wis.teacher_batch_id = $1`,
+        [r.batch_id]
+      );
+      const rows = scheduleRows.rows || [];
+      if (rows.length > 0) {
+        const scoped = rows.find(
+          (row) => row.supervisor_id !== null && Number(row.supervisor_id) === Number(r.supervisor_id)
+        );
+        const scheduleRow = scoped || rows.find((row) => row.supervisor_id == null) || rows[0];
+        const { blocked } = await loadExcludedDates(r.batch_id, scheduleRow?.supervisor_id ?? null);
+        schedule = summarizeSchedule(scheduleRow, blocked);
+      }
+    } catch (scheduleErr) {
+      // Table not migrated yet means "no schedule", not "locked".
+      if (scheduleErr.code !== '42P01') throw scheduleErr;
+    }
+
     res.json({
       batch: {
         id: r.batch_id,
@@ -812,6 +847,7 @@ const getTeacherBatchById = async (req, res) => {
         max_students: r.max_students,
         supervisor_id: r.supervisor_id,
         teacher_user_id: r.teacher_user_id,
+        schedule,
         teacher: {
           id: r.teacher_id,
           user_id: r.teacher_user_id,

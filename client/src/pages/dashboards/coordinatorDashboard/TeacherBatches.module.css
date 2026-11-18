@@ -71,7 +71,8 @@
 .btnSecondary { color: var(--about-muted); background: #fff; border: 1px solid var(--about-border); }
 .btnSecondary:hover:not(:disabled) { border-color: #d7b8be; color: var(--about-maroon); background: var(--about-blush); }
 .btnGhost { min-height: 38px; padding: 0 13px; color: var(--about-maroon); background: #fff; border: 1px solid var(--about-border); }
-.btnGhost:hover { border-color: #d7b8be; background: var(--about-blush); transform: translateY(-1px); }
+.btnGhost:hover:not(:disabled) { border-color: #d7b8be; background: var(--about-blush); transform: translateY(-1px); }
+.btnGhost:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .btnDanger { color: #fff; background: var(--about-maroon); border: 1px solid var(--about-maroon); }
 .btnDanger:hover:not(:disabled) { background: #741725; }
 .btn:disabled, .btnSecondary:disabled, .btnDanger:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
@@ -97,8 +98,9 @@
 .batchInfo { flex: 1 1 300px; min-width: 0; }
 .listItem h4 { margin: 0 0 8px; color: var(--about-ink); font-size: 1rem; font-weight: 750; letter-spacing: -0.02em; }
 .batchPeople { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 11px; }
-.personChip, .personChipMuted { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; padding: 3px 9px; border: 1px solid var(--about-border); border-radius: 999px; background: #fff; color: var(--about-ink); font-size: 0.72rem; font-weight: 600; }
-.personChip svg { color: var(--about-maroon); }
+.personChip, .personChipMuted { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 3px 9px; border: 1px solid var(--about-border); border-radius: 999px; background: #fff; color: var(--about-ink); font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+.personChip svg { flex: 0 0 auto; color: var(--about-maroon); }
+.personRole { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; background: var(--about-blush); color: var(--about-maroon); font-size: 0.6rem; font-weight: 800; letter-spacing: 0.06em; line-height: 1.5; text-transform: uppercase; }
 .personChipMuted { border-style: dashed; color: var(--about-muted); font-style: italic; }
 
 .capacity { display: flex; align-items: center; gap: 10px; max-width: 340px; }
@@ -119,7 +121,8 @@
 
 .btnIcon:disabled { opacity: 0.45; cursor: not-allowed; }
 .btnIconDelete { color: var(--about-maroon); }
-.btnIconDelete:hover { background: var(--about-blush); border-color: #d7b8be; transform: translateY(-1px); }
+.btnIconDelete:hover:not(:disabled) { background: var(--about-blush); border-color: #d7b8be; transform: translateY(-1px); }
+.btnIconDelete:disabled { opacity: 0.45; cursor: not-allowed; transform: none; background: #fff; border-color: var(--about-border); }
 
 .loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 110px; margin: 0; color: var(--about-muted); font-size: 0.83rem; }
 .loading::before { content: ''; width: 16px; height: 16px; border: 2px solid #f0e3e5; border-top-color: var(--about-maroon); border-radius: 50%; animation: spin 0.8s linear infinite; }
