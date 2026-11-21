@@ -3,6 +3,7 @@ import DashboardLayout from '../sharedSidebar/DashboardLayout';
 import DashboardTopNav from '../sharedSidebar/DashboardTopNav';
 import CoordinatorSidebar from './CoordinatorSidebar';
 import StudentApprovals from './StudentApprovals';
+import StudentList from './StudentList';
 import RequirementsReview from './RequirementsReview';
 import TeacherBatches from './TeacherBatches';
 import DeployStudents from './DeployStudents';
@@ -22,6 +23,7 @@ function CoordinatorDashboard({ user, onLogout }) {
       <Routes>
         <Route index element={<CoordinatorOverview />} />
         <Route path="students" element={<StudentApprovals />} />
+        <Route path="student-list" element={<StudentList />} />
         <Route path="upload-students" element={<Navigate to="/dashboard/coordinator/students" replace />} />
          <Route path="requirements" element={<RequirementsReview />} />
          <Route path="announcements" element={<Announcements user={user} />} />

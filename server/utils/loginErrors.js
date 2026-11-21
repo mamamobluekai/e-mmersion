@@ -78,6 +78,10 @@ function sendLoginError(res, code, detail, extra) {
       status: 403,
       message: 'This account was not approved. Contact your coordinator or an administrator to have it activated again.',
     },
+    TEMPORARY_PASSWORD_EXPIRED: {
+      status: 403,
+      message: 'Your temporary password has expired. Ask your coordinator to resend your student login credentials.',
+    },
     ACCOUNT_LOCKED: {
       status: 429,
       message: (d) => `Too many failed attempts. This account is locked for another ${d.minutes} minute${d.minutes === 1 ? '' : 's'}.`,

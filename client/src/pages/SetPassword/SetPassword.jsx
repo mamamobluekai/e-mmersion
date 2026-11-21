@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   KeyRound,
   Lock,
@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 
 import { resetPassword, verifyResetToken } from '../../api/authApi';
+import { setStudentActivationPassword } from '../../api/userApi';
+import { useAuth } from '../../context/AuthContext';
 import { getPasswordFormProblem } from '../../utils/passwordPolicy';
 import { API_BASE } from '../../config/api';
 import styles from './SetPassword.module.css';
@@ -30,9 +32,12 @@ const PASSWORD_RULES = [
 
 export default function SetPassword() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { user, updateUser } = useAuth();
 
   const token = searchParams.get('token');
   const email = searchParams.get('email');
+  const activationMode = user?.role === 'student' && user.must_change_password;
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -41,17 +46,16 @@ export default function SetPassword() {
 
   const [loading, setLoading] = useState(false);
   const [tokenState, setTokenState] = useState(
-    token ? 'verifying' : email ? 'email' : 'missing',
+    activationMode ? 'activation' : token ? 'verifying' : email ? 'email' : 'missing',
   );
   const [tokenError, setTokenError] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  // Set once the password is accepted. The form is replaced by the
-  // verification notice instead of redirecting, so the wording is actually read.
+  // Used by the legacy link-based reset flow; activation redirects to the dashboard.
   const [verified, setVerified] = useState(false);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || activationMode) return;
 
     let active = true;
     setTokenState('verifying');
@@ -69,7 +73,7 @@ export default function SetPassword() {
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [token, activationMode]);
 
   const results = useMemo(
     () => PASSWORD_RULES.map((rule) => ({ ...rule, met: rule.test(password) })),
@@ -94,6 +98,10 @@ export default function SetPassword() {
     tokenState === 'invalid' ||
     loading;
 
+  if (activationMode && !user.terms_accepted) {
+    return <Navigate to="/dashboard/student" replace />;
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -103,7 +111,7 @@ export default function SetPassword() {
       return;
     }
 
-    if (!token && !email) {
+    if (!activationMode && !token && !email) {
       setError('Invalid or missing reset information.');
       return;
     }
@@ -113,7 +121,16 @@ export default function SetPassword() {
     setMessage('');
 
     try {
-      if (token) {
+      if (activationMode) {
+        const data = await setStudentActivationPassword(password, confirmPassword);
+        updateUser({
+          ...data.user,
+          must_change_password: false,
+          temporary_password_expires_at: null,
+        });
+        navigate('/dashboard/student', { replace: true });
+        return;
+      } else if (token) {
         await resetPassword({ token, password, confirmPassword });
       } else {
         const res = await fetch(
@@ -160,6 +177,11 @@ export default function SetPassword() {
 
             {verified ? (
               <p>Your account is now verified and ready for Work Immersion.</p>
+            ) : activationMode ? (
+              <p>
+                Your temporary password is verified. Create a permanent password
+                to activate your account.
+              </p>
             ) : tokenState === 'email' && email ? (
               <p>
                 Welcome, <strong>{email}</strong>. Create a password to activate
@@ -245,7 +267,7 @@ export default function SetPassword() {
             </>
           )}
 
-          {!verified && (tokenState === 'valid' || tokenState === 'email') && (
+          {!verified && (tokenState === 'valid' || tokenState === 'email' || tokenState === 'activation') && (
             <>
               {tokenState === 'valid' && (
                 <div className={`${styles.alert} ${styles.successAlert}`}>
@@ -399,7 +421,9 @@ export default function SetPassword() {
                 <div className={`${styles.alert} ${styles.infoAlert}`}>
                   <Info size={17} />
                   <span>
-                    You will be signed out of other devices after this change.
+                    {activationMode
+                      ? 'Your temporary password will stop working after your permanent password is set.'
+                      : 'You will be signed out of other devices after this change.'}
                   </span>
                 </div>
 

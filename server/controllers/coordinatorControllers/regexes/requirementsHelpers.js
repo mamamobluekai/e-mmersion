@@ -30,6 +30,181 @@ async function ensureRevisionDocumentColumn() {
   return revisionColumnPromise;
 }
 
+let formRequirementVerificationTablePromise = null;
+async function ensureFormRequirementVerificationTable() {
+  if (formRequirementVerificationTablePromise) return formRequirementVerificationTablePromise;
+  formRequirementVerificationTablePromise = (async () => {
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS student_form_requirement_verifications (
+         submission_id INTEGER NOT NULL REFERENCES student_requirement_submissions(id) ON DELETE CASCADE,
+         document_type_id INTEGER NOT NULL REFERENCES document_types(id) ON DELETE CASCADE,
+         verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+         verified_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         PRIMARY KEY (submission_id, document_type_id)
+       )`
+    );
+  })().catch((err) => {
+    formRequirementVerificationTablePromise = null;
+    throw err;
+  });
+  return formRequirementVerificationTablePromise;
+}
+
+let requirementReviewSchemaPromise = null;
+async function ensureRequirementReviewSchema() {
+  if (requirementReviewSchemaPromise) return requirementReviewSchemaPromise;
+  requirementReviewSchemaPromise = (async () => {
+    await ensureRevisionDocumentColumn();
+    await ensureFormRequirementVerificationTable();
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS student_requirement_statuses (
+         submission_id INTEGER NOT NULL REFERENCES student_requirement_submissions(id) ON DELETE CASCADE,
+         document_type_id INTEGER NOT NULL REFERENCES document_types(id) ON DELETE CASCADE,
+         status VARCHAR(50) NOT NULL,
+         feedback TEXT,
+         updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+         PRIMARY KEY (submission_id, document_type_id)
+       );
+       CREATE TABLE IF NOT EXISTS student_requirement_status_history (
+         id BIGSERIAL PRIMARY KEY,
+         submission_id INTEGER NOT NULL REFERENCES student_requirement_submissions(id) ON DELETE CASCADE,
+         document_type_id INTEGER NOT NULL REFERENCES document_types(id) ON DELETE CASCADE,
+         document_id INTEGER REFERENCES student_documents(id) ON DELETE SET NULL,
+         status VARCHAR(50) NOT NULL,
+         action VARCHAR(50) NOT NULL,
+         feedback TEXT,
+         original_name TEXT,
+         cloudinary_url TEXT,
+         details JSONB,
+         actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+       )`
+    );
+    await pool.query(
+      `INSERT INTO student_requirement_statuses
+         (submission_id, document_type_id, status, updated_by, updated_at)
+       SELECT submission_id, document_type_id,
+              CASE LOWER(COALESCE(status, ''))
+                WHEN 'verified' THEN 'APPROVED'
+                WHEN 'approved' THEN 'APPROVED'
+                WHEN 'rejected' THEN 'NEEDS REVISION'
+                WHEN 'needs revision' THEN 'NEEDS REVISION'
+                WHEN 'resubmitted - awaiting review' THEN 'RESUBMITTED - AWAITING REVIEW'
+                ELSE 'PENDING'
+              END,
+              verified_by, COALESCE(verified_date, uploaded_date, CURRENT_TIMESTAMP)
+         FROM (
+           SELECT DISTINCT ON (submission_id, document_type_id) *
+             FROM student_documents
+            ORDER BY submission_id, document_type_id, uploaded_date DESC, id DESC
+         ) latest_documents
+       ON CONFLICT (submission_id, document_type_id) DO NOTHING`
+    );
+    await pool.query(
+      `INSERT INTO student_requirement_status_history
+         (submission_id, document_type_id, document_id, status, action,
+          original_name, cloudinary_url, actor_id, created_at)
+       SELECT submission_id, document_type_id, id,
+              CASE LOWER(COALESCE(status, ''))
+                WHEN 'verified' THEN 'APPROVED'
+                WHEN 'approved' THEN 'APPROVED'
+                WHEN 'rejected' THEN 'NEEDS REVISION'
+                WHEN 'needs revision' THEN 'NEEDS REVISION'
+                WHEN 'resubmitted - awaiting review' THEN 'RESUBMITTED - AWAITING REVIEW'
+                ELSE 'PENDING'
+              END,
+              'MIGRATED', original_name, cloudinary_url, verified_by,
+              COALESCE(verified_date, uploaded_date, CURRENT_TIMESTAMP)
+         FROM (
+           SELECT DISTINCT ON (submission_id, document_type_id) *
+             FROM student_documents
+            ORDER BY submission_id, document_type_id, uploaded_date DESC, id DESC
+         ) latest_documents
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM student_requirement_status_history history
+           WHERE history.document_id = latest_documents.id
+             AND history.action = 'MIGRATED'
+        )`
+    );
+    await pool.query(
+      `INSERT INTO student_requirement_statuses
+         (submission_id, document_type_id, status, updated_by, updated_at)
+       SELECT submission.id, document_type.id, 'NEEDS REVISION',
+              submission.reviewed_by, submission.updated_at
+         FROM student_requirement_submissions submission
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+           CASE
+             WHEN jsonb_typeof(submission.revision_document_ids) = 'array'
+               THEN submission.revision_document_ids
+             ELSE '[]'::jsonb
+           END
+         ) AS legacy(document_type_id)
+         JOIN document_types document_type
+           ON document_type.id::text = legacy.document_type_id
+       ON CONFLICT (submission_id, document_type_id)
+       DO UPDATE SET status = 'NEEDS REVISION',
+                     updated_by = EXCLUDED.updated_by,
+                     updated_at = EXCLUDED.updated_at`
+    );
+    await pool.query(
+      `INSERT INTO student_requirement_status_history
+         (submission_id, document_type_id, status, action, actor_id, created_at)
+       SELECT submission.id, document_type.id, 'NEEDS REVISION', 'MIGRATED',
+              submission.reviewed_by, submission.updated_at
+         FROM student_requirement_submissions submission
+         CROSS JOIN LATERAL jsonb_array_elements_text(
+           CASE
+             WHEN jsonb_typeof(submission.revision_document_ids) = 'array'
+               THEN submission.revision_document_ids
+             ELSE '[]'::jsonb
+           END
+         ) AS legacy(document_type_id)
+         JOIN document_types document_type
+           ON document_type.id::text = legacy.document_type_id
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM student_requirement_status_history history
+           WHERE history.submission_id = submission.id
+             AND history.document_type_id = document_type.id
+             AND history.status = 'NEEDS REVISION'
+             AND history.action = 'MIGRATED'
+        )`
+    );
+    await pool.query(
+      `UPDATE student_requirement_submissions
+          SET revision_document_ids = NULL
+        WHERE revision_document_ids IS NOT NULL`
+    );
+    await pool.query(
+      `INSERT INTO student_requirement_statuses
+         (submission_id, document_type_id, status, updated_by, updated_at)
+       SELECT submission_id, document_type_id, 'APPROVED', verified_by, verified_at
+         FROM student_form_requirement_verifications
+       ON CONFLICT (submission_id, document_type_id) DO NOTHING`
+    );
+    await pool.query(
+      `INSERT INTO student_requirement_status_history
+         (submission_id, document_type_id, status, action, actor_id, created_at)
+       SELECT verification.submission_id, verification.document_type_id,
+              'APPROVED', 'MIGRATED', verification.verified_by, verification.verified_at
+         FROM student_form_requirement_verifications verification
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM student_requirement_status_history history
+           WHERE history.submission_id = verification.submission_id
+             AND history.document_type_id = verification.document_type_id
+             AND history.action = 'MIGRATED'
+        )`
+    );
+  })().catch((err) => {
+    requirementReviewSchemaPromise = null;
+    throw err;
+  });
+  return requirementReviewSchemaPromise;
+}
+
 /**
  * Load the active requirement definitions.
  * These live in the `document_types` table so coordinators can add, edit, or
@@ -225,6 +400,7 @@ const recalculateAllProgress = async (client) => {
 };
 
 const serializeRequirements = async (client, studentId) => {
+  await ensureRequirementReviewSchema();
   const student = await client.query('SELECT * FROM students WHERE id = $1', [studentId]);
   const submission = await client.query(
     `SELECT s.*,
@@ -268,6 +444,57 @@ const serializeRequirements = async (client, studentId) => {
     [submission.rows[0]?.id || 0]
   );
   const progress = await calculateProgress(client, studentId);
+  const formVerificationResult = await client.query(
+    `SELECT document_type_id, verified_at
+       FROM student_form_requirement_verifications
+      WHERE submission_id = $1`,
+    [submission.rows[0]?.id || 0]
+  );
+  const formVerifications = new Map(
+    formVerificationResult.rows.map((row) => [Number(row.document_type_id), row])
+  );
+  const requirementStatuses = progress.requirementStatuses.map((status) => {
+    if (status.input_type !== 'form') return status;
+    const verification = formVerifications.get(Number(status.id));
+    return {
+      ...status,
+      verified: !!verification,
+      verified_at: verification?.verified_at || null,
+    };
+  });
+  const reviewStates = await client.query(
+    `SELECT document_type_id, status, feedback, updated_at
+       FROM student_requirement_statuses
+      WHERE submission_id = $1`,
+    [submission.rows[0]?.id || 0]
+  );
+  const reviewHistories = await client.query(
+    `SELECT document_type_id, status, action, feedback, original_name,
+            cloudinary_url, details, actor_id, created_at
+       FROM student_requirement_status_history
+      WHERE submission_id = $1
+      ORDER BY created_at DESC, id DESC`,
+    [submission.rows[0]?.id || 0]
+  );
+  const reviewStateByTypeId = new Map(
+    reviewStates.rows.map((row) => [Number(row.document_type_id), row])
+  );
+  const reviewHistoryByTypeId = new Map();
+  reviewHistories.rows.forEach((row) => {
+    const typeId = Number(row.document_type_id);
+    if (!reviewHistoryByTypeId.has(typeId)) reviewHistoryByTypeId.set(typeId, []);
+    reviewHistoryByTypeId.get(typeId).push(row);
+  });
+  const requirementStatusesWithReview = requirementStatuses.map((status) => {
+    const reviewState = reviewStateByTypeId.get(Number(status.id));
+    return {
+      ...status,
+      requirement_status: reviewState?.status || (status.completed ? 'PENDING' : null),
+      requirement_feedback: reviewState?.feedback || null,
+      requirement_updated_at: reviewState?.updated_at || null,
+      review_history: reviewHistoryByTypeId.get(Number(status.id)) || [],
+    };
+  });
 
   // The coordinator's "Needs Revision" checklist, resolved to names so the
   // student page can list what to change without a second request. Legacy rows
@@ -294,6 +521,7 @@ const serializeRequirements = async (client, studentId) => {
     logs: logs.rows,
     revisionDocuments,
     ...progress,
+    requirementStatuses: requirementStatusesWithReview,
   };
 };
 
@@ -309,4 +537,6 @@ module.exports = {
   recalculateAllProgress,
   serializeRequirements,
   ensureRevisionDocumentColumn,
+  ensureFormRequirementVerificationTable,
+  ensureRequirementReviewSchema,
 };

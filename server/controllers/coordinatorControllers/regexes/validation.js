@@ -1,7 +1,6 @@
 const { requiredInfoFields, emailRegex, phoneRegex } = require('../helpers/constant');
 
-// A work immersion student is Grade 12, so the youngest accepted age is 17.
-const MIN_AGE = 17;
+const MIN_AGE = 1;
 const MAX_AGE = 120;
 
 const normalize = (value) => (typeof value === 'string' ? value.trim() : value);
@@ -24,10 +23,10 @@ const validateStudentPayload = (body, partial = false) => {
     if (source[field] && !phoneRegex.test(source[field])) errors[field] = 'Enter a valid phone number.';
   });
 
-  if (source.age) {
+  if (source.age !== undefined && source.age !== null && String(source.age).trim() !== '') {
     const age = Number(source.age);
     if (!Number.isFinite(age) || !Number.isInteger(age)) errors.age = 'Age must be a whole number.';
-    else if (age < MIN_AGE) errors.age = `Age must be ${MIN_AGE} or above.`;
+    else if (age < MIN_AGE) errors.age = 'Age must be a positive whole number.';
     else if (age > MAX_AGE) errors.age = `Age must be ${MAX_AGE} or below.`;
   }
 

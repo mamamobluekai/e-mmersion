@@ -198,7 +198,7 @@ async function createPost(authorId, postData) {
   const post = result.rows[0];
   const recipients = await pool.query(
     `SELECT id, LOWER(role) AS role FROM users
-     WHERE status = 'approved'
+     WHERE status IN ('approved', 'active')
        AND ($1 = 'all' OR LOWER(role) = $1)
        AND id <> $2`,
     [post.audience, authorId]
@@ -243,7 +243,7 @@ async function updatePost(id, authorId, postData) {
   if (post) {
     const recipients = await pool.query(
       `SELECT id, LOWER(role) AS role FROM users
-       WHERE status = 'approved'
+       WHERE status IN ('approved', 'active')
          AND ($1 = 'all' OR LOWER(role) = $1)
          AND id <> $2`,
       [post.audience, authorId]

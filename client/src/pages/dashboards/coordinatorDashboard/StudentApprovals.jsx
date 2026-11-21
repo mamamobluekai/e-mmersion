@@ -6,10 +6,10 @@ import {
   getArchivedStudents,
   approveStudent,
   resendStudentApprovalEmail,
+  updateStudentEmail,
   deleteStudent,
   restoreStudent,
   permanentDeleteStudent,
-  bulkApproveStudents,
   bulkArchiveStudents,
   bulkRestoreStudents,
   bulkPermanentDeleteStudents,
@@ -19,6 +19,7 @@ import {
   Check,
   CheckSquare,
   Mail,
+  MoreHorizontal,
   Search,
   Square,
   Trash2,
@@ -29,16 +30,24 @@ import {
 import ConfirmModal from '../../../components/admin/ConfirmModal';
 import styles from './StudentApprovals.module.css';
 
-const statusBadge = (status) => {
+const getStatusLabel = (activityStatus, activityLabel) => {
+  if (activityStatus === 'pending') return 'Pending Activation';
+  return activityLabel || activityStatus || 'Unknown';
+};
+
+const getStatusBadge = (activityStatus) => {
   const map = {
+    active: styles.badgeActive,
+    idle: styles.badgeIdle,
+    inactive: styles.badgeInactive,
+    dormant: styles.badgeDormant,
     pending: styles.badgePending,
     approved: styles.badgeApproved,
     rejected: styles.badgeRejected,
     disapproved: styles.badgeRejected,
     'needs revision': styles.badgeNeeds,
   };
-
-  return map[String(status).toLowerCase()] || styles.badgePending;
+  return map[activityStatus] || styles.badgePending;
 };
 
 function StudentApprovals() {
@@ -48,8 +57,8 @@ const [coordinator, setCoordinator] = useState(null);
 const [strands, setStrands] = useState([]);
 const [loading, setLoading] = useState(true);
 const [loadingStrands, setLoadingStrands] = useState(true);
-  const [statusFilter, setStatusFilter] = useState('pending');
   const [strandFilter, setStrandFilter] = useState('all');
+  const [activityFilter, setActivityFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
 
   const [message, setMessage] = useState('');
@@ -72,13 +81,21 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
   // Tracks which student's Resend button is in flight, so only that row spins.
   const [resendingId, setResendingId] = useState(null);
 
+  // Edit email modal state
+  const [editingEmailId, setEditingEmailId] = useState(null);
+  const [editEmailValue, setEditEmailValue] = useState('');
+  const [updatingEmailId, setUpdatingEmailId] = useState(null);
+
+  // Dropdown menu state
+  const [openDropdownId, setOpenDropdownId] = useState(null);
+
   const load = async () => {
     setLoading(true);
     setError('');
 
     try {
       const [studentsData, profileData, archivedData] = await Promise.all([
-        getPendingStudents(statusFilter, strandFilter),
+        getPendingStudents(strandFilter, activityFilter),
         getCoordinatorProfile(),
         getArchivedStudents(),
       ]);
@@ -112,7 +129,7 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     setSelectedIds([]);
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, strandFilter]);
+  }, [strandFilter, activityFilter]);
 
   // Auto-dismiss the floating toast so it pops up and clears itself.
   useEffect(() => {
@@ -127,7 +144,21 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     return () => clearTimeout(timer);
   }, [error]);
 
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (openDropdownId && !event.target.closest(`.dropdown-menu-${openDropdownId}`) && !event.target.closest(`.dropdown-toggle-${openDropdownId}`)) {
+        setOpenDropdownId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [openDropdownId]);
+
   const filteredStudents = students.filter((student) => {
+    if (activityFilter !== 'all' && student.activity_status !== activityFilter) {
+      return false;
+    }
     if (!searchTerm) return true;
     const fullName = `${student.first_name || ''} ${student.last_name || ''}`.toLowerCase();
     const email = (student.email || '').toLowerCase();
@@ -191,8 +222,8 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     }
   };
 
-  // Re-mails a fresh one-time set-password link to an approved student. This is
-  // the recovery path when the original approval mail bounced or expired.
+  // Resends the appropriate activation message: temporary credentials for a
+  // newly uploaded student, or a one-time set-password link for legacy accounts.
   const handleResendEmail = async (id) => {
     setResendingId(id);
     setError('');
@@ -200,15 +231,88 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     try {
       const data = await resendStudentApprovalEmail(id);
       if (data?.emailSent === false) {
-        setError(data.emailError || 'The set-password email failed to send. Please try again.');
+        setError(data.emailError || 'The activation email failed to send. Please try again.');
       } else {
-        setMessage(data?.message || 'Set-your-password link emailed.');
+        setMessage(data?.message || 'Activation email sent.');
       }
     } catch (err) {
       setError(err.message);
     } finally {
       setResendingId(null);
     }
+  };
+
+  const handleBulkResendEmail = async () => {
+    if (selectedStudentsNeedingPasswordSetup.length === 0) return;
+
+    setBulkLoading(true);
+    setError('');
+    setMessage('');
+    let sentCount = 0;
+    const failures = [];
+
+    try {
+      for (const student of selectedStudentsNeedingPasswordSetup) {
+        try {
+          const data = await resendStudentApprovalEmail(student.id);
+          if (data?.emailSent === false) {
+            failures.push(`${student.email}: ${data.emailError || data.message || 'Email failed to send.'}`);
+          } else {
+            sentCount += 1;
+          }
+        } catch (err) {
+          failures.push(`${student.email}: ${err.message || 'Email failed to send.'}`);
+        }
+      }
+
+      setSelectedIds([]);
+      if (sentCount > 0) {
+        setMessage(`Activation email sent to ${sentCount} student(s).`);
+      }
+      if (failures.length > 0) {
+        const remainingFailures = failures.length > 1 ? ` (+${failures.length - 1} more)` : '';
+        setError(`${failures[0]}${remainingFailures}`);
+      }
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const handleEditEmail = (student) => {
+    setEditingEmailId(student.id);
+    setEditEmailValue(student.email || '');
+  };
+
+  const handleSaveEmail = async (id) => {
+    const email = editEmailValue.trim();
+    if (!email) {
+      setError('Email is required.');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      setError('Invalid email format.');
+      return;
+    }
+    setUpdatingEmailId(id);
+    setError('');
+    setMessage('');
+    try {
+      const data = await updateStudentEmail(id, email);
+      setMessage(data.message || 'Student email updated successfully.');
+      setEditingEmailId(null);
+      setEditEmailValue('');
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUpdatingEmailId(null);
+    }
+  };
+
+  const handleCancelEditEmail = () => {
+    setEditingEmailId(null);
+    setEditEmailValue('');
   };
 
   const handleArchiveConfirm = (id) => {
@@ -280,6 +384,10 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     );
   };
 
+  const selectedStudentsNeedingPasswordSetup = students.filter(
+    (student) => selectedIds.includes(student.id) && student.needs_password_setup,
+  );
+
   const handleSelectAllArchived = () => {
     if (archivedSelectedIds.length === archivedStudents.length) {
       setArchivedSelectedIds([]);
@@ -294,26 +402,6 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
         ? prev.filter((s) => s !== id)
         : [...prev, id],
     );
-  };
-
-  const handleBulkApprove = async () => {
-    if (selectedIds.length === 0) return;
-    setBulkLoading(true);
-    setError('');
-    setMessage('');
-    try {
-      const data = await bulkApproveStudents(selectedIds);
-      setMessage(data.message || `${selectedIds.length} student(s) approved.`);
-      if (data.emailFailures > 0) {
-        setError(`${data.emailFailures} approval email(s) failed to send. Use Resend email on those rows.`);
-      }
-      setSelectedIds([]);
-      await load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBulkLoading(false);
-    }
   };
 
   const handleBulkArchive = async () => {
@@ -373,16 +461,6 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     }
   };
 
-  const getStatusLabel = (status) => {
-    const labels = {
-      pending: 'Pending',
-      approved: 'Approved',
-      disapproved: 'Disapproved',
-      rejected: 'Rejected',
-    };
-    return labels[status] || status;
-  };
-
   return (
     <div className={styles.page}>
       {/* HEADER */}
@@ -391,38 +469,12 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
           <h1>Student Approvals</h1>
 
           <p>
-            Review pending accounts, approve student access, and manage uploaded
+            Review accounts awaiting activation, approve student access, and manage uploaded
             student records. Students already deployed to a batch are moved out
             of this list and appear under Batches instead.
           </p>
         </div>
       </div>
-
-      {/* COORDINATOR LIMIT BANNER */}
-      {coordinator && (
-        <div className={styles.limitBanner}>
-          <div className={styles.limitBannerContent}>
-            <span className={styles.limitBannerLabel}>Your assigned limits</span>
-            <span className={styles.limitBannerStrand}>
-              <strong>Strand:</strong> {coordinator.strand ? coordinator.strand : 'All Strands'}
-            </span>
-            <span className={styles.limitBannerCount}>
-              <strong>Students:</strong> {coordinator.student_count} / {coordinator.student_limit}
-            </span>
-            {coordinator.strand && (
-              <span className={styles.limitBannerNote}>
-                You can only approve students from the {coordinator.strand} strand.
-              </span>
-            )}
-            {coordinator.student_count >= coordinator.student_limit && (
-              <span className={styles.limitBannerLimit}>
-                ⚠ Student limit reached — you cannot approve more students until
-                an admin raises your limit.
-              </span>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* TOASTS (floating – does not shift the layout) */}
       <div className={styles.toastStack} aria-live="polite">
@@ -513,11 +565,11 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
           </button>
         </div>
 
-        <div className={styles.uploadExample}>
-          <div className={styles.uploadExampleHeader}>
+        <details className={styles.uploadExample}>
+          <summary className={styles.uploadExampleHeader}>
             <strong>Excel format example</strong>
             <span>* Required column</span>
-          </div>
+          </summary>
           <div className={styles.uploadExampleTableWrap}>
             <table className={styles.uploadExampleTable} aria-label="Example student upload spreadsheet">
               <thead>
@@ -529,7 +581,6 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                   <th data-required="true">Email</th>
                   <th>Section</th>
                   <th>Strand</th>
-                  <th>School</th>
                   <th>Contact Number</th>
                   <th>Gender</th>
                 </tr>
@@ -543,14 +594,13 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                   <td>alex.reyes@example.com</td>
                   <td>12-A</td>
                   <td>STEM</td>
-                  <td>Sample High School</td>
                   <td>09123456789</td>
                   <td>Female</td>
                 </tr>
               </tbody>
             </table>
           </div>
-        </div>
+        </details>
 
       </section>
 
@@ -561,36 +611,6 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
           <div className={styles.studentCount}>
             <strong>{filteredStudents.length}</strong>
             <span>Students</span>
-          </div>
-
-          <div className={`${styles.filterGroup} ${styles.filterStatus}`}>
-            <label className={styles.filterLabel}>Status</label>
-            <select
-              className={styles.filterSelect}
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-              <option value="all">All</option>
-              <option value="pending">Pending</option>
-              <option value="approved">Approved</option>
-            </select>
-          </div>
-
-          <div className={`${styles.filterGroup} ${styles.filterStrand}`}>
-            <label className={styles.filterLabel}>Strand</label>
-            <select
-              className={styles.filterSelect}
-              value={strandFilter}
-              onChange={(e) => setStrandFilter(e.target.value)}
-              disabled={loadingStrands}
-            >
-              <option value="all">All Strands</option>
-              {strands.map((strand) => (
-                <option key={strand} value={strand}>
-                  {strand}
-                </option>
-              ))}
-            </select>
           </div>
 
           <div className={styles.searchBox}>
@@ -614,6 +634,57 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
               </button>
             )}
           </div>
+
+          {coordinator && (
+            <div className={styles.limitBannerInline}>
+              <span className={styles.limitBannerLabel}>Your assigned limits</span>
+              <span className={styles.limitBannerStrand}>
+                <strong>Strand:</strong> {coordinator.strand ? coordinator.strand : 'All Strands'}
+              </span>
+              <span className={styles.limitBannerCount}>
+                <strong>Students:</strong> {coordinator.student_count} / {coordinator.student_limit}
+              </span>
+              {coordinator.student_count >= coordinator.student_limit && (
+                <span className={styles.limitBannerLimit}>
+                  ⚠ Student limit reached — you cannot approve more students until
+                  an admin raises your limit.
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className={`${styles.filterGroup} ${styles.filterStrand}`}>
+            <label className={`${styles.filterLabel} ${styles.filterLabelNoIcon}`}>Strand</label>
+            <select
+              className={styles.filterSelect}
+              value={strandFilter}
+              onChange={(e) => setStrandFilter(e.target.value)}
+              disabled={loadingStrands}
+            >
+              <option value="all">All Strands</option>
+              {strands.map((strand) => (
+                <option key={strand} value={strand}>
+                  {strand}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className={`${styles.filterGroup} ${styles.filterActivity}`}>
+            <label className={`${styles.filterLabel} ${styles.filterLabelNoIcon}`}>Activity</label>
+            <select
+              className={styles.filterSelect}
+              value={activityFilter}
+              onChange={(e) => setActivityFilter(e.target.value)}
+            >
+              <option value="all">All Activity</option>
+              <option value="active">Active</option>
+              <option value="idle">Idle (4-7 days)</option>
+              <option value="inactive">Inactive (8-14 days)</option>
+              <option value="dormant">Dormant (15+ days)</option>
+              <option value="pending">Pending Activation</option>
+            </select>
+          </div>
         </div>
 
         {/* BULK ACTIONS */}
@@ -622,13 +693,13 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
             <div className={styles.bulkActions}>
               <button
                 className={styles.bulkApproveBtn}
-                onClick={handleBulkApprove}
-                disabled={bulkLoading}
+                onClick={handleBulkResendEmail}
+                disabled={bulkLoading || selectedStudentsNeedingPasswordSetup.length === 0}
+                title="Resend activation emails to selected eligible students"
               >
-                <UserCheck size={14} />
-                Approve Selected
+                <Mail size={14} />
+                Resend Activation Emails ({selectedStudentsNeedingPasswordSetup.length})
               </button>
-
               <button
                 className={styles.bulkDeleteBtn}
                 onClick={handleBulkArchive}
@@ -653,9 +724,7 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
             <h4>No students found</h4>
 
             <p>
-              {statusFilter === 'pending'
-                ? 'All student registrations have been processed.'
-                : 'No students match the current filter.'}
+              No students match the current filter.
             </p>
           </div>
         ) : (
@@ -683,7 +752,7 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                   <th>STUDENT ID</th>
                   <th>STRAND</th>
                   <th>STATUS</th>
-                  <th>REGISTERED</th>
+                  <th>DATE CREATED</th>
                   <th className={styles.actionHeader}>ACTIONS</th>
                 </tr>
               </thead>
@@ -732,22 +801,25 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                          </span>
                        </td>
 
-                       <td>
-                         <span className={styles.trackStrand}>
-                           {student.track_strand || '-'}
-                         </span>
-                       </td>
+<td>
+                          <span className={styles.trackStrand}>
+                            {student.track_strand || '-'}
+                          </span>
+                        </td>
 
-                       <td>
-                         <span
-                           className={`${styles.badge} ${statusBadge(student.status)}`}
-                         >
-                           <span className={styles.statusDot}></span>
-                           {getStatusLabel(student.status)}
-                         </span>
-                       </td>
+                        <td>
+                          <span
+                            className={`${styles.badge} ${getStatusBadge(student.activity_status)}`}
+                          >
+                            <span className={styles.statusDot}></span>
+                            {getStatusLabel(student.activity_status, student.activity_label)}
+                            {student.days_since_login !== null && student.days_since_login !== undefined && (
+                              <span className={styles.daysSinceLogin}> ({student.days_since_login}d)</span>
+                            )}
+                          </span>
+                        </td>
 
-                       <td>
+                        <td>
                         <span className={styles.registeredDate}>
                     {student.created_at
                       ? new Date(student.created_at).toLocaleDateString('en-US', {
@@ -790,41 +862,61 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                               </div>
                             </div>
                           ) : (
-                            <>
-                              {student.status === 'pending' && (
-                                <button
-                                  className={styles.approveBtn}
-                                  onClick={() => handleApprove(student.id)}
-                                  title="Approve"
-                                  aria-label="Approve student"
-                                >
-                                  <Check size={15} />
-                                </button>
-                              )}
-
-                              {/* Approved but no password link received: mail a new
-                                  one. Mints a fresh one-time token each time. */}
-                              {student.status === 'approved' && (
-                                <button
-                                  className={styles.resendBtn}
-                                  onClick={() => handleResendEmail(student.id)}
-                                  disabled={resendingId === student.id}
-                                  title="Resend the set-password email"
-                                  aria-label="Resend set-password email to student"
-                                >
-                                  <Mail size={15} />
-                                </button>
-                              )}
-
+                            <div className={styles.dropdownContainer}>
                               <button
-                                className={styles.deleteBtn}
-                                onClick={() => handleArchiveConfirm(student.id)}
-                                title="Remove"
-                                aria-label="Remove student"
+                                className={`${styles.dropdownToggle} dropdown-toggle-${student.id}`}
+                                onClick={() => setOpenDropdownId(openDropdownId === student.id ? null : student.id)}
+                                aria-label="More actions"
+                                title="More actions"
                               >
-                                <Trash2 size={15} />
+                                <MoreHorizontal size={18} />
                               </button>
-                            </>
+                              {openDropdownId === student.id && (
+                                <div className={`${styles.dropdownMenu} dropdown-menu-${student.id}`} role="menu">
+                                  {student.status === 'pending' && (
+                                    <button
+                                      className={styles.dropdownItem}
+                                      onClick={() => { handleApprove(student.id); setOpenDropdownId(null); }}
+                                      role="menuitem"
+                                    >
+                                      <Check size={14} /> Approve
+                                    </button>
+                                  )}
+                                  {student.activity_status !== 'active' && (
+                                    <>
+                                      {student.needs_password_setup && (
+                                        <button
+                                          className={styles.dropdownItem}
+                                          onClick={() => { handleResendEmail(student.id); setOpenDropdownId(null); }}
+                                          disabled={resendingId === student.id}
+                                          role="menuitem"
+                                        >
+                                          <Mail size={14} />
+                                          {student.status === 'pending_activation'
+                                            ? 'Resend temporary credentials'
+                                            : 'Resend set-password email'}
+                                        </button>
+                                      )}
+                                      <button
+                                        className={styles.dropdownItem}
+                                        onClick={() => { handleEditEmail(student); setOpenDropdownId(null); }}
+                                        disabled={updatingEmailId === student.id}
+                                        role="menuitem"
+                                      >
+                                        <Mail size={14} /> Edit email
+                                      </button>
+                                    </>
+                                  )}
+                                  <button
+                                    className={`${styles.dropdownItem} ${styles.dropdownItemDestructive}`}
+                                    onClick={() => { handleArchiveConfirm(student.id); setOpenDropdownId(null); }}
+                                    role="menuitem"
+                                  >
+                                    <Trash2 size={14} /> Remove
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                       </td>
@@ -1118,6 +1210,48 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
               >
                 Close
               </button>
+            </div>
+          </div>
+        )}
+        {editingEmailId && (
+          <div
+            className={styles.editEmailOverlay}
+            onClick={handleCancelEditEmail}
+          >
+            <div
+              className={styles.editEmailModal}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-email-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h2 id="edit-email-title">Edit Student Email</h2>
+              <input
+                type="email"
+                className={styles.editEmailInput}
+                value={editEmailValue}
+                onChange={(e) => setEditEmailValue(e.target.value)}
+                placeholder="Enter new email address"
+                autoFocus
+              />
+              <div className={styles.editEmailActions}>
+                <button
+                  type="button"
+                  className={styles.editEmailCancelBtn}
+                  onClick={handleCancelEditEmail}
+                  disabled={updatingEmailId}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className={styles.editEmailSaveBtn}
+                  onClick={() => handleSaveEmail(editingEmailId)}
+                  disabled={updatingEmailId || !editEmailValue.trim()}
+                >
+                  {updatingEmailId ? 'Saving...' : 'Save'}
+                </button>
+              </div>
             </div>
           </div>
         )}

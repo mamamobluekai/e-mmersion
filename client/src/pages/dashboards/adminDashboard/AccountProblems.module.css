@@ -1,0 +1,294 @@
+.page {
+  --ink: #172033;
+  --muted: #647084;
+  --border: #e4e8ef;
+  --maroon: #8b1e2d;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 0 40px;
+  color: var(--ink);
+}
+
+.header,
+.panelHeader,
+.reportTop,
+.controls,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.header {
+  align-items: flex-start;
+}
+
+.eyebrow,
+.fieldLabel {
+  display: block;
+  color: var(--maroon);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.header h1 {
+  margin: 6px 0;
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+}
+
+.header p,
+.panelHeader p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.headerIcon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #f1d8dd;
+  border-radius: 14px;
+  background: #fff4f6;
+  color: var(--maroon);
+}
+
+.panel {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 26px rgb(23 32 51 / 5%);
+}
+
+.panelHeader {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panelHeader h2 {
+  margin: 0 0 5px;
+  font-size: 1.1rem;
+}
+
+.panelHeader p {
+  font-size: 0.86rem;
+}
+
+.controls {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.controls label {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.controls select,
+.refreshButton,
+.reportCard textarea {
+  border: 1px solid #cbd3df;
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.controls select {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.refreshButton,
+.resolveButton,
+.archiveButton {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.refreshButton {
+  border: 1px solid var(--border);
+}
+
+.resolveButton {
+  background: #e9f7ef;
+  color: #176b3a;
+}
+
+.archiveButton {
+  background: #8b1e2d;
+  color: #fff;
+}
+
+.refreshButton:disabled,
+.resolveButton:disabled,
+.archiveButton:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.stateMessage {
+  padding: 48px 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.reportList {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.reportCard {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: #fff;
+}
+
+.reportTop {
+  align-items: flex-start;
+}
+
+.reportTop h3 {
+  margin: 10px 0 4px;
+  font-size: 1.05rem;
+}
+
+.identity,
+.reportMeta,
+.resolution time {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.identity {
+  margin: 0;
+}
+
+.reportMeta {
+  display: grid;
+  gap: 5px;
+  text-align: right;
+}
+
+.status {
+  display: inline-flex;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.statusOpen {
+  background: #fff4dc;
+  color: #925b05;
+}
+
+.statusResolved {
+  background: #e9f7ef;
+  color: #176b3a;
+}
+
+.reportContent {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.reportContent strong {
+  display: block;
+  margin-top: 5px;
+}
+
+.comments,
+.resolution p {
+  margin: 6px 0 0;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.noteLabel {
+  margin-bottom: -10px;
+  color: var(--ink);
+  font-size: 0.87rem;
+  font-weight: 700;
+}
+
+.noteLabel span {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.reportCard textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 68px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.resolution {
+  padding: 14px;
+  border-radius: 10px;
+  background: #f3f8f5;
+}
+
+.resolution time {
+  display: block;
+  margin-top: 7px;
+}
+
+@media (max-width: 700px) {
+  .panelHeader,
+  .reportTop {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .reportMeta {
+    text-align: left;
+  }
+
+  .controls {
+    justify-content: flex-start;
+  }
+
+  .reportList {
+    padding: 12px;
+  }
+
+  .reportCard {
+    padding: 15px;
+  }
+}

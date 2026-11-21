@@ -93,8 +93,7 @@ const PHONE_LABELS = {
 };
 
 // Whole-number fields: digits only, so letters/decimals can never be entered.
-// A work immersion student is Grade 12, so the youngest accepted age is 17.
-const MIN_AGE = 17;
+const MIN_AGE = 1;
 
 const INT_FIELDS = {
   age: { label: 'Age', min: MIN_AGE, max: 120, placeholder: '18' },
@@ -142,8 +141,6 @@ function Requirements() {
   const [phoneTouched, setPhoneTouched] = useState({});
   // The uploaded document a removal is waiting on, if any.
   const [confirmRemove, setConfirmRemove] = useState(null);
-  // A filed submission locks the form until the student asks to edit it.
-  const [editingSubmission, setEditingSubmission] = useState(false);
 
   // Live-check every phone field. The message says what is actually wrong - an
   // all-digit number of the wrong length used to read as "numbers only", which
@@ -203,10 +200,6 @@ function Requirements() {
   // reads as None.
   const suffixValue = SUFFIX_OPTIONS.includes(student.suffix) ? student.suffix : '';
 
-  // Documents the coordinator ticked for revision when the submission was sent
-  // back. Comes resolved (id/name/section) from the API.
-  const revisionDocuments = data?.revisionDocuments || [];
-
   // Status wording and colour, shared with the coordinator's vocabulary. Older
   // rows still carry "Pending Review" / "Under Review" / "Rejected".
   const statusLabel = (status) => {
@@ -221,6 +214,8 @@ function Requirements() {
         return 'Rejected';
       case 'under review':
         return 'Under Review';
+      case 'resubmitted - awaiting review':
+        return 'Resubmitted — Awaiting Review';
       default:
         return 'Pending';
     }
@@ -232,6 +227,7 @@ function Requirements() {
     if (value === 'hold' || value === 'needs revision' || value === 'rejected') {
       return styles.badgeReview;
     }
+    if (value === 'resubmitted - awaiting review') return styles.badgeReview;
     return styles.badgePending;
   };
 
@@ -244,6 +240,24 @@ function Requirements() {
   // Information, Guardian & Emergency) when their fields are filled in, so the
   // counter below reaches 100% without an upload for them.
   const requirementStatuses = data?.requirementStatuses || [];
+  const legacyRevisionDocuments = data?.revisionDocuments || [];
+  const requirementStatusByCode = new Map(
+    requirementStatuses.map((status) => [String(status.code || '').toLowerCase(), status])
+  );
+  const revisionDocuments = [
+    ...legacyRevisionDocuments,
+    ...requirementStatuses
+      .filter((status) => status.requirement_status === 'NEEDS REVISION')
+      .filter((status) => !legacyRevisionDocuments.some((doc) => (
+        String(doc.code || '').toLowerCase() === String(status.code || '').toLowerCase()
+      )))
+      .map((status) => ({
+        id: status.id,
+        code: status.code,
+        name: status.name,
+        section: status.section,
+      })),
+  ];
   const requirementSummary = data?.requirementSummary || null;
   const totalRequirements = requirementSummary?.total ?? docTypes.length;
   const completedRequirements = requirementSummary?.completed ?? uploadCount;
@@ -291,8 +305,7 @@ function Requirements() {
     // reads as "the field will not accept typing".
     setData((prev) => ({ ...prev, student: { ...prev.student, [field]: cleaned } }));
 
-    // An age below the minimum is flagged as soon as it is typed, so the student
-    // is not told only after saving.
+    // An invalid age is flagged as soon as it is typed, not only after saving.
     const problem = intProblem(field, cleaned);
     setIntErrors((prev) => {
       if (!problem && !(field in prev)) return prev;
@@ -404,8 +417,26 @@ function Requirements() {
         ...phoneValues,
         suffix: suffixValue,
       });
+      const correctedForm = requirementStatuses.some((status) => {
+        const code = String(status.code || '').toLowerCase();
+        const previousStatus = String(status.requirement_status || '').toUpperCase();
+        const nextStatus = result.requirementStatuses?.find(
+          (updatedStatus) => String(updatedStatus.code || '').toLowerCase() === code
+        )?.requirement_status;
+        return (
+          status.input_type === 'form' &&
+          (previousStatus === 'NEEDS REVISION' || revisionCodes.has(code)) &&
+          nextStatus === 'RESUBMITTED - AWAITING REVIEW'
+        );
+      });
       setData((prev) => ({ ...prev, ...result }));
-      setMessage('Progress saved automatically.');
+      setMessage(
+        isSubmitted
+          ? correctedForm
+            ? 'Corrected form sent back for review.'
+            : 'No changes were made to a requirement marked Needs Revision.'
+          : 'Progress saved automatically.'
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -438,16 +469,7 @@ function Requirements() {
     setMessage('');
     try {
       const result = await submitMyRequirements();
-      setData((prev) => ({
-        ...prev,
-        submission: { ...prev.submission, status: result.status },
-        // The coordinator's revision list is cleared server-side on submit, so
-        // the highlight goes with it.
-        revisionDocuments: [],
-      }));
-      // Back to read-only: the submission is filed again, so the primary action
-      // returns to "Edit Submission".
-      setEditingSubmission(false);
+      setData((prev) => ({ ...prev, ...result }));
       setMessage(result.message);
     } catch (err) {
       setError(err.message);
@@ -468,16 +490,13 @@ function Requirements() {
       const result = await uploadMyDocument(file, docCode);
       setData((prev) => ({
         ...prev,
-        documents: [...prev.documents, result.document],
-        progress: result.progress,
-        missingDocuments: result.missingDocuments || docTypes.map((d) => d.code),
-        // Uploads change how many requirements are satisfied, so the counters
-        // and the tab flags are refreshed from the server response.
-        requirementStatuses: result.requirementStatuses || prev.requirementStatuses,
-        requirementSummary: result.requirementSummary || prev.requirementSummary,
-        sections: result.sections || prev.sections,
+        ...result,
+        documents: result.documents || [
+          ...prev.documents.filter((doc) => doc.code !== result.document.code),
+          result.document,
+        ],
       }));
-      setMessage(`${file.name} uploaded successfully.`);
+      setMessage(result.message || `${file.name} uploaded successfully.`);
       setUploadFile((p) => ({ ...p, [docCode]: null }));
     } catch (err) {
       setError(err.message);
@@ -505,12 +524,8 @@ function Requirements() {
       const result = await deleteMyDocument(doc.id);
       setData((prev) => ({
         ...prev,
-        documents: prev.documents.filter((d) => d.id !== doc.id),
-        progress: result.progress ?? prev.progress,
-        missingDocuments: result.missingDocuments || prev.missingDocuments,
-        requirementStatuses: result.requirementStatuses || prev.requirementStatuses,
-        requirementSummary: result.requirementSummary || prev.requirementSummary,
-        sections: result.sections || prev.sections,
+        ...result,
+        documents: result.documents || prev.documents.filter((d) => d.id !== doc.id),
       }));
       setMessage('Document removed.');
     } catch (err) {
@@ -545,15 +560,17 @@ function Requirements() {
 
   const renderDocItem = (item) => {
     const doc = item.doc;
-    const disabled = !!doc;
     // Per document, so several files can be uploading at once and each keeps its
     // own spinner.
     const isUploadingDoc = !!uploading[item.code];
     const currentFile = uploadFile[item.code];
     const hasExisting = !!doc;
-    // Sent back for revision: the row is marked so the student sees which file
-    // the coordinator wants again, not just a list at the top.
-    const needsRevision = revisionCodes.has(String(item.code || '').toLowerCase());
+    const code = String(item.code || '').toLowerCase();
+    const status = requirementStatusByCode.get(code)?.requirement_status ||
+      (revisionCodes.has(code) ? 'NEEDS REVISION' : (doc ? 'PENDING' : null));
+    const needsRevision = status === 'NEEDS REVISION';
+    const canEditRequirement = !isCoordinatorLocked &&
+      (needsRevision || (!isSubmitted && !hasExisting && !status));
 
     return (
       <div
@@ -575,14 +592,16 @@ function Requirements() {
               'Not uploaded'
             )}
           </div>
-          {currentFile && !hasExisting && (
+          {currentFile && (
             <div className={styles.docMeta}>New: {currentFile.name}</div>
           )}
         </div>
         <div className={styles.docActions}>
           {hasExisting ? (
             <>
-              <span className={`${styles.badge} ${styles.badgeVerified}`}>Uploaded</span>
+              <span className={`${styles.badge} ${statusBadgeClass(status)}`}>
+                {statusLabel(status)}
+              </span>
               {doc.cloudinary_url && (
                 <a
                   className={styles.btnGhost}
@@ -593,18 +612,22 @@ function Requirements() {
                   View
                 </a>
               )}
-              <button
-                className={styles.btnDanger}
-                disabled={deleting === doc.id || lockFields}
-                onClick={() => handleDelete(doc)}
-              >
-                {deleting === doc.id ? 'Removing...' : 'Remove'}
-              </button>
             </>
-          ) : (
+          ) : null}
+          {canEditRequirement && (
+            <>
+              {hasExisting && (
+                <button
+                  className={styles.btnDanger}
+                  disabled={deleting === doc.id}
+                  onClick={() => handleDelete(doc)}
+                >
+                  {deleting === doc.id ? 'Removing...' : 'Remove'}
+                </button>
+              )}
             <button
               className={styles.btnSuccess}
-              disabled={isUploadingDoc || !currentFile || lockFields}
+              disabled={isUploadingDoc || !currentFile}
               onClick={() => handleUpload(item.code)}
               aria-busy={isUploadingDoc}
             >
@@ -614,9 +637,10 @@ function Requirements() {
                   Uploading...
                 </>
               ) : (
-                'Upload'
+                needsRevision ? 'Upload Corrected File' : 'Upload'
               )}
             </button>
+            </>
           )}
           <span className={styles.filePicker}>
             {/* The caption lives on a label so it can say "Edit File" once a file
@@ -626,14 +650,14 @@ function Requirements() {
               className={styles.fileInput}
               type="file"
               onChange={(e) => handleFileChange(item.code, e)}
-              disabled={disabled || isUploadingDoc || lockFields}
+              disabled={!canEditRequirement || isUploadingDoc}
             />
             <label
               htmlFor={`requirement-file-${item.code}`}
               className={[
                 styles.fileButton,
                 currentFile ? styles.fileButtonEdit : '',
-                disabled || isUploadingDoc || lockFields ? styles.fileButtonDisabled : '',
+                !canEditRequirement || isUploadingDoc ? styles.fileButtonDisabled : '',
               ]
                 .filter(Boolean)
                 .join(' ')}
@@ -647,8 +671,10 @@ function Requirements() {
     );
   };
 
-  const renderPersonalForm = () => (
-    <div className={styles.grid2}>
+  const renderPersonalForm = () => {
+    const lockFields = !canEditFormRequirement('personal_information');
+    return (
+      <div className={styles.grid2}>
       <div className={styles.field}>
         <label>Student Number <span className={styles.requiredDiamond}>*</span></label>
         <input
@@ -693,7 +719,7 @@ function Requirements() {
           className={styles.select}
           value={suffixValue}
           onChange={(e) => handleFieldChange('suffix', e.target.value)}
-          readOnly={lockFields}
+          disabled={lockFields}
           style={{ width: '100%' }}
         >
           <option value="">None</option>
@@ -707,7 +733,7 @@ function Requirements() {
           className={styles.select}
           value={student.gender || ''}
           onChange={(e) => handleFieldChange('gender', e.target.value)}
-          readOnly={lockFields}
+          disabled={lockFields}
           style={{ width: '100%' }}
         >
           <option value="">Select</option>
@@ -836,11 +862,14 @@ function Requirements() {
           readOnly={lockFields}
         />
       </div>
-    </div>
-  );
+      </div>
+    );
+  };
 
-  const renderGuardianForm = () => (
-    <div className={styles.grid2}>
+  const renderGuardianForm = () => {
+    const lockFields = !canEditFormRequirement('guardian_emergency');
+    return (
+      <div className={styles.grid2}>
       <div className={styles.field}>
         <label>Guardian/Parent Name <span className={styles.requiredDiamond}>*</span></label>
         <input
@@ -908,8 +937,9 @@ function Requirements() {
         />
         {phoneErrorText('emergency_contact_number')}
       </div>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderMedicalDocs = () => {
     const items = docsBySection('medical');
@@ -974,22 +1004,26 @@ function Requirements() {
   // "Pending Review" is the value older submissions were saved with; both it and
   // the current "Pending" mean the student has submitted and is waiting. "Hold"
   // is a coordinator pause, so the submission still counts as filed.
-  const isSubmitted = ['Pending', 'Pending Review', 'Under Review', 'Approved', 'Hold'].includes(submission?.status) &&
+  const isSubmitted = ['Pending', 'Pending Review', 'Under Review', 'Needs Revision', 'Approved', 'Hold'].includes(submission?.status) &&
     !!submission?.submitted_at;
 
-  // Approved is final: nothing left to change, so the page offers no actions -
-  // not even "Edit Submission".
-  const isApproved = String(submission?.status || '').trim().toLowerCase() === 'approved';
+  const submissionStatus = String(submission?.status || '').trim().toLowerCase();
+  const isApproved = submissionStatus === 'approved';
+  const isOnHold = submissionStatus === 'hold';
+  const isCoordinatorLocked = isApproved || isOnHold;
 
-  // After submitting, the form locks until the student asks to edit it. That is
-  // what turns the primary button into "Edit Submission".
-  const lockFields = isApproved || (isSubmitted && !editingSubmission);
-
-  // Requirements the coordinator sent back for revision, by code, so the rows
-  // themselves can be highlighted rather than only listed in the notice.
   const revisionCodes = new Set(
     revisionDocuments.map((doc) => String(doc.code || '').toLowerCase()).filter(Boolean)
   );
+  const canEditFormRequirement = (code) => {
+    const key = String(code || '').toLowerCase();
+    const status = requirementStatusByCode.get(key)?.requirement_status;
+    return !isCoordinatorLocked && (
+      !isSubmitted || status === 'NEEDS REVISION' || revisionCodes.has(key)
+    );
+  };
+  const hasEditableFormRevision = ['personal_information', 'guardian_emergency']
+    .some((code) => canEditFormRequirement(code) && isSubmitted);
 
   return (
     <div className={styles.page}>
@@ -1009,14 +1043,13 @@ function Requirements() {
       {message && <div className={styles.message}>{message}</div>}
       {error && <div className={styles.error}>{error}</div>}
 
-      {/* The coordinator's revision checklist: exactly which files to replace. */}
+      {/* Only these requirements are unlocked for individual correction. */}
       {revisionDocuments.length > 0 && (
         <div className={styles.revisionNotice} role="status">
           <strong>Changes needed</strong>
           <p>
-            Your coordinator asked for the items below to be completed again.
-            Fill in the information or upload a new copy, then submit your
-            requirements again.
+            Only the items below are editable. Correct each file or form and
+            it will return to the coordinator for review automatically.
           </p>
           <ul className={styles.revisionList}>
             {revisionDocuments.map((doc) => (
@@ -1035,8 +1068,8 @@ function Requirements() {
 
       <div className={styles.section}>
         <div className={styles.progressLabel}>
-          <span><strong>Progress</strong> &mdash; {progress}% complete</span>
-          <span>{completedRequirements}/{totalRequirements} requirements completed</span>
+          <span><strong>Progress</strong> &mdash; {progress}% provided</span>
+          <span>{completedRequirements}/{totalRequirements} requirements provided</span>
         </div>
         <div className={styles.progressBar}>
           <div className={styles.progressFill} style={{ width: `${progress}%`, background: progressColor }} />
@@ -1066,6 +1099,16 @@ function Requirements() {
           <div className={styles.feedbackNotice}>
             <strong>Coordinator feedback</strong>
             <p>{submission.coordinator_feedback}</p>
+          </div>
+        )}
+        {isOnHold && (
+          <div className={styles.holdNotice} role="status">
+            <strong>Submission on hold</strong>
+            <p>
+              Your coordinator has placed this approved submission on hold. You
+              cannot edit or resubmit it until the coordinator releases the hold.
+              Contact your coordinator if you have questions.
+            </p>
           </div>
         )}
       </div>
@@ -1116,61 +1159,33 @@ function Requirements() {
         {activeTab === 'medical' && renderMedicalDocs()}
         {activeTab === 'academic' && renderAcademicDocs()}
 
-        {/* Approved is final: no actions at all, the page is read-only. */}
-        {!isApproved && (
+        {/* Submitted requirements stay locked except for items sent back. */}
+        {!isCoordinatorLocked && (
           <div className={styles.saveBar}>
-            <div className={styles.saveBarActions}>
-              {/* Once submitted, the primary action becomes "Edit Submission";
-                  it unlocks the form and brings back Save Changes and Submit. */}
-              {isSubmitted && !editingSubmission ? (
+            {!isSubmitted ? (
+              <div className={styles.saveBarActions}>
                 <button
                   className={styles.submitBtn}
-                  onClick={() => {
-                    setEditingSubmission(true);
-                    setError('');
-                    setMessage('');
-                  }}
+                  disabled={submitting}
+                  onClick={handleSubmit}
                 >
-                  Edit Submission
+                  {submitting ? 'Submitting...' : 'Submit Requirements'}
                 </button>
-              ) : (
-                <>
-                  <button
-                    className={styles.submitBtn}
-                    disabled={submitting}
-                    onClick={handleSubmit}
-                  >
-                    {submitting
-                      ? 'Submitting...'
-                      : isSubmitted
-                        ? 'Submit Again'
-                        : 'Submit Requirements'}
-                  </button>
-                  <button className={styles.btn} disabled={saving} onClick={handleSave}>
-                    {saving ? 'Saving...' : isSubmitted ? 'Save Changes' : 'Save Progress'}
-                  </button>
-                  {isSubmitted && (
-                    <button
-                      type="button"
-                      className={styles.btnGhost}
-                      disabled={saving || submitting}
-                      onClick={() => setEditingSubmission(false)}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-            {isSubmitted && !editingSubmission && (
+                <button className={styles.btn} disabled={saving} onClick={handleSave}>
+                  {saving ? 'Saving...' : 'Save Progress'}
+                </button>
+              </div>
+            ) : hasEditableFormRevision ? (
+              <div className={styles.saveBarActions}>
+                <button className={styles.btn} disabled={saving} onClick={handleSave}>
+                  {saving ? 'Saving...' : 'Save Corrected Form'}
+                </button>
+              </div>
+            ) : null}
+            {isSubmitted && (
               <p className={styles.muted}>
-                Submitted for review. Choose Edit Submission to change or replace a requirement,
-                then submit again.
-              </p>
-            )}
-            {isSubmitted && editingSubmission && (
-              <p className={styles.muted}>
-                Editing a submitted request. Save your changes, then submit it again for review.
+                Submitted requirements stay locked except for items marked Needs Revision.
+                Corrected files are resubmitted automatically; save corrected forms here.
               </p>
             )}
           </div>

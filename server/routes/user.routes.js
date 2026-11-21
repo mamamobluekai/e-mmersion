@@ -9,6 +9,7 @@ const {
   logout,
   getMe,
   setPassword,
+  setStudentActivationPassword,
 } = require('../controllers/user.controller');
 const { forgotPassword, resetPassword, verifyResetToken } = require('../controllers/passwordReset.controller');
 const authenticate = require('../middleware/verifyToken');
@@ -61,6 +62,8 @@ router.post('/reset-password', authLimiter, resetValidation, handleValidation, r
 router.post('/verify-reset-token', authLimiter, verifyTokenValidation, handleValidation, verifyResetToken);
 
 router.use(authenticate);
+
+router.post('/activation/set-password', writeLimiter, setStudentActivationPassword);
 
 // One-time acceptance of the Terms and Agreement. Available to every signed-in
 // role, not just students, because every account has to agree once.

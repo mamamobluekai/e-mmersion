@@ -30,7 +30,9 @@ const ROLE_META = {
 
 const STATUS_META = {
   approved: { label: 'Active', tone: 'approved' },
+  active: { label: 'Active', tone: 'approved' },
   pending: { label: 'Pending', tone: 'pending' },
+  pending_activation: { label: 'Pending Activation', tone: 'pending' },
   disapproved: { label: 'Inactive', tone: 'disapproved' },
 };
 
@@ -160,7 +162,7 @@ export default function UserProfileModal({ user, onClose, onUpdated }) {
   const meta = ROLE_META[p.role] || { label: p.role || 'User', icon: BadgeCheck, accent: '#8b1e2d' };
   const RoleIcon = meta.icon;
   const status = STATUS_META[p.status] || { label: p.status || 'Unknown', tone: 'pending' };
-  const isActive = p.status === 'approved';
+  const isActive = ['approved', 'active', 'pending_activation'].includes(p.status);
 
   const fullName = `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.email || 'User';
   const initials = fullName
@@ -289,7 +291,7 @@ export default function UserProfileModal({ user, onClose, onUpdated }) {
           )}
           {/* Only for an approved account: the recovery path when the approval
               email bounced or expired. Mints a new one-time link. */}
-          {isActive ? (
+          {p.status === 'approved' ? (
             <button
               type="button"
               className={styles.secondaryBtn}

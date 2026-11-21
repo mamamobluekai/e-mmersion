@@ -55,6 +55,11 @@ const {
 
 const { login, logout, profile, updateProfile } = require('../controllers/adminContollers/auth.controller');
 const { dashboard, periodAnalytics } = require('../controllers/adminContollers/dashboard.controller');
+const {
+  listAccountProblemReports,
+  resolveAccountProblemReport,
+  archiveReportedStudent,
+} = require('../controllers/accountProblem.controller');
 
 const {
   uploadTeachersExcel,
@@ -83,6 +88,9 @@ router.get('/dashboard', dashboard);
 router.get('/dashboard/period-analytics', periodAnalytics);
 
 router.get('/users', getAllUsers);
+router.get('/account-problems', listAccountProblemReports);
+router.patch('/account-problems/:reportId/resolve', resolveAccountProblemReport);
+router.post('/account-problems/:reportId/archive-student', archiveReportedStudent);
 router.post('/users', createUser);
 router.get('/users/status/:status', getUsersByStatus);
 router.get('/users/:id', getUserById);

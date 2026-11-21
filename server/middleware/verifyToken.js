@@ -31,7 +31,7 @@ const authenticate = async (req, res, next) => {
     let current;
     try {
       const result = await pool.query(
-        'SELECT id, email, role, status FROM users WHERE id = $1',
+        'SELECT id, email, role, status, terms_accepted FROM users WHERE id = $1',
         [decoded.id]
       );
       current = result.rows[0];
@@ -61,6 +61,36 @@ const authenticate = async (req, res, next) => {
           ? 'Your account is still pending approval.'
           : 'Your account was not approved.',
         details: 'Please contact an administrator.',
+      });
+    }
+
+    const path = req.path.replace(/\/+$/, '') || '/';
+    const isTermsAcceptance = req.method === 'POST' && path === '/terms/accept';
+    const isPasswordSetup = req.method === 'POST' && path === '/activation/set-password';
+    const isLogout = req.method === 'POST' && path === '/logout';
+
+    if (
+      current.role === 'student' &&
+      !current.terms_accepted &&
+      !isTermsAcceptance &&
+      !isLogout
+    ) {
+      return res.status(403).json({
+        error: 'Accept the Terms and Agreement to continue.',
+        code: 'TERMS_ACCEPTANCE_REQUIRED',
+      });
+    }
+
+    if (status === 'pending_activation' && !isLogout && !isPasswordSetup) {
+      return res.status(403).json({
+        error: 'Set your permanent password to activate your account.',
+        code: 'PASSWORD_SETUP_REQUIRED',
+      });
+    }
+
+    if (isPasswordSetup && !current.terms_accepted) {
+      return res.status(403).json({
+        error: 'Accept the Terms and Agreement before setting your permanent password.',
       });
     }
 

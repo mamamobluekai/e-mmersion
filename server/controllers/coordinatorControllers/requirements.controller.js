@@ -8,6 +8,8 @@ const {
   recalculateAllProgress,
   serializeRequirements,
   ensureRevisionDocumentColumn,
+  ensureFormRequirementVerificationTable,
+  ensureRequirementReviewSchema,
   ensureDefaultGradeLevel,
   getActiveDocumentTypes,
   buildRequirementStatuses,
@@ -15,7 +17,83 @@ const {
   describeOutstanding,
 } = require('./regexes/requirementsHelpers');
 const { ensureDocumentTypesSchema } = require('./regexes/documentTypeSchema');
+const { formFieldsFor } = require('./regexes/formRequirements');
+const {
+  studentSubmissionBlockMessage,
+  reviewStatusTransitionError,
+} = require('./requirementsSubmissionPolicy');
 const streamifier = require('streamifier');
+
+const getStudentSubmissionBlockMessage = async (client, role, submissionId) => {
+  if (role !== 'student') return null;
+  const result = await client.query(
+    'SELECT status FROM student_requirement_submissions WHERE id = $1 FOR UPDATE',
+    [submissionId]
+  );
+  if (!result.rows.length) {
+    throw new Error('Student requirement submission was not found after creation.');
+  }
+  return studentSubmissionBlockMessage(result.rows[0].status);
+};
+
+const recordRequirementStatus = async (client, {
+  submissionId,
+  documentTypeId,
+  documentId = null,
+  status,
+  action,
+  feedback = null,
+  originalName = null,
+  cloudinaryUrl = null,
+  details = null,
+  actorId = null,
+}) => {
+  await client.query(
+    `INSERT INTO student_requirement_statuses
+       (submission_id, document_type_id, status, feedback, updated_by, updated_at)
+     VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+     ON CONFLICT (submission_id, document_type_id)
+     DO UPDATE SET status = EXCLUDED.status,
+                   feedback = EXCLUDED.feedback,
+                   updated_by = EXCLUDED.updated_by,
+                   updated_at = CURRENT_TIMESTAMP`,
+    [submissionId, documentTypeId, status, feedback, actorId]
+  );
+  await client.query(
+    `INSERT INTO student_requirement_status_history
+       (submission_id, document_type_id, document_id, status, action, feedback,
+        original_name, cloudinary_url, details, actor_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)`,
+    [
+      submissionId,
+      documentTypeId,
+      documentId,
+      status,
+      action,
+      feedback,
+      originalName,
+      cloudinaryUrl,
+      details ? JSON.stringify(details) : null,
+      actorId,
+    ]
+  );
+};
+
+const refreshSubmissionReviewStatus = async (client, submissionId) => {
+  const result = await client.query(
+    `SELECT COUNT(*)::int AS count
+       FROM student_requirement_statuses
+      WHERE submission_id = $1 AND status = 'NEEDS REVISION'`,
+    [submissionId]
+  );
+  const status = result.rows[0].count > 0 ? 'Needs Revision' : 'Pending';
+  await client.query(
+    `UPDATE student_requirement_submissions
+        SET status = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND status NOT IN ('Approved', 'Hold')`,
+    [submissionId, status]
+  );
+};
 
 const upsertRequirements = async (req, res) => {
   const client = await pool.connect();
@@ -26,7 +104,13 @@ const upsertRequirements = async (req, res) => {
     await client.query('BEGIN');
     const userId = req.user.role === 'student' ? req.user.id : req.body.user_id;
     const student = await getOrCreateStudent(client, userId, req.body);
-    await getOrCreateSubmission(client, student, userId);
+    const submission = await getOrCreateSubmission(client, student, userId);
+    const blockMessage = await getStudentSubmissionBlockMessage(client, req.user.role, submission.id);
+    if (blockMessage) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: blockMessage });
+    }
+    await ensureRequirementReviewSchema();
 
     const fields = [
       'student_number','first_name','middle_name','last_name','suffix','gender','birthdate','age',
@@ -35,13 +119,85 @@ const upsertRequirements = async (req, res) => {
       'guardian_relationship','guardian_contact','guardian_email','guardian_address',
       'emergency_contact','emergency_contact_number','academic_notes',
     ];
-    const updates = fields.filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
+    const updates = fields.filter((field) => (
+      Object.prototype.hasOwnProperty.call(req.body, field) &&
+      String(normalize(req.body[field]) || '') !== String(normalize(student[field]) || '')
+    ));
+    let changedFormCodes = [];
+    if (req.user.role === 'student' && submission.submitted_at && updates.length) {
+      const formCodes = ['personal_information', 'guardian_emergency'];
+      const formTypes = await client.query(
+        `SELECT dt.id, dt.code, states.status
+           FROM document_types dt
+           LEFT JOIN student_requirement_statuses states
+             ON states.document_type_id = dt.id AND states.submission_id = $1
+          WHERE dt.code = ANY($2::text[])`,
+        [submission.id, formCodes]
+      );
+      const legacyRevisionIds = Array.isArray(submission.revision_document_ids)
+        ? submission.revision_document_ids.map(Number)
+        : [];
+      const editableFormCodes = new Set(
+        formTypes.rows
+          .filter((type) => (
+            type.status === 'NEEDS REVISION' || legacyRevisionIds.includes(Number(type.id))
+          ))
+          .map((type) => type.code)
+      );
+      const blockedFields = updates.filter((field) => !formCodes.some((code) => (
+        editableFormCodes.has(code) && formFieldsFor(code).some((entry) => entry.key === field)
+      )));
+      if (blockedFields.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'Only form requirements marked Needs Revision can be edited.',
+          blockedFields,
+        });
+      }
+      changedFormCodes = formCodes.filter((code) => (
+        editableFormCodes.has(code) && formFieldsFor(code).some((entry) => updates.includes(entry.key))
+      ));
+    }
+
     if (updates.length) {
       const setSql = updates.map((field, index) => `${field} = $${index + 1}`).join(', ');
       await client.query(
         `UPDATE students SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = $${updates.length + 1}`,
         [...updates.map((field) => normalize(req.body[field]) || null), student.id]
       );
+
+      if (changedFormCodes.length) {
+        await ensureFormRequirementVerificationTable();
+        await client.query(
+          `DELETE FROM student_form_requirement_verifications
+            WHERE submission_id = $1
+              AND document_type_id IN (
+                SELECT id FROM document_types WHERE code = ANY($2::text[])
+              )`,
+          [submission.id, changedFormCodes]
+        );
+        const formTypes = await client.query(
+          `SELECT id, code FROM document_types WHERE code = ANY($1::text[])`,
+          [changedFormCodes]
+        );
+        const updatedStudent = { ...student, ...Object.fromEntries(
+          updates.map((field) => [field, normalize(req.body[field]) || null])
+        ) };
+        for (const type of formTypes.rows) {
+          const details = Object.fromEntries(
+            formFieldsFor(type.code).map(({ key }) => [key, updatedStudent[key] ?? null])
+          );
+          await recordRequirementStatus(client, {
+            submissionId: submission.id,
+            documentTypeId: type.id,
+            status: 'RESUBMITTED - AWAITING REVIEW',
+            action: 'RESUBMITTED',
+            details,
+            actorId: req.user.id,
+          });
+        }
+        await refreshSubmissionReviewStatus(client, submission.id);
+      }
     }
 
     // Grade Level is fixed at Grade 12, so it is filled in here rather than
@@ -67,6 +223,19 @@ const submitRequirements = async (req, res) => {
     await client.query('BEGIN');
     const student = await getOrCreateStudent(client, req.user.id, req.body);
     const submission = await getOrCreateSubmission(client, student, req.user.id);
+    const blockMessage = await getStudentSubmissionBlockMessage(client, req.user.role, submission.id);
+    if (blockMessage) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: blockMessage });
+    }
+    if (req.user.role === 'student' && submission.submitted_at) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'This submission is already filed. Resubmit only requirements marked Needs Revision.',
+      });
+    }
+    await ensureRequirementReviewSchema();
+
     const data = await serializeRequirements(client, student.id);
 
     if (data.progress < 100) {
@@ -77,9 +246,32 @@ const submitRequirements = async (req, res) => {
       });
     }
 
+    for (const requirement of data.requirementStatuses.filter(
+      (status) => status.input_type === 'form' && status.completed
+    )) {
+      const state = await client.query(
+        `SELECT status FROM student_requirement_statuses
+          WHERE submission_id = $1 AND document_type_id = $2`,
+        [submission.id, requirement.id]
+      );
+      if (state.rows.length === 0) {
+        const details = Object.fromEntries(
+          (requirement.fields || []).map(({ key }) => [key, data.student?.[key] ?? null])
+        );
+        await recordRequirementStatus(client, {
+          submissionId: submission.id,
+          documentTypeId: requirement.id,
+          status: 'PENDING',
+          action: 'SUBMITTED',
+          details,
+          actorId: req.user.id,
+        });
+      }
+    }
+
     await client.query(
       `UPDATE student_requirement_submissions
-       SET status = 'Pending', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP),
+       SET status = 'Pending', submitted_at = CURRENT_TIMESTAMP,
            revision_document_ids = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [submission.id]
@@ -88,8 +280,13 @@ const submitRequirements = async (req, res) => {
       `INSERT INTO submission_logs (submission_id, actor_id, action, remarks) VALUES ($1,$2,'Submitted','Requirements submitted successfully.')`,
       [submission.id, req.user.id]
     );
+    const updatedData = await serializeRequirements(client, student.id);
     await client.query('COMMIT');
-    res.json({ message: 'Requirements submitted successfully.', status: 'Pending' });
+    res.json({
+      message: 'Requirements submitted successfully.',
+      status: 'Pending',
+      ...updatedData,
+    });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('submitRequirements error:', err);
@@ -144,24 +341,70 @@ const uploadDocument = async (req, res) => {
     await client.query('BEGIN');
     const student = await getOrCreateStudent(client, req.user.id, {});
     const submission = await getOrCreateSubmission(client, student, req.user.id);
-    const type = await client.query('SELECT * FROM document_types WHERE code = $1', [document_code]);
+    const blockMessage = await getStudentSubmissionBlockMessage(client, req.user.role, submission.id);
+    if (blockMessage) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: blockMessage });
+    }
+    await ensureDocumentTypesSchema();
+    await ensureRequirementReviewSchema();
+
+    const type = await client.query(
+      `SELECT * FROM document_types
+        WHERE code = $1 AND COALESCE(is_active, TRUE)`,
+      [document_code]
+    );
     if (!type.rows.length) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invalid document type.' });
     }
+    if (String(type.rows[0].input_type || 'file').toLowerCase() === 'form') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Form requirements cannot be uploaded as files.' });
+    }
 
-    await client.query(
-      `DELETE FROM student_documents WHERE student_id = $1 AND document_type_id = $2`,
-      [student.id, type.rows[0].id]
+    const currentState = await client.query(
+      `SELECT status
+         FROM student_requirement_statuses
+        WHERE submission_id = $1 AND document_type_id = $2
+        FOR UPDATE`,
+      [submission.id, type.rows[0].id]
     );
+    const existingDocument = await client.query(
+      `SELECT id
+         FROM student_documents
+        WHERE submission_id = $1 AND document_type_id = $2
+        ORDER BY uploaded_date DESC, id DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [submission.id, type.rows[0].id]
+    );
+    const previousStatus = currentState.rows[0]?.status || null;
+    const isResubmission = previousStatus === 'NEEDS REVISION';
+    if (
+      (previousStatus && !isResubmission) ||
+      (!previousStatus && (existingDocument.rows.length > 0 || submission.submitted_at))
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Only a requirement marked Needs Revision can be replaced.',
+      });
+    }
+    const requirementStatus = isResubmission
+      ? 'RESUBMITTED - AWAITING REVIEW'
+      : 'PENDING';
 
     const resourceType = req.file.mimetype.startsWith('image/') ? 'image' : 'raw';
     const result = await uploadToCloudinary(req.file.buffer, resourceType);
 
+    await client.query(
+      `DELETE FROM student_documents WHERE submission_id = $1 AND document_type_id = $2`,
+      [submission.id, type.rows[0].id]
+    );
     const inserted = await client.query(
       `INSERT INTO student_documents
        (submission_id, student_id, document_type_id, document_name, file_path, original_name, mime_type, file_size, cloudinary_public_id, cloudinary_url, resource_type, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Uploaded')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         submission.id,
@@ -175,15 +418,35 @@ const uploadDocument = async (req, res) => {
         result.public_id,
         result.secure_url,
         resourceType,
+        requirementStatus,
       ]
     );
+    await recordRequirementStatus(client, {
+      submissionId: submission.id,
+      documentTypeId: type.rows[0].id,
+      documentId: inserted.rows[0].id,
+      status: requirementStatus,
+      action: isResubmission ? 'RESUBMITTED' : 'UPLOADED',
+      originalName: req.file.originalname,
+      cloudinaryUrl: result.secure_url,
+      actorId: req.user.id,
+    });
+    if (isResubmission) {
+      await refreshSubmissionReviewStatus(client, submission.id);
+    }
     await client.query(
       `INSERT INTO submission_logs (submission_id, actor_id, action, remarks) VALUES ($1,$2,'Uploaded document',$3)`,
       [submission.id, req.user.id, type.rows[0].name]
     );
-    const progress = await calculateProgress(client, student.id);
+    const data = await serializeRequirements(client, student.id);
     await client.query('COMMIT');
-    res.status(201).json({ message: 'File uploaded successfully.', document: inserted.rows[0], ...progress });
+    res.status(201).json({
+      message: isResubmission
+        ? 'Corrected requirement uploaded and resubmitted for review.'
+        : 'File uploaded successfully.',
+      document: inserted.rows[0],
+      ...data,
+    });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('uploadDocument error:', err);
@@ -194,20 +457,101 @@ const uploadDocument = async (req, res) => {
 };
 
 const deleteDocument = async (req, res) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
-      `DELETE FROM student_documents sd
-       USING students s
-       WHERE sd.id = $1 AND sd.student_id = s.id
-         AND ($2::text <> 'student' OR s.user_id = $3)
-       RETURNING sd.student_id`,
+    await client.query('BEGIN');
+    const document = await client.query(
+      `SELECT sd.id, sd.submission_id, sd.document_type_id, sd.original_name,
+              sd.cloudinary_url, s.id AS student_id
+         FROM student_documents sd
+         JOIN students s ON s.id = sd.student_id
+        WHERE sd.id = $1
+          AND ($2::text <> 'student' OR s.user_id = $3)`,
       [req.params.id, req.user.role, req.user.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Document not found.' });
-    res.json({ message: 'Document deleted.' });
+    if (!document.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    let submissionId = document.rows[0].submission_id;
+    if (!submissionId && req.user.role === 'student') {
+      const submission = await getOrCreateSubmission(
+        client,
+        { id: document.rows[0].student_id },
+        req.user.id
+      );
+      submissionId = submission.id;
+    }
+
+    const blockMessage = await getStudentSubmissionBlockMessage(
+      client,
+      req.user.role,
+      submissionId
+    );
+    if (blockMessage) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: blockMessage });
+    }
+    await ensureRequirementReviewSchema();
+    const requirementState = await client.query(
+      `SELECT status
+         FROM student_requirement_statuses
+        WHERE submission_id = $1 AND document_type_id = $2
+        FOR UPDATE`,
+      [submissionId, document.rows[0].document_type_id]
+    );
+    if (
+      req.user.role === 'student' &&
+      requirementState.rows[0]?.status !== 'NEEDS REVISION'
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Only a requirement marked Needs Revision can be removed.',
+      });
+    }
+
+    const lockedDocument = await client.query(
+      `SELECT sd.id
+         FROM student_documents sd
+         JOIN students s ON s.id = sd.student_id
+        WHERE sd.id = $1
+          AND ($2::text <> 'student' OR s.user_id = $3)
+        FOR UPDATE OF sd`,
+      [req.params.id, req.user.role, req.user.id]
+    );
+    if (!lockedDocument.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    if (requirementState.rows[0]) {
+      await client.query(
+        `INSERT INTO student_requirement_status_history
+           (submission_id, document_type_id, document_id, status, action,
+            original_name, cloudinary_url, actor_id)
+         VALUES ($1, $2, $3, $4, 'FILE_REMOVED', $5, $6, $7)`,
+        [
+          submissionId,
+          document.rows[0].document_type_id,
+          document.rows[0].id,
+          requirementState.rows[0].status,
+          document.rows[0].original_name,
+          document.rows[0].cloudinary_url,
+          req.user.id,
+        ]
+      );
+    }
+    await client.query('DELETE FROM student_documents WHERE id = $1', [req.params.id]);
+    const result = await serializeRequirements(client, document.rows[0].student_id);
+    await client.query('COMMIT');
+    res.json({ message: 'Document deleted.', ...result });
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('deleteDocument error:', err);
     res.status(500).json({ error: 'Server error.' });
+  } finally {
+    client.release();
   }
 };
 
@@ -325,34 +669,32 @@ async function findMissingRequirements(client, submissionId) {
   return statuses.filter((status) => !status.completed).map((status) => status.name);
 }
 
-/**
- * Validate the "Needs Revision" checklist the coordinator ticked: the ids must
- * be real document types. Returns the cleaned id array, or `null` when the
- * payload is unusable (the caller turns that into a 400).
- */
-async function normalizeRevisionDocumentIds(rawIds) {
-  if (rawIds === undefined || rawIds === null) return [];
-  if (!Array.isArray(rawIds)) return null;
-
-  const ids = Array.from(
-    new Set(rawIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))
+async function findUnapprovedRequirements(client, submissionId) {
+  await ensureRequirementReviewSchema();
+  const submission = await client.query(
+    'SELECT id FROM student_requirement_submissions WHERE id = $1',
+    [submissionId]
   );
-  if (ids.length === 0) return [];
-
-  await ensureDocumentTypesSchema();
-  const existing = await pool.query(
-    'SELECT id FROM document_types WHERE id = ANY($1::int[])',
-    [ids]
+  if (!submission.rows.length) return null;
+  const activeTypes = await getActiveDocumentTypes(client);
+  const result = await client.query(
+    `SELECT document_type_id
+       FROM student_requirement_statuses
+      WHERE submission_id = $1 AND status = 'APPROVED'`,
+    [submissionId]
   );
-  if (existing.rows.length !== ids.length) return null;
-  return ids;
+  const approvedIds = new Set(result.rows.map((row) => Number(row.document_type_id)));
+
+  return activeTypes
+    .filter((requirement) => !approvedIds.has(Number(requirement.id)))
+    .map((requirement) => requirement.name);
 }
 
 const reviewSubmission = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { status, remarks, revision_document_ids } = req.body;
-    const allowed = ['Pending', 'Needs Revision', 'Approved', 'Hold'];
+    const { status, remarks } = req.body;
+    const allowed = ['Pending', 'Approved', 'Hold'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid review status.' });
 
     await ensureRevisionDocumentColumn();
@@ -365,22 +707,9 @@ const reviewSubmission = async (req, res) => {
       return res.status(404).json({ error: 'Submission not found.' });
     }
 
-    // An approval is settled: the only move left is Hold, for when something
-    // turns up after the fact (a file found to be malicious, say). Sending a
-    // student back to Pending or Needs Revision would rewrite the approval
-    // instead of recording that it was later put on hold.
-    if (currentRow.rows[0].status === 'Approved' && !['Approved', 'Hold'].includes(status)) {
-      return res.status(400).json({
-        error: 'An approved submission can only stay approved or be put on hold.',
-      });
-    }
-
-    // Hold is a pause on an approval, not a review outcome in its own right, so
-    // it cannot be applied to a submission that was never approved.
-    if (status === 'Hold' && currentRow.rows[0].status !== 'Approved') {
-      return res.status(400).json({
-        error: 'Only an approved submission can be put on hold.',
-      });
+    const transitionError = reviewStatusTransitionError(currentRow.rows[0].status, status);
+    if (transitionError) {
+      return res.status(400).json({ error: transitionError });
     }
 
     // Approving certifies the student's requirements are complete, so it is
@@ -396,46 +725,42 @@ const reviewSubmission = async (req, res) => {
           missing,
         });
       }
-    }
 
-    // "Needs Revision" only means something if the coordinator says which
-    // documents have to change, so the checklist is required for that status and
-    // dropped for every other one.
-    let revisionIds = [];
-    if (status === 'Needs Revision') {
-      const normalized = await normalizeRevisionDocumentIds(revision_document_ids);
-      if (normalized === null) {
-        return res.status(400).json({ error: 'One or more selected requirements do not exist.' });
+      const unapproved = await findUnapprovedRequirements(client, req.params.id);
+      if (unapproved === null) {
+        return res.status(404).json({ error: 'Submission not found.' });
       }
-      if (normalized.length === 0) {
+      if (unapproved.length > 0) {
         return res.status(400).json({
-          error: 'Select at least one document that the student has to revise.',
+          error: `This student cannot be approved until all requirements are individually approved: ${unapproved.join(', ')}.`,
+          unapproved,
         });
       }
-      revisionIds = normalized;
     }
 
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE student_requirement_submissions
        SET status = $1, coordinator_feedback = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP,
-           revision_document_ids = $5::jsonb, updated_at = CURRENT_TIMESTAMP
+           revision_document_ids = NULL, updated_at = CURRENT_TIMESTAMP
        WHERE id = $4 RETURNING *`,
-      [
-        status,
-        remarks || null,
-        req.user.id,
-        req.params.id,
-        revisionIds.length > 0 ? JSON.stringify(revisionIds) : null,
-      ]
+      [status, remarks || null, req.user.id, req.params.id]
     );
     if (!result.rows.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Submission not found.' });
     }
+    const action = String(currentRow.rows[0].status || '').toLowerCase() === 'hold' && status === 'Pending'
+      ? 'Unheld'
+      : status;
     await client.query(
       `INSERT INTO submission_logs (submission_id, actor_id, action, remarks) VALUES ($1,$2,$3,$4)`,
-      [req.params.id, req.user.id, status, remarks || null]
+      [
+        req.params.id,
+        req.user.id,
+        action,
+        remarks || (action === 'Unheld' ? 'Submission unheld; student may update and resubmit requirements.' : null),
+      ]
     );
     await client.query('COMMIT');
     res.json({ message: 'Submission updated.', submission: result.rows[0] });
@@ -450,7 +775,7 @@ const reviewSubmission = async (req, res) => {
 
 const bulkReviewSubmissions = async (req, res) => {
   const { submission_ids, status, remarks } = req.body;
-  const allowed = ['Pending', 'Needs Revision', 'Approved', 'Hold'];
+  const allowed = ['Pending', 'Approved', 'Hold'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid review status.' });
   if (!Array.isArray(submission_ids) || submission_ids.length === 0) {
     return res.status(400).json({ error: 'No submission IDs provided.' });
@@ -458,8 +783,7 @@ const bulkReviewSubmissions = async (req, res) => {
 
   const client = await pool.connect();
   try {
-    // Same rule as a single review: an approved submission may only be moved to
-    // Hold, never back to Pending or Needs Revision.
+    // Approved submissions can only stay approved or be put on hold.
     if (!['Approved', 'Hold'].includes(status)) {
       const approvedRows = await client.query(
         `SELECT id FROM student_requirement_submissions
@@ -471,6 +795,17 @@ const bulkReviewSubmissions = async (req, res) => {
           error: `${approvedRows.rows.length} selected submission(s) are already approved and can only be put on hold.`,
         });
       }
+    }
+
+    const heldRows = await client.query(
+      `SELECT id FROM student_requirement_submissions
+        WHERE id = ANY($1) AND status = 'Hold'`,
+      [submission_ids]
+    );
+    if (heldRows.rows.length > 0 && status !== 'Pending') {
+      return res.status(400).json({
+        error: 'Held submissions must be unheld to Pending before they can be reviewed again.',
+      });
     }
 
     // Hold only pauses an approval, so a bulk hold needs every selected
@@ -496,7 +831,9 @@ const bulkReviewSubmissions = async (req, res) => {
       for (const id of submission_ids) {
         const missing = await findMissingRequirements(client, id);
         if (missing === null) continue;
-        if (missing.length > 0) {
+        const unapproved = await findUnapprovedRequirements(client, id);
+        if (unapproved === null) continue;
+        if (missing.length > 0 || unapproved.length > 0) {
           const row = await client.query(
             `SELECT st.first_name, st.last_name, st.student_number
                FROM student_requirement_submissions srs
@@ -509,12 +846,15 @@ const bulkReviewSubmissions = async (req, res) => {
             ? [student.first_name, student.last_name].filter(Boolean).join(' ') ||
               student.student_number
             : `Submission ${id}`;
-          blockers.push(`${name} (${missing.length} missing)`);
+          const reasons = [];
+          if (missing.length) reasons.push(`${missing.length} missing`);
+          if (unapproved.length) reasons.push(`${unapproved.length} not approved`);
+          blockers.push(`${name} (${reasons.join(', ')})`);
         }
       }
       if (blockers.length > 0) {
         return res.status(400).json({
-          error: `These students cannot be approved because their requirements are not complete yet: ${blockers.join(', ')}.`,
+          error: `These students cannot be approved until every requirement is submitted and individually approved: ${blockers.join(', ')}.`,
           blockers,
         });
       }
@@ -528,17 +868,35 @@ const bulkReviewSubmissions = async (req, res) => {
       [status, remarks || null, req.user.id, submission_ids],
     );
     if (result.rows.length) {
-      // One log row per reviewed submission, tied to the submission the update
-      // actually touched (not merely every id the caller sent).
-      await client.query(
-        `INSERT INTO submission_logs (submission_id, actor_id, action, remarks)
-         SELECT id, $2, $3, $4 FROM student_requirement_submissions WHERE id = ANY($1)`,
-        [result.rows.map((r) => r.id), req.user.id, status, remarks || null],
-      );
+      const updatedIds = result.rows.map((row) => row.id);
+      const heldIdSet = new Set(heldRows.rows.map((row) => row.id));
+      const unheldIds = status === 'Pending'
+        ? updatedIds.filter((id) => heldIdSet.has(id))
+        : [];
+      const reviewedIds = updatedIds.filter((id) => !heldIdSet.has(id));
+
+      if (reviewedIds.length) {
+        await client.query(
+          `INSERT INTO submission_logs (submission_id, actor_id, action, remarks)
+           SELECT id, $2, $3, $4 FROM student_requirement_submissions WHERE id = ANY($1)`,
+          [reviewedIds, req.user.id, status, remarks || null],
+        );
+      }
+      if (unheldIds.length) {
+        await client.query(
+          `INSERT INTO submission_logs (submission_id, actor_id, action, remarks)
+           SELECT id, $2, 'Unheld', $3 FROM student_requirement_submissions WHERE id = ANY($1)`,
+          [
+            unheldIds,
+            req.user.id,
+            remarks || 'Submission unheld; student may update and resubmit requirements.',
+          ],
+        );
+      }
     }
     await client.query('COMMIT');
     res.json({
-      message: `${result.rows.length} submission(s) marked ${status.toLowerCase()}.`,
+      message: `${result.rows.length} submission(s) updated.`,
       updated: result.rows.length,
     });
   } catch (err) {
@@ -550,24 +908,162 @@ const bulkReviewSubmissions = async (req, res) => {
   }
 };
 
-const verifyDocument = async (req, res) => {
+const reviewRequirement = async (req, res) => {
+  const submissionId = Number(req.params.submissionId);
+  const documentTypeId = Number(req.params.documentTypeId);
+  const { status, feedback } = req.body;
+  if (!Number.isInteger(submissionId) || submissionId <= 0 ||
+      !Number.isInteger(documentTypeId) || documentTypeId <= 0) {
+    return res.status(400).json({ error: 'Invalid submission or requirement ID.' });
+  }
+  if (!['APPROVED', 'NEEDS REVISION'].includes(status)) {
+    return res.status(400).json({ error: 'Choose Approve or Needs Revision.' });
+  }
+
+  const client = await pool.connect();
   try {
-    const { status, remarks } = req.body;
-    if (!['Verified', 'Rejected'].includes(status)) return res.status(400).json({ error: 'Invalid document status.' });
-    const result = await pool.query(
-      `UPDATE student_documents
-       SET status = $1, remarks = $2, verified_by = $3, verified_date = CURRENT_TIMESTAMP
-       WHERE id = $4 RETURNING *`,
-      [status, remarks || null, req.user.id, req.params.id]
+    await ensureDocumentTypesSchema();
+    await ensureRequirementReviewSchema();
+    await client.query('BEGIN');
+    const submission = await client.query(
+      `SELECT id, student_id, status AS submission_status, submitted_at
+         FROM student_requirement_submissions
+        WHERE id = $1
+        FOR UPDATE`,
+      [submissionId]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Document not found.' });
-    res.json({ message: 'Document reviewed.', document: result.rows[0] });
+    if (!submission.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Submission not found.' });
+    }
+    if (['Approved', 'Hold'].includes(submission.rows[0].submission_status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This submission is locked for requirement review.' });
+    }
+    if (!submission.rows[0].submitted_at) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'The student has not submitted these requirements for review.' });
+    }
+
+    const typeResult = await client.query(
+      `SELECT id, code, name, section, input_type, sort_order,
+              COALESCE(is_active, TRUE) AS is_active
+         FROM document_types
+        WHERE id = $1`,
+      [documentTypeId]
+    );
+    if (!typeResult.rows.length || !typeResult.rows[0].is_active) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Requirement not found.' });
+    }
+    const previousState = await client.query(
+      `SELECT status
+         FROM student_requirement_statuses
+        WHERE submission_id = $1 AND document_type_id = $2
+        FOR UPDATE`,
+      [submissionId, documentTypeId]
+    );
+    const previousStatus = previousState.rows[0]?.status || null;
+    if (
+      previousStatus &&
+      !['PENDING', 'RESUBMITTED - AWAITING REVIEW'].includes(previousStatus)
+    ) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Only pending or resubmitted requirements can be reviewed.',
+      });
+    }
+
+    const studentResult = await client.query(
+      'SELECT * FROM students WHERE id = $1',
+      [submission.rows[0].student_id]
+    );
+    if (!studentResult.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+    const requirement = buildRequirementStatuses(
+      [typeResult.rows[0]],
+      studentResult.rows[0],
+      new Set()
+    )[0];
+    let document = null;
+    if (requirement.input_type === 'form') {
+      if (!requirement.completed) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `Complete the form before reviewing it. Missing: ${requirement.missing_fields.join(', ')}.`,
+        });
+      }
+    } else {
+      const documentResult = await client.query(
+        `SELECT id, original_name, cloudinary_url, status
+           FROM student_documents
+          WHERE submission_id = $1 AND document_type_id = $2
+          ORDER BY uploaded_date DESC, id DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [submissionId, documentTypeId]
+      );
+      if (!documentResult.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Upload this requirement before reviewing it.' });
+      }
+      document = documentResult.rows[0];
+    }
+    const details = requirement.input_type === 'form'
+      ? Object.fromEntries(
+        (requirement.fields || []).map(({ key }) => [key, studentResult.rows[0][key] ?? null])
+      )
+      : null;
+
+    await recordRequirementStatus(client, {
+      submissionId,
+      documentTypeId,
+      documentId: document?.id || null,
+      status,
+      action: status,
+      feedback: String(feedback || '').trim() || null,
+      originalName: document?.original_name || null,
+      cloudinaryUrl: document?.cloudinary_url || null,
+      details,
+      actorId: req.user.id,
+    });
+    if (document) {
+      await client.query(
+        `UPDATE student_documents
+            SET status = $1, remarks = $2, verified_by = $3, verified_date = CURRENT_TIMESTAMP
+          WHERE id = $4`,
+        [status, String(feedback || '').trim() || null, req.user.id, document.id]
+      );
+    }
+    await refreshSubmissionReviewStatus(client, submissionId);
+    await client.query(
+      `INSERT INTO submission_logs (submission_id, actor_id, action, remarks)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        submissionId,
+        req.user.id,
+        status === 'APPROVED' ? 'Requirement approved' : 'Requirement needs revision',
+        feedback || requirement.name,
+      ]
+    );
+    const data = await serializeRequirements(client, submission.rows[0].student_id);
+    await client.query('COMMIT');
+    res.json({
+      message: status === 'APPROVED' ? 'Requirement approved.' : 'Requirement marked Needs Revision.',
+      ...data,
+    });
   } catch (err) {
-    console.error('verifyDocument error:', err);
+    try { await client.query('ROLLBACK'); } catch (rollbackErr) {
+      console.error('reviewRequirement rollback error:', rollbackErr);
+    }
+    console.error('reviewRequirement error:', err);
     res.status(500).json({ error: 'Server error.' });
+  } finally {
+    client.release();
   }
 };
-
 
 /* ---------------- Document Types (Editable Requirements) ---------------- */
 
@@ -800,8 +1296,8 @@ module.exports = {
   deleteDocument,
   listSubmissions,
   reviewSubmission,
+  reviewRequirement,
   bulkReviewSubmissions,
-  verifyDocument,
   listDocumentTypes,
   createDocumentType,
   updateDocumentType,

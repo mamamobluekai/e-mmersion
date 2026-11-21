@@ -1,0 +1,138 @@
+.pageHeader {
+  margin-bottom: 24px;
+}
+
+.pageHeader h2 {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #172033;
+}
+
+.pageHeader p {
+  margin: 0;
+  color: #596579;
+  font-size: 0.95rem;
+}
+
+.message {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #bfe6cc;
+  border-radius: 10px;
+  background: #eaf8ef;
+  color: #15803d;
+  font-weight: 600;
+}
+
+.error {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.errorList {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.errorList h4 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.errorList ul {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.errorList li {
+  margin-bottom: 4px;
+}
+
+.section {
+  border: 1px solid #eadde0;
+  border-radius: 14px;
+  background: #fff;
+  padding: 20px;
+}
+
+.muted {
+  margin: 0 0 12px;
+  color: #596579;
+  font-size: 0.88rem;
+}
+
+.section input[type="file"] {
+  display: block;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px dashed #d7b8be;
+  border-radius: 10px;
+  background: #fff7f8;
+  color: #172033;
+  font-size: 0.9rem;
+  cursor: pointer;
+  width: 100%;
+  max-width: 400px;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1px solid #8b1e2d;
+  border-radius: 10px;
+  background: #8b1e2d;
+  color: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #741725;
+  box-shadow: 0 8px 18px rgb(139 30 45 / 18%);
+}
+
+.btn:disabled {
+  border-color: #e3c3cb;
+  background: #e3c3cb;
+  cursor: not-allowed;
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgb(255 255 255 / 35%);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

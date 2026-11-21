@@ -41,12 +41,37 @@ export async function getCoordinatorProfile() {
 }
 
 /* ---------------- Student approvals ---------------- */
-export async function getPendingStudents(status = 'pending', strand = 'all') {
+export async function getPendingStudents(strand = 'all', activity = 'all') {
   const params = new URLSearchParams();
-  if (status && status !== 'all') params.set('status', status);
   if (strand && strand !== 'all') params.set('strand', strand);
+  if (activity && activity !== 'all') params.set('activity', activity);
   const qs = params.toString();
   return apiFetch(`/students/pending${qs ? `?${qs}` : ''}`);
+}
+
+export async function getAllStudents({
+  strand = 'all',
+  activity = 'all',
+  search = '',
+  requirementsCompleted = 'all',
+  deploymentStatus = 'all',
+} = {}) {
+  const params = new URLSearchParams();
+  if (strand && strand !== 'all') params.set('strand', strand);
+  if (activity && activity !== 'all') params.set('activity', activity);
+  if (search) params.set('search', search);
+  if (requirementsCompleted && requirementsCompleted !== 'all') {
+    params.set('requirements_completed', requirementsCompleted);
+  }
+  if (deploymentStatus && deploymentStatus !== 'all') {
+    params.set('deployment_status', deploymentStatus);
+  }
+  const qs = params.toString();
+  return apiFetch(`/students/all${qs ? `?${qs}` : ''}`);
+}
+
+export async function createStudentAccountReport(studentId, { reason, comments }) {
+  return apiFetch(`/students/${studentId}/reports`, jsonBody({ reason, comments }));
 }
 
 export async function getStudentStrands() {
@@ -65,6 +90,14 @@ export async function disapproveStudent(id) {
 // carries `emailSent` so the coordinator can see a delivery failure.
 export async function resendStudentApprovalEmail(id) {
   return apiFetch(`/students/${id}/resend-approval`, { method: 'POST' });
+}
+
+export async function updateStudentEmail(id, email) {
+  return apiFetch(`/students/${id}/email`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
 }
 
 export async function deleteStudent(id) {
@@ -130,10 +163,15 @@ export async function listSubmissions({ status = 'all', search = '', strand = ''
   return apiFetch(`/submissions${qs ? `?${qs}` : ''}`);
 }
 
-export async function reviewSubmission(id, { status, remarks, revision_document_ids }) {
-  // revision_document_ids is what "Needs Revision" hangs on: dropping it here
-  // made the server reject a perfectly valid selection.
-  return apiFetch(`/submissions/${id}/review`, jsonBody({ status, remarks, revision_document_ids }));
+export async function reviewSubmission(id, { status, remarks }) {
+  return apiFetch(`/submissions/${id}/review`, jsonBody({ status, remarks }));
+}
+
+export async function reviewRequirement(submissionId, documentTypeId, { status, feedback = '' }) {
+  return apiFetch(
+    `/submissions/${submissionId}/requirements/${documentTypeId}/review`,
+    jsonBody({ status, feedback }, 'PUT'),
+  );
 }
 
 export async function bulkReviewSubmissions(submissionIds, { status, remarks }) {
@@ -142,10 +180,6 @@ export async function bulkReviewSubmissions(submissionIds, { status, remarks }) 
 
 export async function getRequirements(studentId) {
   return apiFetch(`/requirements/${studentId}`);
-}
-
-export async function verifyDocument(id, { status, remarks }) {
-  return apiFetch(`/documents/${id}/verify`, jsonBody({ status, remarks }, 'PUT'));
 }
 
 /* ---------------- Document types (Requirements management) ---------------- */

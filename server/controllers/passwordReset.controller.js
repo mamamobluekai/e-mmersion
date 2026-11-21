@@ -43,7 +43,7 @@ const forgotPassword = async (req, res) => {
     const user = result.rows[0];
 
     // Only accepted (approved/active) accounts can reset their password.
-    if (user.status !== 'approved') {
+    if (!['approved', 'active'].includes(String(user.status || '').toLowerCase())) {
       return res.json({
         message: 'If an accepted account exists for that email, a password reset link has been sent.',
       });
@@ -143,18 +143,32 @@ const resetPassword = async (req, res) => {
 
     const hashedPassword = await hashPassword(password);
 
-    await pool.query('BEGIN');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    await pool.query(
-      `UPDATE users
-       SET password = $1, status = 'approved', updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2`,
-      [hashedPassword, tokenRow.user_id]
-    );
+      const updateResult = await client.query(
+        `UPDATE users
+         SET password = $1,
+             temporary_password_expires_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2 AND status IN ('approved', 'active')
+         RETURNING id`,
+        [hashedPassword, tokenRow.user_id],
+      );
+      if (updateResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'This account cannot use password reset.' });
+      }
 
-    await pool.query(`DELETE FROM password_reset_tokens WHERE token = $1`, [token]);
-
-    await pool.query('COMMIT');
+      await client.query(`DELETE FROM password_reset_tokens WHERE token = $1`, [token]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
 
     return res.json({ message: 'Password set successfully. You can now log in.' });
   } catch (err) {

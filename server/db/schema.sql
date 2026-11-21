@@ -11,6 +11,7 @@ CREATE TABLE users (
   role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'teacher', 'student', 'supervisor', 'coordinator')),
   status VARCHAR(50) NOT NULL DEFAULT 'pending',
   phone VARCHAR(50),
+  temporary_password_expires_at TIMESTAMPTZ,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -161,8 +162,17 @@ CREATE TABLE student_requirement_submissions (
   reviewed_by INTEGER REFERENCES users(id),
   reviewed_at TIMESTAMP,
   submitted_at TIMESTAMP,
+  revision_document_ids JSONB,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE student_form_requirement_verifications (
+  submission_id INTEGER NOT NULL REFERENCES student_requirement_submissions(id) ON DELETE CASCADE,
+  document_type_id INTEGER NOT NULL REFERENCES document_types(id) ON DELETE CASCADE,
+  verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  verified_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (submission_id, document_type_id)
 );
 
 CREATE TABLE student_documents (
@@ -183,6 +193,31 @@ CREATE TABLE student_documents (
   verified_by INTEGER REFERENCES users(id),
   verified_date TIMESTAMP,
   uploaded_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE student_requirement_statuses (
+  submission_id INTEGER NOT NULL REFERENCES student_requirement_submissions(id) ON DELETE CASCADE,
+  document_type_id INTEGER NOT NULL REFERENCES document_types(id) ON DELETE CASCADE,
+  status VARCHAR(50) NOT NULL,
+  feedback TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (submission_id, document_type_id)
+);
+
+CREATE TABLE student_requirement_status_history (
+  id BIGSERIAL PRIMARY KEY,
+  submission_id INTEGER NOT NULL REFERENCES student_requirement_submissions(id) ON DELETE CASCADE,
+  document_type_id INTEGER NOT NULL REFERENCES document_types(id) ON DELETE CASCADE,
+  document_id INTEGER REFERENCES student_documents(id) ON DELETE SET NULL,
+  status VARCHAR(50) NOT NULL,
+  action VARCHAR(50) NOT NULL,
+  feedback TEXT,
+  original_name TEXT,
+  cloudinary_url TEXT,
+  details JSONB,
+  actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE submission_logs (

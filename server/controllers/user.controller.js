@@ -388,7 +388,8 @@ const login = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT id, email, password, role, status, terms_accepted, skip_splash_screen
+      `SELECT id, email, password, role, status, terms_accepted, skip_splash_screen,
+              temporary_password_expires_at
        FROM users WHERE email = $1`,
       [trimmedEmail]
     );
@@ -468,6 +469,15 @@ const login = async (req, res) => {
     if (user.status === 'disapproved') {
       return sendLoginError(res, 'ACCOUNT_DISAPPROVED_USER');
     }
+    if (String(user.status || '').toLowerCase() === 'pending_activation') {
+      const expiresAt = new Date(user.temporary_password_expires_at).getTime();
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+        return sendLoginError(res, 'TEMPORARY_PASSWORD_EXPIRED');
+      }
+      user.must_change_password = true;
+    } else {
+      user.must_change_password = false;
+    }
 
     // Block login outside the active immersion period (except for admins).
     if (user.role !== 'admin') {
@@ -492,6 +502,9 @@ const login = async (req, res) => {
 
     // Successful login — clear any failed attempt counter
     await resetLoginAttempts(trimmedEmail);
+
+    // Update last_login timestamp
+    await pool.query(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1`, [user.id]);
 
     const payload = { id: user.id, role: user.role, email: user.email };
     const accessToken = generateAccessToken(payload);
@@ -541,7 +554,8 @@ const login = async (req, res) => {
 const getMe = async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id, u.email, u.role, u.status, u.phone, u.terms_accepted, u.skip_splash_screen
+      `SELECT u.id, u.email, u.role, u.status, u.phone, u.terms_accepted, u.skip_splash_screen,
+              u.temporary_password_expires_at
        FROM users u
        WHERE u.id = $1`,
       [req.user.id]
@@ -592,10 +606,67 @@ const getMe = async (req, res) => {
       roleData = coordinatorResult.rows[0] || {};
     }
     
-    res.json({ user: { ...user, terms_accepted: Boolean(user.terms_accepted), skip_splash_screen: Boolean(user.skip_splash_screen), ...roleData } });
+    res.json({
+      user: {
+        ...user,
+        terms_accepted: Boolean(user.terms_accepted),
+        skip_splash_screen: Boolean(user.skip_splash_screen),
+        must_change_password: user.role === 'student' && user.status === 'pending_activation',
+        ...roleData,
+      },
+    });
   } catch (err) {
     console.error('Get me error:', err);
     res.status(500).json({ error: 'Server error.' });
+  }
+};
+
+const setStudentActivationPassword = async (req, res) => {
+  try {
+    if (req.user.role !== 'student') {
+      return res.status(403).json({ error: 'Only students can complete student activation.' });
+    }
+
+    const { password, confirmPassword } = req.body;
+    const problem = validatePassword(password);
+    if (problem) return res.status(400).json({ error: problem });
+
+    const mismatch = validateConfirmation(password, confirmPassword);
+    if (mismatch) return res.status(400).json({ error: mismatch });
+
+    const result = await pool.query(
+      `UPDATE users
+       SET password = $1,
+           status = 'active',
+           temporary_password_expires_at = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+         AND role = 'student'
+         AND status = 'pending_activation'
+         AND terms_accepted = TRUE
+         AND temporary_password_expires_at > CURRENT_TIMESTAMP
+       RETURNING id, email, role, status, terms_accepted, skip_splash_screen`,
+      [await hashPassword(password), req.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(403).json({
+        error: 'Your activation session has expired or your account is no longer awaiting activation. Ask your coordinator to resend the credentials.',
+      });
+    }
+
+    res.json({
+      message: 'Password set successfully. Your student account is active.',
+      user: {
+        ...result.rows[0],
+        terms_accepted: Boolean(result.rows[0].terms_accepted),
+        skip_splash_screen: Boolean(result.rows[0].skip_splash_screen),
+        must_change_password: false,
+      },
+    });
+  } catch (err) {
+    console.error('Student activation password error:', err);
+    res.status(500).json({ error: 'Server error while activating your account.' });
   }
 };
 
@@ -742,6 +813,7 @@ module.exports = {
   logout,
   getMe,
   setPassword,
+  setStudentActivationPassword,
   checkImmersionPeriodAccess,
 };
 

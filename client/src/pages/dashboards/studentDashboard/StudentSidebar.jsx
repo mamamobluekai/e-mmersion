@@ -95,12 +95,19 @@ const links = [
 ];
 
 
-function StudentSidebar({ isOpen, onClose }) {
+function StudentSidebar({ isOpen, onClose, requirementsApproved = false }) {
+  const visibleLinks = requirementsApproved
+    ? links
+    : links.filter((link) => (
+      link.to === '/dashboard/student/requirements' ||
+      link.to === '/dashboard/student/profile'
+    ));
+
   return (
     <DashboardSidebar
       title="Student"
       subtitle="Work Immersion"
-      links={links}
+      links={visibleLinks}
       isOpen={isOpen}
       onClose={onClose}
     />

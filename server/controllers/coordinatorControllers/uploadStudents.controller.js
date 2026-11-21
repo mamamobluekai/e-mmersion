@@ -1,8 +1,12 @@
 const xlsx = require('xlsx');
 const pool = require('../../db');
-const { NO_PASSWORD_SENTINEL } = require('../../utils/passwordPolicy');
 const { normalizeEmail } = require('../../utils/normalizeEmail');
+const { hashPassword } = require('../../utils/hashPassword');
+const { generateTemporaryPassword } = require('../../utils/generatePassword');
+const studentActivation = require('../../services/studentActivation.service');
 const { DEFAULT_GRADE_LEVEL } = require('./helpers/constant');
+
+const DEFAULT_STUDENT_SCHOOL = 'Marinduque National High School';
 
 const uploadStudentsExcel = async (req, res) => {
   try {
@@ -26,6 +30,8 @@ const uploadStudentsExcel = async (req, res) => {
     }
 
     const results = { success: 0, failed: 0, errors: [] };
+    const createdUsers = [];
+    const generatedPasswords = new Set();
     const client = await pool.connect();
 
     try {
@@ -43,7 +49,6 @@ const uploadStudentsExcel = async (req, res) => {
         const middleName = String(row['Middle Name'] || '').trim();
         const section = String(row['Section'] || '').trim();
         const strand = String(row['Strand'] || '').trim();
-        const school = String(row['School'] || '').trim();
         const contact = String(row['Contact Number'] || '').trim();
         const gender = String(row['Gender'] || '').trim();
 
@@ -77,14 +82,27 @@ const uploadStudentsExcel = async (req, res) => {
           continue;
         }
 
+        let temporaryPassword;
+        do {
+          temporaryPassword = generateTemporaryPassword();
+        } while (generatedPasswords.has(temporaryPassword));
+        generatedPasswords.add(temporaryPassword);
+
+        const passwordHash = await hashPassword(temporaryPassword);
         const userResult = await client.query(
-          `INSERT INTO users (email, password, role, phone, status)
-           VALUES ($1, $2, 'student', $3, 'pending')
-           RETURNING id`,
-          [email, NO_PASSWORD_SENTINEL, contact]
+          `INSERT INTO users
+            (email, password, role, phone, status, temporary_password_expires_at)
+           VALUES ($1, $2, 'student', $3, 'pending_activation',
+                    CURRENT_TIMESTAMP + make_interval(hours => $4))
+           RETURNING id, email, role, password`,
+          [email, passwordHash, contact, studentActivation.TEMPORARY_PASSWORD_TTL_HOURS]
         );
 
         const userId = userResult.rows[0].id;
+        const user = userResult.rows[0];
+        user.first_name = firstName;
+        user.last_name = lastName;
+        user.temporaryPassword = temporaryPassword;
 
         await client.query(
           `INSERT INTO students
@@ -101,7 +119,7 @@ const uploadStudentsExcel = async (req, res) => {
             DEFAULT_GRADE_LEVEL,
             section,
             strand,
-            school,
+            DEFAULT_STUDENT_SCHOOL,
             contact,
             gender,
             email,
@@ -109,20 +127,38 @@ const uploadStudentsExcel = async (req, res) => {
         );
 
         results.success++;
+        createdUsers.push(user);
       }
 
       await client.query('COMMIT');
+
+      // Send credentials only after the account rows have committed.
+      let emailFailures = 0;
+      let credentialsSent = 0;
+      const emailErrors = [];
+      for (const u of createdUsers) {
+        const { emailSent, emailError } = await studentActivation.sendTemporaryPasswordEmail(
+          u,
+          u.temporaryPassword,
+        );
+        if (!emailSent) emailFailures += 1;
+        if (emailSent) credentialsSent += 1;
+        if (!emailSent) emailErrors.push({ email: u.email, error: emailError });
+        delete u.temporaryPassword;
+      }
+
+      res.json({
+        message: `Upload complete. ${results.success} students added, ${results.failed} failed.` +
+          (credentialsSent > 0 ? ` ${credentialsSent} temporary credential email(s) sent.` : '') +
+          (emailFailures > 0 ? ` ${emailFailures} email(s) failed; resend credentials from Student Approvals.` : ''),
+        results: { ...results, credentialsSent, emailFailures, emailErrors },
+      });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
-
-    res.json({
-      message: `Upload complete. ${results.success} students added, ${results.failed} failed.`,
-      results,
-    });
   } catch (err) {
     console.error('Student Excel upload error:', err);
     res.status(500).json({ error: 'Server error during upload.' });

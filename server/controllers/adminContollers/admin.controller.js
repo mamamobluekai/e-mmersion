@@ -11,6 +11,7 @@ const { login } = require('../user.controller');
 const adminService = require('../../services/admin.service');
 const periodArchiveService = require('../../services/periodArchive.service');
 const approvalLink = require('../../services/approvalLink.service');
+const studentActivation = require('../../services/studentActivation.service');
 
 // Token issuing, revocation and the approval email all live in one service so
 // every route below behaves the same way. See services/approvalLink.service.js.
@@ -586,6 +587,47 @@ const updateUserStatus = async (req, res) => {
     if (!status) {
       return res.status(400).json({ error: 'Status is required.' });
     }
+    const currentUser = await adminService.getUserById(Number(id));
+    if (!currentUser) return res.status(404).json({ error: 'User not found.' });
+    if (status === 'approved' && currentUser.role === 'student') {
+      const activationMarker = await pool.query(
+        `SELECT temporary_password_expires_at
+         FROM users
+         WHERE id = $1 AND role = 'student'`,
+        [id],
+      );
+      if (activationMarker.rows[0]?.temporary_password_expires_at) {
+        const pendingActivation = await pool.query(
+          `UPDATE users
+           SET status = 'pending_activation', updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND role = 'student' AND temporary_password_expires_at IS NOT NULL
+           RETURNING id`,
+          [id],
+        );
+        if (pendingActivation.rows.length === 0) {
+          return res.status(409).json({ error: 'Student activation state changed. Refresh and try again.' });
+        }
+        const activation = await studentActivation.resendTemporaryPassword(currentUser);
+        if (!activation.eligible) {
+          return res.status(409).json({ error: 'Student account is no longer awaiting activation.' });
+        }
+        await writeAuditLog(
+          req,
+          'account_activation',
+          `Reissued temporary student credentials to ${currentUser.email}`,
+          '',
+          activation.emailSent ? 'success' : 'failed',
+        );
+        return res.json({
+          message: activation.emailSent
+            ? `Student must complete activation. New temporary credentials were emailed and are valid for ${studentActivation.TEMPORARY_PASSWORD_TTL_HOURS} hours.`
+            : `Student must complete activation. The temporary password was rotated, but the email failed. ${activation.emailError || 'Resend credentials after checking mail settings.'}`,
+          emailSent: activation.emailSent,
+          emailError: activation.emailError,
+        });
+      }
+    }
+
     const user = await adminService.updateUser(Number(id), { status });
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
@@ -638,6 +680,27 @@ const resendApprovalLink = async (req, res) => {
     const recipient = await approvalLink.getApprovalRecipient(Number(id));
     if (!recipient) {
       return res.status(404).json({ error: 'User not found.' });
+    }
+
+    if (recipient.role === 'student' && recipient.status === 'pending_activation') {
+      const activation = await studentActivation.resendTemporaryPassword(recipient);
+      if (!activation.eligible) {
+        return res.status(409).json({ error: 'Student account is no longer awaiting activation.' });
+      }
+      await writeAuditLog(
+        req,
+        'approval_email_resend',
+        `Resent temporary student credentials to ${recipient.email}`,
+        '',
+        activation.emailSent ? 'success' : 'failed',
+      );
+      return res.json({
+        message: activation.emailSent
+          ? `Temporary login credentials emailed. They are valid for ${studentActivation.TEMPORARY_PASSWORD_TTL_HOURS} hours.`
+          : `The temporary password was rotated, but the email failed. ${activation.emailError || 'Check the mail settings and try again.'}`,
+        emailSent: activation.emailSent,
+        emailError: activation.emailError,
+      });
     }
 
     const { emailSent, emailError } = await approvalLink.resendApprovalLink(recipient);

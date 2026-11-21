@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   Send,
   Info,
+  List,
 } from 'lucide-react';
 
 const links = [
@@ -23,6 +24,11 @@ const links = [
     to: '/dashboard/coordinator/students',
     label: 'Student Approvals',
     icon: Users,
+  },
+  {
+    to: '/dashboard/coordinator/student-list',
+    label: 'Student List',
+    icon: List,
   },
   {
     to: '/dashboard/coordinator/requirements',

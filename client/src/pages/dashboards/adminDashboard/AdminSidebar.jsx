@@ -11,6 +11,7 @@ import {
   Archive,
   Info,
   ShieldCheck,
+  Flag,
 } from 'lucide-react';
 
 const links = [
@@ -39,6 +40,11 @@ const links = [
     to: '/dashboard/admin/archives',
     label: 'Archived Periods',
     icon: Archive,
+  },
+  {
+    to: '/dashboard/admin/account-problems',
+    label: 'Account Problems',
+    icon: Flag,
   },
   {
     to: '/dashboard/admin/access-logs',

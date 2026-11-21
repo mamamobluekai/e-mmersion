@@ -14,6 +14,7 @@ import UploadBulk from './UploadBulk';
 import ManualUser from './ManualUser';
 import CoordinatorManagement from './CoordinatorManagement';
 import ArchivedPeriods from './ArchivedPeriods';
+import AccountProblems from './AccountProblems';
 import About from '../About';
 
 function AdminDashboard({ user, onLogout }) {
@@ -37,6 +38,7 @@ function AdminDashboard({ user, onLogout }) {
         <Route path="upload-bulk" element={<UploadBulk />} />
         <Route path="coordinator-management" element={<CoordinatorManagement />} />
         <Route path="archives" element={<ArchivedPeriods />} />
+        <Route path="account-problems" element={<AccountProblems />} />
         <Route path="*" element={<Navigate to="/dashboard/admin/dashboard" replace />} />
       </Routes>
     </DashboardLayout>

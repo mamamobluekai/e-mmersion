@@ -91,6 +91,10 @@
 .feedbackNotice strong { color: var(--about-ink); font-size: 0.78rem; font-weight: 750; }
 .feedbackNotice p { margin: 4px 0 0; color: var(--about-muted); font-size: 0.81rem; line-height: 1.55; white-space: pre-wrap; }
 
+.holdNotice { margin-top: 12px; padding: 12px 14px; border: 1px solid #f0e1c8; border-radius: 12px; background: #fffaf2; color: #77531f; }
+.holdNotice strong { font-size: 0.82rem; font-weight: 750; }
+.holdNotice p { margin: 4px 0 0; font-size: 0.81rem; line-height: 1.55; }
+
 /* ---------- Cards / sections ---------- */
 .section {
   position: relative;

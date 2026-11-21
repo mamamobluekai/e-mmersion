@@ -265,8 +265,8 @@ export default function UserManagement() {
   };
 
   const totalUsers = pagination.total;
-  const activeCount = users.filter((u) => u.status === 'approved').length;
-  const pendingCount = users.filter((u) => u.status === 'pending').length;
+  const activeCount = users.filter((u) => ['approved', 'active'].includes(u.status)).length;
+  const pendingCount = users.filter((u) => ['pending', 'pending_activation'].includes(u.status)).length;
   const inactiveCount = users.filter((u) => u.status === 'disapproved').length;
 
   const fullName = (row) => `${row.first_name || ''} ${row.last_name || ''}`.trim() || row.email;
@@ -274,7 +274,7 @@ export default function UserManagement() {
   // Four always-visible actions per row. Each opens its own modal so the
   // outcome is confirmed before anything is written.
   const actions = (row) => {
-    const isActive = row.status === 'approved';
+    const isActive = ['approved', 'active', 'pending_activation'].includes(row.status);
     const nextStatus = isActive ? 'disapproved' : 'approved';
     // While this row's action is in flight its own button spins; while any row
     // is busy every other row is disabled so a second mail cannot be queued by
@@ -828,13 +828,17 @@ function StatCard({ icon: Icon, label, value, tone }) {  return (
 function StatusBadge({ status }) {
   const statusClass = {
     approved: styles.statusActive,
+    active: styles.statusActive,
     pending: styles.statusPending,
+    pending_activation: styles.statusPending,
     disapproved: styles.statusInactive,
   }[status] || styles.statusPending;
 
   const label = {
     approved: 'Active',
+    active: 'Active',
     pending: 'Pending',
+    pending_activation: 'Pending Activation',
     disapproved: 'Inactive',
   }[status] || status;
 

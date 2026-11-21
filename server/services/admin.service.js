@@ -75,8 +75,8 @@ async function getDashboardStats() {
       (SELECT COUNT(*) FROM users WHERE role = 'teacher')        AS total_teachers,
       (SELECT COUNT(*) FROM users WHERE role = 'supervisor')     AS total_supervisors,
       (SELECT COUNT(*) FROM users WHERE role = 'coordinator')    AS total_coordinators,
-      (SELECT COUNT(*) FROM users WHERE status = 'approved')     AS total_active_users,
-      (SELECT COUNT(*) FROM users WHERE status = 'pending')      AS total_pending_accounts,
+      (SELECT COUNT(*) FROM users WHERE status IN ('approved', 'active')) AS total_active_users,
+      (SELECT COUNT(*) FROM users WHERE status IN ('pending', 'pending_activation')) AS total_pending_accounts,
       (SELECT COUNT(*) FROM users WHERE status = 'disapproved')  AS total_disabled_accounts,
       (SELECT COUNT(*) FROM student_attendance)                  AS total_attendance_records,
       (SELECT COUNT(*) FROM student_requirement_submissions)     AS total_requirements_submitted

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   listSubmissions,
   reviewSubmission,
-  verifyDocument,
+  reviewRequirement,
   getRequirements,
   getStudentStrands,
   getDocumentTypes,
@@ -31,6 +31,7 @@ import {
   Archive,
   UserCheck,
 } from 'lucide-react';
+import ConfirmModal from '../../../components/admin/ConfirmModal';
 import styles from './RequirementsReview.module.css';
 
 // The review vocabulary a coordinator can set. Rows saved with an older value
@@ -38,12 +39,10 @@ import styles from './RequirementsReview.module.css';
 // map below, they just cannot be picked any more.
 const REVIEW_STATUSES = [
   'Pending',
-  'Needs Revision',
   'Approved',
 ];
 
-// Hold is not a review outcome, it is a pause applied to an approval, so it is
-// only offered once the submission is already approved.
+// Hold pauses an approval. Releasing it returns the submission to Pending.
 const HOLD_STATUS = 'Hold';
 
 const SECTION_LABELS = {
@@ -56,22 +55,13 @@ const SECTION_LABELS = {
 const statusBadge = (status) => {
   const map = {
     pending: styles.badgePending,
+    'resubmitted - awaiting review': styles.badgeReview,
     'pending review': styles.badgePending,
     'under review': styles.badgeReview,
     approved: styles.badgeApproved,
     rejected: styles.badgeRejected,
     'needs revision': styles.badgeNeeds,
     hold: styles.badgeHold,
-  };
-
-  return map[String(status || '').toLowerCase()] || styles.badgePending;
-};
-
-const docBadge = (status) => {
-  const map = {
-    uploaded: styles.badgePending,
-    verified: styles.badgeVerified,
-    rejected: styles.badgeRejected,
   };
 
   return map[String(status || '').toLowerCase()] || styles.badgePending;
@@ -104,11 +94,8 @@ const getFileType = (mime) => {
   return 'FILE';
 };
 
-// Open the file in a browser tab instead of saving it. Cloudinary serves raw
-// uploads as attachments unless asked otherwise, so fl_inline is added for
-// document types. Images must keep their plain delivery URL: Cloudinary rejects
-// fl_inline on image resources with a 400, which made View fail for uploads
-// like PNG/JPG.
+// Cloudinary serves raw uploads as attachments unless asked otherwise, so
+// request inline delivery for documents shown inside the preview modal.
 const INLINE_FLAG_TYPES = /\.(pdf|docx?|xlsx?|pptx?|txt|csv)$/i;
 
 const viewUrl = (url) => {
@@ -240,6 +227,9 @@ function RequirementsReview() {
 
   const [selected, setSelected] = useState(null);
   const [studentData, setStudentData] = useState(null);
+  const [previewRequirement, setPreviewRequirement] = useState(null);
+  const [reviewCandidate, setReviewCandidate] = useState(null);
+  const [showAutomaticCheckingInfo, setShowAutomaticCheckingInfo] = useState(false);
 
   const [reviewStatus, setReviewStatus] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -256,11 +246,17 @@ function RequirementsReview() {
     el.style.height = `${el.scrollHeight}px`;
   }, [remarks, selected]);
 
+  useEffect(() => {
+    if (!previewRequirement) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setPreviewRequirement(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewRequirement]);
+
   const [saving, setSaving] = useState(false);
   const [docLoading, setDocLoading] = useState(false);
-  // Documents the coordinator wants replaced. Only used when the review status
-  // is "Needs Revision"; the student sees this list on their Requirements page.
-  const [revisionIds, setRevisionIds] = useState([]);
 
   // Editable requirements configuration
   const [docTypes, setDocTypes] = useState(FALLBACK_DOC_TYPES);
@@ -268,6 +264,7 @@ function RequirementsReview() {
   const [docTypeForm, setDocTypeForm] = useState({ name: '', section: 'academic', description: '' });
   const [isAddingDocType, setIsAddingDocType] = useState(false);
   const [typeSaving, setTypeSaving] = useState(false);
+  const [confirmAddDocType, setConfirmAddDocType] = useState(false);
   const [typeDeleting, setTypeDeleting] = useState(null);
   const [showReqModal, setShowReqModal] = useState(false);
   const [removedModalOpen, setRemovedModalOpen] = useState(false);
@@ -349,19 +346,20 @@ function RequirementsReview() {
 
   const openSubmission = async (sub) => {
     setSelected(sub);
-    setReviewStatus(sub.status);
+    setReviewStatus(
+      sub.status === HOLD_STATUS
+        ? ''
+        : sub.status === 'Approved'
+          ? 'Approved'
+          : 'Pending'
+    );
     setRemarks('');
     setStudentData(null);
-    setRevisionIds([]);
     setDocLoading(true);
 
     try {
       const data = await getRequirements(sub.student_id);
       setStudentData(data);
-      // Reopening a "Needs Revision" case starts from the checklist already on
-      // record so the coordinator can add to or trim it.
-      const alreadyFlagged = (data?.revisionDocuments || []).map((doc) => Number(doc.id));
-      setRevisionIds(alreadyFlagged);
     } catch (err) {
       showError(err.message);
     } finally {
@@ -369,34 +367,44 @@ function RequirementsReview() {
     }
   };
 
+  const openReviewOptions = (sub) => {
+    setReviewCandidate(sub);
+    setShowAutomaticCheckingInfo(false);
+  };
+
+  const closeReviewOptions = () => {
+    setReviewCandidate(null);
+    setShowAutomaticCheckingInfo(false);
+  };
+
+  const openManualReview = () => {
+    if (!reviewCandidate) return;
+    const candidate = reviewCandidate;
+    closeReviewOptions();
+    openSubmission(candidate);
+  };
+
   const closeReview = () => {
+    setPreviewRequirement(null);
     setSelected(null);
     setStudentData(null);
     setReviewStatus('');
     setRemarks('');
-    setRevisionIds([]);
   };
 
   const handleReview = async () => {
     if (!selected) return;
-
-    if (reviewStatus === 'Needs Revision' && revisionIds.length === 0) {
-      showError('Tick at least one document the student has to revise.');
-      return;
-    }
 
     setSaving(true);
     try {
       await reviewSubmission(selected.id, {
         status: reviewStatus,
         remarks,
-        // Only "Needs Revision" carries a checklist; every other status clears it.
-        revision_document_ids: reviewStatus === 'Needs Revision' ? revisionIds : [],
       });
 
       showSuccess(
-        reviewStatus === 'Needs Revision'
-          ? 'Submission sent back for revision.'
+        selected.status === HOLD_STATUS && reviewStatus === 'Pending'
+          ? 'Submission unheld. The student can update and resubmit requirements.'
           : 'Submission review saved.',
       );
       setSelected(null);
@@ -406,32 +414,6 @@ function RequirementsReview() {
       showError(err.message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const toggleRevisionId = (id) => {
-    setRevisionIds((prev) => (
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    ));
-  };
-
-  // Shortcut on the checklist row: flag this requirement and open the review on
-  // "Needs Revision". Clicking again clears the flag; the student is never
-  // blocked on a status the coordinator did not save.
-  const handleFlagRevision = (item) => {
-    const typeId = Number(item.id);
-    if (!Number.isInteger(typeId) || typeId <= 0) return;
-
-    const alreadyFlagged = revisionIds.includes(typeId);
-
-    setRevisionIds((prev) => (
-      prev.includes(typeId)
-        ? prev.filter((id) => id !== typeId)
-        : [...prev, typeId]
-    ));
-
-    if (!alreadyFlagged) {
-      setReviewStatus('Needs Revision');
     }
   };
 
@@ -481,6 +463,7 @@ function RequirementsReview() {
   };
 
   const closeReqModal = () => {
+    setConfirmAddDocType(false);
     setIsAddingDocType(false);
     setEditingDocType(null);
     setDocTypeForm({ name: '', section: 'academic', description: '' });
@@ -491,7 +474,7 @@ function RequirementsReview() {
     if (e) e.preventDefault();
     if (!docTypeForm.name.trim()) {
       showError('Requirement name is required.');
-      return;
+      return false;
     }
     setTypeSaving(true);
     try {
@@ -513,11 +496,33 @@ function RequirementsReview() {
       handleCancelDocTypeForm();
       await refreshDocTypes();
       await loadSubmissions();
+      return true;
     } catch (err) {
       showError(err.message || 'Failed to save requirement.');
+      return false;
     } finally {
       setTypeSaving(false);
     }
+  };
+
+  const handleSubmitDocType = (e) => {
+    e.preventDefault();
+    if (!docTypeForm.name.trim()) {
+      showError('Requirement name is required.');
+      return;
+    }
+
+    if (isAddingDocType) {
+      setConfirmAddDocType(true);
+      return;
+    }
+
+    handleSaveDocType();
+  };
+
+  const handleConfirmAddDocType = async () => {
+    const saved = await handleSaveDocType();
+    if (!saved) throw new Error('Requirement could not be saved.');
   };
 
   const handleDeleteDocType = async (dt) => {
@@ -541,15 +546,18 @@ function RequirementsReview() {
     }
   };
 
-  const handleVerifyDoc = async (docId, status) => {
+  const handleReviewRequirement = async (item, status) => {
     try {
-      await verifyDocument(docId, { status });
-
-      showSuccess(`Document ${status.toLowerCase()}.`);
-      const data = await getRequirements(selected.student_id);
+      const data = await reviewRequirement(selected.id, item.id, { status });
+      setPreviewRequirement(null);
+      showSuccess(
+        status === 'APPROVED'
+          ? `${item.label} approved.`
+          : `${item.label} marked Needs Revision.`,
+      );
       setStudentData(data);
     } catch (err) {
-      showError(err.message);
+      showError(err.message || 'Failed to review requirement.');
     }
   };
 
@@ -589,33 +597,39 @@ function RequirementsReview() {
     const key = String(type.code || '').toLowerCase();
     const status = requirementStatusByCode.get(key);
     const isForm = status?.input_type === 'form' || type.inputType === 'form';
+    const requirementStatus = String(status?.requirement_status || '').toUpperCase() || null;
     return {
       ...type,
       isForm,
       uploaded: isForm ? !!status?.completed : uploadedCodes.has(key),
+      verified: requirementStatus === 'APPROVED',
+      requirementStatus,
+      requirementFeedback: status?.requirement_feedback || '',
+      reviewHistory: status?.review_history || [],
       missingFields: status?.missing_fields || [],
+      fields: status?.fields || [],
       docs: documentsByCode[key] || [],
     };
   });
   const uploadedCount = checklist.filter((item) => item.uploaded).length;
   const missingCount = checklist.length - uploadedCount;
+  const unapprovedCount = checklist.filter((item) => item.requirementStatus !== 'APPROVED').length;
 
-  // Once a submission is approved it is settled: the only move left is Hold,
-  // for when something turns up afterwards (a file found to be malicious, for
-  // example). Pending and Needs Revision are no longer offered, so an approval
-  // cannot be quietly undone. Before approval, Hold is not offered at all.
+  // An approved submission can only stay approved or be put on hold. A held
+  // submission must be explicitly released to Pending before it can be reviewed again.
   const reviewStatusOptions = selected?.status === 'Approved'
     ? ['Approved', HOLD_STATUS]
-    : REVIEW_STATUSES;
+    : selected?.status === HOLD_STATUS
+      ? ['Pending']
+      : REVIEW_STATUSES;
 
-  // An approved submission is settled: the per-document Verify and Needs
-  // Revision controls are hidden so the checklist becomes read-only.
-  const checklistLocked = selected?.status === 'Approved';
+  // Approved and held submissions are locked until the coordinator releases
+  // the hold or starts a new review cycle.
+  const checklistLocked = ['Approved', HOLD_STATUS].includes(selected?.status);
 
-  // Approving certifies the requirements are complete, so the panel refuses to
-  // save an approval while anything is still missing. The server enforces the
-  // same rule; this only keeps the coordinator from hitting a dead end.
-  const approvalBlocked = reviewStatus === 'Approved' && missingCount > 0;
+  // Submission approval requires every active requirement to be complete and individually approved.
+  const approvalBlocked = reviewStatus === 'Approved' &&
+    (missingCount > 0 || unapprovedCount > 0);
 
   const pendingCount = submissions.filter((s) =>
     ['pending', 'pending review'].includes(
@@ -638,8 +652,8 @@ function RequirementsReview() {
         <div>
           <h1>Requirements Review</h1>
           <p>
-            Review student requirement submissions, verify uploaded
-            documents, and update submission status.
+            Review each requirement independently, then approve the submission
+            after every requirement is approved.
           </p>
         </div>
         <button
@@ -898,9 +912,7 @@ function RequirementsReview() {
                     <td>
                       <button
                         className={styles.reviewButton}
-                        onClick={() =>
-                          openSubmission(student)
-                        }
+                        onClick={() => openReviewOptions(student)}
                       >
                         <Eye size={16} />
                         Review
@@ -970,7 +982,7 @@ function RequirementsReview() {
                 )}
 
                 {(isAddingDocType || editingDocType) && (
-                  <form className={styles.configForm} onSubmit={handleSaveDocType}>
+                  <form className={styles.configForm} onSubmit={handleSubmitDocType}>
                     <div className={styles.formTitle}>
                       {editingDocType
                         ? `Edit Requirement: ${editingDocType.label}`
@@ -1111,6 +1123,77 @@ function RequirementsReview() {
       )}
 
       {/* REVIEW PANEL */}
+      {reviewCandidate && !selected && (
+        <div className={styles.overlay} onClick={closeReviewOptions}>
+          <section
+            className={styles.reviewChoiceModal}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-choice-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {!showAutomaticCheckingInfo ? (
+              <>
+                <h2 id="review-choice-title">Choose a checking method</h2>
+                <p>
+                  Select how you want to review the requirements for{' '}
+                  <strong>
+                    {displayName(reviewCandidate.first_name, reviewCandidate.last_name)}
+                  </strong>.
+                </p>
+                <div className={styles.reviewChoiceActions}>
+                  <button
+                    type="button"
+                    className={styles.primaryButton}
+                    onClick={openManualReview}
+                  >
+                    Manual Checking
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => setShowAutomaticCheckingInfo(true)}
+                  >
+                    Automatic Checking (AI)
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className={styles.reviewChoiceEyebrow}>Future improvement</span>
+                <h2 id="review-choice-title">AI-Assisted Document Verification</h2>
+                <p>
+                  As a future improvement, the e-MMERSION Work Immersion Monitoring
+                  System may include an AI-Assisted Document Verification feature.
+                  This feature will use AI to help check the requirements uploaded
+                  by students. It can help identify missing information, unclear
+                  documents, duplicate files, and possibly fake documents. This
+                  will help coordinators and teachers review student requirements
+                  faster and more easily. However, this feature is not yet included
+                  in the current system.
+                </p>
+                <div className={styles.reviewChoiceActions}>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => setShowAutomaticCheckingInfo(false)}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.primaryButton}
+                    onClick={closeReviewOptions}
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
       {selected && (
 
         <div className={styles.overlay}>
@@ -1157,6 +1240,148 @@ function RequirementsReview() {
 
               <div className={styles.panelBody}>
 
+                {/* REQUIREMENTS CHECKLIST */}
+                <div className={styles.checklistSection}>
+
+                  <div className={styles.sectionHeading}>
+                    <div>
+                      <h3>Requirements Checklist</h3>
+
+                      <p>
+                        Open a requirement to preview its file or form details.
+                        Verify it or mark it for revision from the preview.
+                      </p>
+                    </div>
+
+                    <span
+                      className={`${styles.documentTotal} ${
+                        missingCount === 0
+                          ? styles.totalComplete
+                          : styles.totalIncomplete
+                      }`}
+                    >
+                      {uploadedCount}/{checklist.length}
+                    </span>
+                  </div>
+
+                  <ul className={styles.checklist}>
+                    {checklist.map((item) => {
+                      const primaryDoc = item.docs[0];
+                      return (
+                        <li
+                          key={item.code}
+                          className={`${styles.checklistItem} ${
+                            item.uploaded
+                              ? styles.checklistDone
+                              : styles.checklistMissing
+                          }`}
+                        >
+                          <span className={styles.checklistBox}>
+                            {item.uploaded ? (
+                              <CheckCircle2 size={16} />
+                            ) : (
+                              <XCircle size={16} />
+                            )}
+                          </span>
+
+                          <div className={styles.checklistMain}>
+                            <span className={styles.checklistLabel}>
+                              {String(item.label || '').replace(/^RM\s+/i, '')}
+                            </span>
+                            {item.isForm ? (
+                              <span className={styles.checklistMeta}>
+                                {item.uploaded
+                                  ? 'Filled in by the student'
+                                  : `Still to fill up: ${(item.missingFields || []).join(', ') || 'this section'}`}
+                              </span>
+                            ) : null}
+                            {primaryDoc ? (
+                              <span className={styles.checklistMeta}>
+                                {primaryDoc.original_name || primaryDoc.document_name || 'Document'}
+                                {fmtSize(primaryDoc.file_size) && ` · ${fmtSize(primaryDoc.file_size)}`}
+                                {primaryDoc.mime_type && ` · ${getFileType(primaryDoc.mime_type)}`}
+                                {primaryDoc.uploaded_date && ` · ${new Date(primaryDoc.uploaded_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          {item.isForm ? (
+                            <div className={styles.checklistActions}>
+                              {item.requirementStatus && (
+                                <span className={`${styles.badge} ${statusBadge(item.requirementStatus)}`}>
+                                  {item.requirementStatus}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                className={styles.viewButton}
+                                onClick={() => {
+                                  setPreviewRequirement({ item, document: null });
+                                }}
+                              >
+                                <Eye size={15} />
+                                View Details
+                              </button>
+                            </div>
+                          ) : primaryDoc ? (
+                            <div className={styles.checklistActions}>
+                              {primaryDoc.cloudinary_url ? (
+                                <button
+                                  type="button"
+                                  className={styles.viewButton}
+                                  onClick={() => {
+                                    setPreviewRequirement({ item, document: primaryDoc });
+                                  }}
+                                  title="Preview this requirement before reviewing it"
+                                >
+                                  <Eye size={15} />
+                                  View
+                                </button>
+                              ) : null}
+                              {!checklistLocked && item.requirementStatus && (
+                                <span className={`${styles.badge} ${statusBadge(item.requirementStatus)}`}>
+                                  {item.requirementStatus}
+                                </span>
+                              )}
+                              {primaryDoc.cloudinary_url ? (
+                                <a
+                                  className={styles.downloadButton}
+                                  href={primaryDoc.cloudinary_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  download
+                                >
+                                  <Download size={15} />
+                                  Download
+                                </a>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span className={styles.checklistState}>
+                              Missing
+                            </span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+
+                  <p
+                    className={`${styles.checklistSummary} ${
+                      missingCount === 0
+                        ? styles.summaryComplete
+                        : styles.summaryIncomplete
+                    }`}
+                  >
+                    {missingCount === 0
+                      ? 'All required documents have been submitted.'
+                      : `${missingCount} required document${
+                          missingCount !== 1 ? 's are' : ' is'
+                        } still missing.`}
+                  </p>
+
+                </div>
+
                 {/* REVIEW SECTION */}
                 <div className={styles.reviewSection}>
 
@@ -1186,13 +1411,18 @@ function RequirementsReview() {
                         }
                         className={styles.formInput}
                       >
+                        <option value="" disabled>
+                          Select a review action
+                        </option>
                         {reviewStatusOptions.map(
                           (status) => (
                             <option
                               key={status}
                               value={status}
                             >
-                              {status}
+                              {selected?.status === HOLD_STATUS && status === 'Pending'
+                                ? 'Unhold — Return to Pending'
+                                : status}
                             </option>
                           )
                         )}
@@ -1256,48 +1486,11 @@ function RequirementsReview() {
                     </p>
                   )}
 
-                  {reviewStatus === 'Needs Revision' && (
-                    <div className={styles.revisionPicker}>
-                      <div className={styles.revisionPickerHead}>
-                        <strong>Documents to revise</strong>
-                        <span>
-                          {revisionIds.length} selected — the student sees this
-                          checklist on their Requirements page.
-                        </span>
-                      </div>
-
-                      <ul className={styles.revisionList}>
-                        {checklist.map((item) => {
-                          const checked = revisionIds.includes(Number(item.id));
-                          return (
-                            <li key={item.code}>
-                              <label className={styles.revisionItem}>
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => toggleRevisionId(Number(item.id))}
-                                />
-                                <span className={styles.revisionLabel}>
-                                  {String(item.label || '').replace(/^RM\s+/i, '')}
-                                </span>
-                                <span className={styles.revisionSection}>
-                                  {SECTION_LABELS[item.section] || item.section || 'Academic'}
-                                </span>
-                              </label>
-                            </li>
-                          );
-                        })}
-                      </ul>
-
-                      {revisionIds.length === 0 && (
-                        <p
-                          className={`${styles.checklistSummary} ${styles.summaryIncomplete}`}
-                          role="alert"
-                        >
-                          Tick at least one document the student has to revise.
-                        </p>
-                      )}
-                    </div>
+                  {selected?.status === HOLD_STATUS && reviewStatus === 'Pending' && (
+                    <p className={styles.checklistSummary} role="status">
+                      This releases the hold and returns the submission to Pending.
+                      The student can then update only requirements marked Needs Revision.
+                    </p>
                   )}
 
                   {approvalBlocked && (
@@ -1305,9 +1498,10 @@ function RequirementsReview() {
                       className={`${styles.checklistSummary} ${styles.summaryIncomplete}`}
                       role="alert"
                     >
-                      {missingCount} required document
-                      {missingCount !== 1 ? 's are' : ' is'} still missing, so
-                      this student cannot be approved yet.
+                      Every requirement must be submitted and individually approved before
+                      this submission can be approved.
+                      {' '}{unapprovedCount} requirement{unapprovedCount === 1 ? '' : 's'} still need
+                      {' '}approval.
                     </p>
                   )}
 
@@ -1327,11 +1521,15 @@ function RequirementsReview() {
 
                     <button
                       className={styles.primaryButton}
-                      disabled={saving || approvalBlocked}
+                      disabled={
+                        saving ||
+                        approvalBlocked ||
+                        !reviewStatus
+                      }
                       onClick={handleReview}
                       title={
                         approvalBlocked
-                          ? 'Approve only after every required document is submitted'
+                          ? 'Approve only after every requirement is submitted and verified'
                           : undefined
                       }
                     >
@@ -1353,159 +1551,6 @@ function RequirementsReview() {
 
                 </div>
 
-                {/* REQUIREMENTS CHECKLIST */}
-                <div className={styles.checklistSection}>
-
-                  <div className={styles.sectionHeading}>
-                    <div>
-                      <h3>Requirements Checklist</h3>
-
-                      <p>
-                        Tick marks show which required documents were
-                        submitted. Review or verify uploaded files, or mark one
-                        for revision here.
-                      </p>
-                    </div>
-
-                    <span
-                      className={`${styles.documentTotal} ${
-                        missingCount === 0
-                          ? styles.totalComplete
-                          : styles.totalIncomplete
-                      }`}
-                    >
-                      {uploadedCount}/{checklist.length}
-                    </span>
-                  </div>
-
-                  <ul className={styles.checklist}>
-                    {checklist.map((item) => {
-                      const primaryDoc = item.docs[0];
-                      const flagged = revisionIds.includes(Number(item.id));
-                      return (
-                        <li
-                          key={item.code}
-                          className={`${styles.checklistItem} ${
-                            item.uploaded
-                              ? styles.checklistDone
-                              : styles.checklistMissing
-                          }`}
-                        >
-                          <span className={styles.checklistBox}>
-                            {item.uploaded ? (
-                              <CheckCircle2 size={16} />
-                            ) : (
-                              <XCircle size={16} />
-                            )}
-                          </span>
-
-                          <div className={styles.checklistMain}>
-                            <span className={styles.checklistLabel}>
-                              {String(item.label || '').replace(/^RM\s+/i, '')}
-                            </span>
-                            {item.isForm ? (
-                              <span className={styles.checklistMeta}>
-                                {item.uploaded
-                                  ? 'Filled in by the student'
-                                  : `Still to fill up: ${(item.missingFields || []).join(', ') || 'this section'}`}
-                              </span>
-                            ) : null}
-                            {primaryDoc ? (
-                              <span className={styles.checklistMeta}>
-                                {primaryDoc.original_name || primaryDoc.document_name || 'Document'}
-                                {fmtSize(primaryDoc.file_size) && ` · ${fmtSize(primaryDoc.file_size)}`}
-                                {primaryDoc.mime_type && ` · ${getFileType(primaryDoc.mime_type)}`}
-                                {primaryDoc.uploaded_date && ` · ${new Date(primaryDoc.uploaded_date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`}
-                              </span>
-                            ) : null}
-                          </div>
-
-                          {primaryDoc ? (
-                            <div className={styles.checklistActions}>
-                              {!checklistLocked && (
-                                <>
-                                  <span className={`${styles.badge} ${docBadge(primaryDoc.status)}`}>
-                                    {primaryDoc.status}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className={styles.verifyButton}
-                                    onClick={() => handleVerifyDoc(primaryDoc.id, 'Verified')}
-                                  >
-                                    <CheckCircle2 size={15} />
-                                    Verify
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className={styles.revisionButton}
-                                    aria-pressed={flagged}
-                                    onClick={() => handleFlagRevision(item)}
-                                    title={
-                                      flagged
-                                        ? 'Remove this requirement from the revision list'
-                                        : 'Ask the student to submit this requirement again'
-                                    }
-                                  >
-                                    <XCircle size={15} />
-                                    Needs Revision
-                                  </button>
-                                </>
-                              )}
-                              {primaryDoc.cloudinary_url ? (
-                                <a
-                                  className={styles.viewButton}
-                                  href={viewUrl(primaryDoc.cloudinary_url)}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title="Open the file in a new tab without saving it"
-                                >
-                                  <Eye size={15} />
-                                  View
-                                </a>
-                              ) : null}
-                              {primaryDoc.cloudinary_url ? (
-                                <a
-                                  className={styles.downloadButton}
-                                  href={primaryDoc.cloudinary_url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  download
-                                >
-                                  <Download size={15} />
-                                  Download
-                                </a>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <span className={styles.checklistState}>
-                              {item.isForm
-                                ? item.uploaded
-                                  ? 'Filled in'
-                                  : 'Not filled in'
-                                : 'Missing'}
-                            </span>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-
-                  <p
-                    className={`${styles.checklistSummary} ${
-                      missingCount === 0
-                        ? styles.summaryComplete
-                        : styles.summaryIncomplete
-                    }`}
-                  >
-                    {missingCount === 0
-                      ? 'All required documents have been submitted.'
-                      : `${missingCount} required document${
-                          missingCount !== 1 ? 's are' : ' is'
-                        } still missing.`}
-                  </p>
-
-                </div>
-
               </div>
 
             )}
@@ -1514,6 +1559,166 @@ function RequirementsReview() {
 
         </div>
 
+      )}
+
+      {previewRequirement && (
+        <div
+          className={styles.previewOverlay}
+          onClick={() => setPreviewRequirement(null)}
+        >
+          <section
+            className={styles.previewModal}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="requirement-preview-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className={styles.previewHeader}>
+              <div>
+                <span className={styles.previewEyebrow}>Requirement preview</span>
+                <h2 id="requirement-preview-title">
+                  {String(previewRequirement.item.label || '').replace(/^RM\s+/i, '')}
+                </h2>
+                <p>
+                  {previewRequirement.document?.original_name ||
+                    previewRequirement.document?.document_name ||
+                    'Student form details'}
+                </p>
+              </div>
+              <button
+                type="button"
+                className={styles.closeButton}
+                onClick={() => setPreviewRequirement(null)}
+                aria-label="Close requirement preview"
+              >
+                <X size={20} />
+              </button>
+            </header>
+
+            <div className={styles.previewContent}>
+              {previewRequirement.item.isForm ? (
+                <dl className={styles.formRequirementDetails}>
+                  {previewRequirement.item.fields.length > 0
+                    ? previewRequirement.item.fields.map((field) => {
+                      const value = studentData?.student?.[field.key];
+                      return (
+                        <div
+                          key={field.key}
+                          className={
+                            ['home_address', 'guardian_address', 'career_goal', 'industry_reason']
+                              .includes(field.key)
+                              ? styles.formRequirementWide
+                              : undefined
+                          }
+                        >
+                          <dt>{field.label}</dt>
+                          <dd>{String(value ?? '').trim() || 'Not provided'}</dd>
+                        </div>
+                      );
+                    })
+                    : (
+                      <div>
+                        <dt>Details</dt>
+                        <dd>Form details are unavailable.</dd>
+                      </div>
+                    )}
+                </dl>
+              ) : previewRequirement.document?.mime_type?.startsWith('image/') ? (
+                <img
+                  className={styles.previewImage}
+                  src={previewRequirement.document.cloudinary_url}
+                  alt={previewRequirement.document.original_name || 'Uploaded requirement'}
+                />
+              ) : (
+                <iframe
+                  className={styles.previewFrame}
+                  src={viewUrl(previewRequirement.document?.cloudinary_url)}
+                  title={`Preview of ${previewRequirement.item.label}`}
+                />
+              )}
+            </div>
+
+            {previewRequirement.item.reviewHistory.length > 0 && (
+              <section className={styles.requirementHistory}>
+                <h3>Requirement history</h3>
+                <ol>
+                  {previewRequirement.item.reviewHistory.map((entry, index) => (
+                    <li key={`${entry.created_at}-${index}`}>
+                      <div className={styles.historyHeading}>
+                        <strong>{entry.status}</strong>
+                        <time dateTime={entry.created_at}>
+                          {new Date(entry.created_at).toLocaleString()}
+                        </time>
+                      </div>
+                      {entry.original_name && <p>File: {entry.original_name}</p>}
+                      {entry.feedback && <p>{entry.feedback}</p>}
+                      {entry.details && (
+                        <dl className={styles.historyDetails}>
+                          {Object.entries(entry.details).map(([field, value]) => (
+                            <div key={field}>
+                              <dt>{field.replace(/_/g, ' ')}</dt>
+                              <dd>{String(value ?? 'Not provided')}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+
+            <footer className={styles.previewActions}>
+              {checklistLocked ? (
+                <span className={styles.viewFirstHint}>
+                  This submission is locked; review actions are unavailable.
+                </span>
+              ) : !submission.submitted_at ? (
+                <span className={styles.viewFirstHint}>
+                  The student has not submitted these requirements for review yet.
+                </span>
+              ) : previewRequirement.item.uploaded &&
+                ['PENDING', 'RESUBMITTED - AWAITING REVIEW'].includes(
+                  previewRequirement.item.requirementStatus
+                ) ? (
+                <>
+                  <button
+                    type="button"
+                    className={styles.verifyButton}
+                    onClick={() => handleReviewRequirement(previewRequirement.item, 'APPROVED')}
+                  >
+                    <CheckCircle2 size={15} />
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.revisionButton}
+                    onClick={() => handleReviewRequirement(previewRequirement.item, 'NEEDS REVISION')}
+                  >
+                    <XCircle size={15} />
+                    Needs Revision
+                  </button>
+                </>
+              ) : (
+                <span className={`${styles.badge} ${statusBadge(previewRequirement.item.requirementStatus)}`}>
+                  {previewRequirement.item.requirementStatus || 'Incomplete'}
+                </span>
+              )}
+              {previewRequirement.document?.cloudinary_url && (
+                <a
+                  className={styles.downloadButton}
+                  href={previewRequirement.document.cloudinary_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  download
+                >
+                  <Download size={15} />
+                  Download
+                </a>
+              )}
+            </footer>
+          </section>
+        </div>
       )}
 
       {/* DELETE CONFIRMATION MODAL */}
@@ -1546,6 +1751,16 @@ function RequirementsReview() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        isOpen={confirmAddDocType}
+        title="Add Requirement"
+        message={`Are you sure you want to add "${docTypeForm.name.trim()}" for all students? Student progress will be recalculated.`}
+        confirmLabel="Add Requirement"
+        loadingLabel="Adding requirement..."
+        onConfirm={handleConfirmAddDocType}
+        onClose={() => setConfirmAddDocType(false)}
+      />
 
       {/* TOAST NOTIFICATIONS */}
       <div className={styles.toastContainer}>

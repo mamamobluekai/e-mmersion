@@ -436,3 +436,24 @@ export async function listArchivePeriods() {
 export async function getArchivePeriod(archiveId) {
   return fetchJsonOrThrow(`${API_BASE}/admin/archives/${archiveId}`, { headers: authHeaders() });
 }
+
+export async function getAccountProblemReports(status = 'open') {
+  const qs = new URLSearchParams({ status }).toString();
+  return fetchJsonOrThrow(`${API_BASE}/admin/account-problems?${qs}`, { headers: authHeaders() });
+}
+
+export async function resolveAccountProblemReport(reportId, resolutionNote = '') {
+  return fetchJsonOrThrow(`${API_BASE}/admin/account-problems/${reportId}/resolve`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ resolution_note: resolutionNote }),
+  });
+}
+
+export async function archiveReportedStudent(reportId, resolutionNote = '') {
+  return fetchJsonOrThrow(`${API_BASE}/admin/account-problems/${reportId}/archive-student`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ resolution_note: resolutionNote }),
+  });
+}

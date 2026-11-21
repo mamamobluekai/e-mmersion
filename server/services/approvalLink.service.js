@@ -4,9 +4,8 @@
 // toggle) used to build its own token and copy its own email, which meant a fix
 // in one place silently left the others behind. They all funnel through here.
 //
-// There is deliberately no temporary password: the recipient opens the emailed
-// one-time link and sets and confirms their own password on /set-password?token=.
-// Possession of the link is the only credential they need.
+// This service handles one-time link-based approvals for staff and legacy
+// accounts. Newly uploaded student accounts use studentActivation.service.
 const crypto = require('crypto');
 const pool = require('../db');
 const mailer = require('../utils/mailer');
@@ -42,18 +41,11 @@ function roleLabelFor(role) {
 // Names come from Excel imports and typed forms, so escape them before they are
 // interpolated into the HTML body. Shared with the registration mail - see
 // utils/mailer.js.
-// True when the account still carries the never-set-password sentinel, i.e. it
-// has no usable credential and must go through the emailed link before it can
-// sign in.
-//
-// This is the difference between the two kinds of account:
-//   * A student who self-registered already chose a password on the register
-//     page. They only need to be told they were approved - sending them a
-//     "set your password" link would ask them to redo something they did.
-//   * A student added by Excel upload (and every teacher/supervisor/coordinator
-//     account) was created with the sentinel, so the link is the only way in.
+// True when the account still needs to set a permanent password. New student
+// activation accounts use a temporary password instead of an approval link.
 function needsPasswordSetup(user) {
-  return user?.password === NO_PASSWORD_SENTINEL;
+  return String(user?.status || '').toLowerCase() === 'pending_activation'
+    || user?.password === NO_PASSWORD_SENTINEL;
 }
 
 // Strips the password hash before a user object is echoed back to a client.
@@ -109,12 +101,9 @@ const NEXT_STEP = {
     'You can now sign in to approve requirements, assign supervisors, and manage batches.',
 };
 
-// `token` is null when the account already has a usable password. That is the
-// self-registered student case: they already chose a password on the register
-// page, so there is nothing to set. They get a plain "you are approved, go use
-// the app" notice with a button straight to the app - no password setup, no
-// token. A `token` means the account was created by Excel upload and still has
-// no password at all, so it gets the set-password link instead.
+// `token` is null when the account already has a usable password. Legacy
+// uploaded accounts and staff accounts without a password receive a set-password
+// link instead.
 function buildApprovalEmailHtml(user, token) {
   const roleLabel = roleLabelFor(user.role);
   const name = escapeHtml(`${user.first_name || ''} ${user.last_name || ''}`.trim());
@@ -269,9 +258,9 @@ async function sendApprovalEmail(user, token) {
 
 // The single entry point every approve route uses.
 //
-// If the account still has no password (Excel upload) it mints a one-time
-// set-password link and mails it. If the account already chose a password at
-// registration it only sends the approval notice - no link, nothing to redo.
+// If the account still has no password it mints a one-time set-password link
+// and mails it. If the account already chose a password at registration it
+// only sends the approval notice.
 async function issueAndEmailApprovalLink(user, client = pool) {
   if (!user || !user.email) {
     // Nothing sensible to mail - an empty address would just throw inside the
@@ -299,7 +288,7 @@ async function resendApprovalLink(user, client = pool) {
 // name from whichever role table holds it. Null when the id is not a real user.
 async function getApprovalRecipient(userId, client = pool) {
   const result = await client.query(
-    `SELECT u.id, u.email, u.role, u.password,
+    `SELECT u.id, u.email, u.role, u.status, u.password,
             COALESCE(s.first_name, t.first_name, sup.first_name, c.first_name, a.first_name, '') AS first_name,
             COALESCE(s.last_name,  t.last_name,  sup.last_name,  c.last_name,  a.last_name,  '') AS last_name
      FROM users u

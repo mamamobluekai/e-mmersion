@@ -89,6 +89,7 @@ export const LOGIN_ERROR_TITLES = {
   ACCOUNT_PENDING: 'Awaiting approval',
   ACCOUNT_DISAPPROVED_ADMIN: 'Account not approved',
   ACCOUNT_DISAPPROVED_USER: 'Account not approved',
+  TEMPORARY_PASSWORD_EXPIRED: 'Temporary password expired',
   ACCOUNT_LOCKED: 'Account locked',
   MAINTENANCE: 'System maintenance',
   PERIOD_CLOSED: 'Outside immersion period',

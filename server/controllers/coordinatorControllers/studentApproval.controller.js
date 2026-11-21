@@ -1,9 +1,42 @@
 const pool = require('../../db/');
 const approvalLink = require('../../services/approvalLink.service');
+const studentActivation = require('../../services/studentActivation.service');
+const { NO_PASSWORD_SENTINEL } = require('../../utils/passwordPolicy');
+
+function computeActivityStatus(user) {
+  if (String(user.status || '').toLowerCase() === 'pending_activation') {
+    return { status: 'pending', label: 'Pending Activation', daysSinceLogin: null };
+  }
+
+  // If user hasn't set password yet (still has sentinel), they're pending
+  if (user.password === NO_PASSWORD_SENTINEL) {
+    return { status: 'pending', label: 'Pending Activation', daysSinceLogin: null };
+  }
+
+  // If no last_login, they haven't logged in yet
+  if (!user.last_login) {
+    return { status: 'pending', label: 'Pending Accounts', daysSinceLogin: null };
+  }
+
+  const lastLogin = new Date(user.last_login);
+  const now = new Date();
+  const diffMs = now - lastLogin;
+  const daysSinceLogin = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (daysSinceLogin <= 3) {
+    return { status: 'active', label: 'Active', daysSinceLogin };
+  } else if (daysSinceLogin <= 7) {
+    return { status: 'idle', label: 'Idle', daysSinceLogin };
+  } else if (daysSinceLogin <= 14) {
+    return { status: 'inactive', label: 'Inactive', daysSinceLogin };
+  } else {
+    return { status: 'dormant', label: 'Dormant', daysSinceLogin };
+  }
+}
 
 const getPendingStudents = async (req, res) => {
   try {
-    const { status, strand } = req.query;
+    const { status, strand, activity } = req.query;
 
     let whereClause = `WHERE u.role = 'student'`;
     const params = [];
@@ -32,7 +65,7 @@ const getPendingStudents = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT u.id, u.email, u.role, u.status, u.created_at, s.first_name, s.last_name, s.student_number,
+      `SELECT u.id, u.email, u.role, u.status, u.password, u.created_at, u.last_login, s.first_name, s.last_name, s.student_number,
               s.grade_level, s.section, s.track_strand, s.school, s.preferred_company
        FROM users u
        JOIN students s ON u.id = s.user_id
@@ -40,7 +73,27 @@ const getPendingStudents = async (req, res) => {
        ORDER BY u.created_at DESC`,
       params
     );
-    res.json({ students: result.rows });
+
+    const studentsWithActivity = result.rows.map((student) => {
+      const activityStatus = computeActivityStatus(student);
+      const studentFields = { ...student };
+      delete studentFields.password;
+      return {
+        ...studentFields,
+        needs_password_setup: approvalLink.needsPasswordSetup(student),
+        activity_status: activityStatus.status,
+        activity_label: activityStatus.label,
+        days_since_login: activityStatus.daysSinceLogin,
+      };
+    });
+
+    // Filter by activity status if provided
+    let filteredStudents = studentsWithActivity;
+    if (activity && activity !== 'all') {
+      filteredStudents = studentsWithActivity.filter((s) => s.activity_status === activity);
+    }
+
+    res.json({ students: filteredStudents });
   } catch (err) {
     console.error('Get pending students error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -59,6 +112,94 @@ const getStudentStrands = async (req, res) => {
     res.json({ strands: result.rows.map((r) => r.track_strand) });
   } catch (err) {
     console.error('Get student strands error:', err);
+    res.status(500).json({ error: 'Server error.' });
+  }
+};
+
+const getAllStudents = async (req, res) => {
+  try {
+    const {
+      strand,
+      activity,
+      search,
+      requirements_completed,
+      deployment_status,
+    } = req.query;
+
+    let whereClause = `WHERE u.role = 'student'`;
+    const params = [];
+    let paramIdx = 1;
+
+    // Exclude archived students from the main list
+    whereClause += ` AND s.archived_at IS NULL`;
+
+    if (strand && strand !== 'all') {
+      whereClause += ` AND s.track_strand = $${paramIdx}`;
+      params.push(strand);
+      paramIdx++;
+    }
+
+    if (search) {
+      whereClause += ` AND (
+        POSITION($${paramIdx} IN LOWER(COALESCE(s.first_name, '') || ' ' || COALESCE(s.last_name, ''))) > 0 OR
+        POSITION($${paramIdx} IN LOWER(u.email)) > 0 OR
+        POSITION($${paramIdx} IN LOWER(s.student_number)) > 0
+      )`;
+      params.push(search.toLowerCase());
+      paramIdx++;
+    }
+
+    const result = await pool.query(
+      `SELECT u.id, u.email, u.role, u.status, u.password, u.created_at, u.last_login,
+              s.first_name, s.last_name, s.student_number, s.grade_level, s.section,
+              s.track_strand, s.school, s.preferred_company,
+              COALESCE(srs.progress, 0) = 100 AS requirements_completed,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM teacher_batch_students tbs WHERE tbs.student_id = s.id
+              ) THEN true ELSE false END AS is_deployed
+       FROM users u
+       JOIN students s ON u.id = s.user_id
+       LEFT JOIN student_requirement_submissions srs ON srs.student_id = s.id
+       ${whereClause}
+       ORDER BY u.created_at DESC`,
+      params
+    );
+
+    let studentsWithActivity = result.rows.map((student) => {
+      const activityStatus = computeActivityStatus(student);
+      const studentFields = { ...student };
+      delete studentFields.password;
+      return {
+        ...studentFields,
+        needs_password_setup: approvalLink.needsPasswordSetup(student),
+        activity_status: activityStatus.status,
+        activity_label: activityStatus.label,
+        days_since_login: activityStatus.daysSinceLogin,
+        deployment_status: student.is_deployed ? 'deployed' : 'not_deployed',
+      };
+    });
+
+    // Filter by activity status if provided
+    if (activity && activity !== 'all') {
+      studentsWithActivity = studentsWithActivity.filter((s) => s.activity_status === activity);
+    }
+
+    if (requirements_completed === 'true' || requirements_completed === 'false') {
+      const requirementsCompleted = requirements_completed === 'true';
+      studentsWithActivity = studentsWithActivity.filter(
+        (student) => student.requirements_completed === requirementsCompleted
+      );
+    }
+
+    if (deployment_status && deployment_status !== 'all') {
+      studentsWithActivity = studentsWithActivity.filter(
+        (student) => student.deployment_status === deployment_status
+      );
+    }
+
+    res.json({ students: studentsWithActivity });
+  } catch (err) {
+    console.error('Get all students error:', err);
     res.status(500).json({ error: 'Server error.' });
   }
 };
@@ -95,7 +236,7 @@ const approveStudent = async (req, res) => {
 
     // Fetch the student being approved (with strand and current status).
     const studentResult = await pool.query(
-      `SELECT u.id, u.email, u.role, u.status, s.track_strand, s.first_name, s.last_name
+      `SELECT u.id, u.email, u.role, u.status, u.password, u.last_login, s.track_strand, s.first_name, s.last_name
        FROM users u
        JOIN students s ON u.id = s.user_id
        WHERE u.id = $1 AND u.role = 'student'`,
@@ -105,6 +246,16 @@ const approveStudent = async (req, res) => {
       return res.status(404).json({ error: 'Student not found.' });
     }
     const student = studentResult.rows[0];
+
+    // Check if student is already active
+    const activity = computeActivityStatus(student);
+    if (activity.status === 'active') {
+      return res.status(400).json({
+        error: 'Student is already active and has logged in. No approval needed.',
+        activityStatus: 'active'
+      });
+    }
+
     if (student.status !== 'pending') {
       return res.status(400).json({ error: 'Student is not pending approval.' });
     }
@@ -124,7 +275,7 @@ const approveStudent = async (req, res) => {
        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
        JOIN students s ON s.id = tbs.student_id
        JOIN users u ON u.id = s.user_id
-       WHERE tb.coordinator_id = $1 AND u.status = 'approved'`,
+       WHERE tb.coordinator_id = $1 AND u.status IN ('approved', 'active')`,
       [coordinator.id]
     );
     const currentStudents = Number(currentCount.rows[0]?.student_count || 0);
@@ -182,6 +333,28 @@ const resendStudentApprovalLink = async (req, res) => {
       return res.status(404).json({ error: 'Student not found.' });
     }
 
+    if (String(recipient.status || '').toLowerCase() === 'pending_activation') {
+      const activation = await studentActivation.resendTemporaryPassword(recipient);
+      if (!activation.eligible) {
+        return res.status(409).json({ error: 'Student account is no longer awaiting activation.' });
+      }
+      return res.json({
+        message: activation.emailSent
+          ? `Temporary login credentials emailed. They are valid for ${studentActivation.TEMPORARY_PASSWORD_TTL_HOURS} hours.`
+          : 'The temporary password was rotated, but the email failed. Check the mail settings and resend credentials.',
+        emailSent: activation.emailSent,
+        emailError: activation.emailError,
+      });
+    }
+
+    const activity = computeActivityStatus(recipient);
+    if (activity.status === 'active') {
+      return res.status(400).json({
+        error: 'Cannot resend email. Student is already active and has logged in.',
+        activityStatus: 'active',
+      });
+    }
+
     const { emailSent, emailError } = await approvalLink.resendApprovalLink(recipient);
     res.json({
       message: emailSent
@@ -193,6 +366,78 @@ const resendStudentApprovalLink = async (req, res) => {
   } catch (err) {
     console.error('Resend student approval link error:', err);
     res.status(500).json({ error: 'Server error.' });
+  }
+};
+
+const updateStudentEmail = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format.' });
+    }
+
+    await client.query('BEGIN');
+
+    // Check if email already exists
+    const existing = await client.query(
+      'SELECT id FROM users WHERE email = $1 AND id != $2',
+      [email, id]
+    );
+    if (existing.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Email already in use.' });
+    }
+
+    // Update email in users table
+    const userResult = await client.query(
+      `UPDATE users SET email = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2 AND role = 'student'
+       RETURNING id, email, role, password, last_login`,
+      [email, id]
+    );
+
+    if (userResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+
+    // Update email in students table
+    await client.query(
+      `UPDATE students SET email = $1 WHERE user_id = $2`,
+      [email, id]
+    );
+
+    await client.query('COMMIT');
+
+    const user = userResult.rows[0];
+    // Get student name
+    const studentResult = await client.query(
+      `SELECT first_name, last_name FROM students WHERE user_id = $1`,
+      [id]
+    );
+    if (studentResult.rows.length > 0) {
+      user.first_name = studentResult.rows[0].first_name;
+      user.last_name = studentResult.rows[0].last_name;
+    }
+
+    res.json({
+      message: 'Student email updated successfully.',
+      user: { ...user, activity_status: computeActivityStatus(user).status, activity_label: computeActivityStatus(user).label, days_since_login: computeActivityStatus(user).daysSinceLogin }
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Update student email error:', err);
+    res.status(500).json({ error: 'Server error.' });
+  } finally {
+    client.release();
   }
 };
 
@@ -646,23 +891,8 @@ module.exports = {
   bulkApproveStudents,
   bulkDisapproveStudents,
   bulkArchiveStudents,
-  bulkRestoreStudents,
+bulkRestoreStudents,
   bulkPermanentDeleteStudents,
-};
-
-module.exports = {
-  getPendingStudents,
-  getStudentStrands,
-  approveStudent,
-  disapproveStudent,
-  resendStudentApprovalLink,
-  archiveStudent,
-  restoreStudent,
-  permanentDeleteStudent,
-  getArchivedStudents,
-  bulkApproveStudents,
-  bulkDisapproveStudents,
-  bulkArchiveStudents,
-  bulkRestoreStudents,
-  bulkPermanentDeleteStudents,
+  updateStudentEmail,
+  getAllStudents,
 };

@@ -18,8 +18,8 @@ const {
   deleteDocument,
   listSubmissions,
   reviewSubmission,
+  reviewRequirement,
   bulkReviewSubmissions,
-  verifyDocument,
   listDocumentTypes,
   createDocumentType,
   updateDocumentType,
@@ -59,9 +59,12 @@ const {
   bulkArchiveStudents,
   bulkRestoreStudents,
   bulkPermanentDeleteStudents,
+  updateStudentEmail,
+  getAllStudents,
 } = require('../controllers/coordinatorControllers');
 const { getTeacherReportsConcerns, confirmReportConcern } = require('../controllers/supervisorControllers/supervisor.controller');
 const { uploadStudentsExcel } = require('../controllers/coordinatorControllers/uploadStudents.controller');
+const { createStudentAccountReport } = require('../controllers/accountProblem.controller');
 
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
@@ -78,7 +81,9 @@ router.get('/dashboard', authorize('coordinator', 'admin'), getCoordinatorDashbo
 router.get('/profile', authorize('coordinator', 'admin'), getCoordinatorProfile);
 
 router.get('/students/pending', authorize('coordinator', 'admin'), getPendingStudents);
+router.get('/students/all', authorize('coordinator', 'admin'), getAllStudents);
 router.get('/students/strands', authorize('coordinator', 'admin'), getStudentStrands);
+router.post('/students/:studentId/reports', authorize('coordinator'), createStudentAccountReport);
 router.post('/students/upload', authorize('coordinator', 'admin'), uploadExcel.single('file'), uploadStudentsExcel);
 // Register literal bulk paths before the matching parameterized :id paths.
 router.put('/students/bulk/approve', authorize('coordinator', 'admin'), bulkApproveStudents);
@@ -89,6 +94,7 @@ router.delete('/students/bulk/permanent', authorize('coordinator', 'admin'), bul
 router.put('/students/:id/approve', authorize('coordinator', 'admin'), approveStudent);
 router.put('/students/:id/disapprove', authorize('coordinator', 'admin'), disapproveStudent);
 router.post('/students/:id/resend-approval', authorize('coordinator', 'admin'), resendStudentApprovalLink);
+router.put('/students/:id/email', authorize('coordinator', 'admin'), updateStudentEmail);
 router.post('/students/:id/restore', authorize('coordinator', 'admin'), restoreStudent);
 router.delete('/students/:id/permanent', authorize('coordinator', 'admin'), permanentDeleteStudent);
 router.delete('/students/:id', authorize('coordinator', 'admin'), archiveStudent);
@@ -104,8 +110,8 @@ router.get('/submissions', authorize('coordinator', 'admin'), listSubmissions);
 // Registered before '/submissions/:id/review' so the literal segment wins over
 // the parametric one.
 router.post('/submissions/bulk-review', authorize('coordinator', 'admin'), bulkReviewSubmissions);
+router.put('/submissions/:submissionId/requirements/:documentTypeId/review', authorize('coordinator', 'admin'), reviewRequirement);
 router.post('/submissions/:id/review', authorize('coordinator', 'admin'), reviewSubmission);
-router.put('/documents/:id/verify', authorize('coordinator', 'admin'), verifyDocument);
 
 router.get('/document-types', authorize('student', 'coordinator', 'admin', 'teacher', 'supervisor'), listDocumentTypes);
 router.post('/document-types', authorize('coordinator', 'admin'), createDocumentType);

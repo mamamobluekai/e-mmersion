@@ -29,6 +29,10 @@
     font-family: 'Lexend', Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
 
+  .bottomBarRestricted {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .item {
     position: relative;
     display: flex;

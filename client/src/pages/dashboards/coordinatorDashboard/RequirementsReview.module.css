@@ -386,6 +386,169 @@
   animation: panelIn 0.22s ease-out;
 }
 
+.reviewChoiceModal {
+  width: min(560px, 92vw);
+  padding: 28px;
+  border: 1px solid var(--about-border);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 20px 40px -10px rgb(23 32 51 / 20%);
+  animation: panelIn 0.22s ease-out;
+}
+
+.reviewChoiceModal h2 {
+  margin: 0 0 10px;
+  color: var(--about-ink);
+  font-size: 1.15rem;
+  font-weight: 760;
+}
+
+.reviewChoiceModal p {
+  margin: 0;
+  color: var(--about-muted);
+  font-size: 0.88rem;
+  line-height: 1.65;
+}
+
+.reviewChoiceModal p strong { color: var(--about-ink); }
+.reviewChoiceEyebrow { display: block; margin-bottom: 8px; color: var(--about-maroon); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.reviewChoiceActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+
+.previewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(23 32 51 / 58%);
+}
+
+.previewModal {
+  display: flex;
+  width: min(1050px, 100%);
+  max-height: 92vh;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--about-border);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgb(23 32 51 / 28%);
+  animation: panelIn 0.2s ease-out;
+}
+
+.previewHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--about-border);
+}
+
+.previewHeader h2 {
+  margin: 0;
+  color: var(--about-ink);
+  font-size: 1rem;
+  font-weight: 760;
+}
+
+.previewHeader p {
+  margin: 4px 0 0;
+  color: var(--about-muted);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.previewEyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--about-maroon);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.previewContent {
+  display: flex;
+  min-height: 220px;
+  flex: 1;
+  overflow: auto;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  background: #f5f6f8;
+}
+
+.previewFrame {
+  width: 100%;
+  min-height: min(68vh, 720px);
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.previewImage {
+  display: block;
+  max-width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.requirementHistory {
+  max-height: 190px;
+  overflow: auto;
+  padding: 12px 20px;
+  border-top: 1px solid var(--about-border);
+  background: #fff;
+}
+
+.requirementHistory h3 {
+  margin: 0 0 8px;
+  color: var(--about-ink);
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+
+.requirementHistory ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.requirementHistory li {
+  padding: 9px 11px;
+  border: 1px solid var(--about-border);
+  border-radius: 9px;
+  background: #fffafa;
+}
+
+.historyHeading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.historyHeading strong { color: var(--about-maroon); font-size: 0.75rem; }
+.historyHeading time, .requirementHistory li > p { color: var(--about-muted); font-size: 0.7rem; }
+.requirementHistory li > p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.historyDetails { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; margin: 8px 0 0; }
+.historyDetails > div { min-width: 0; }
+.historyDetails dt { color: var(--about-muted); font-size: 0.62rem; text-transform: capitalize; }
+.historyDetails dd { margin: 2px 0 0; color: var(--about-ink); font-size: 0.68rem; overflow-wrap: anywhere; }
+
+.previewActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--about-border);
+  background: #fff;
+}
+
 @keyframes panelIn {
   from { opacity: 0; transform: translateY(14px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -437,22 +600,30 @@
 .checklistLabel { color: var(--about-ink); font-size: 0.84rem; font-weight: 700; }
 .checklistMeta { color: var(--about-muted); font-size: 0.76rem; line-height: 1.45; word-break: break-word; }
 .checklistActions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
+.viewFirstHint { color: var(--about-muted); font-size: 0.7rem; font-weight: 600; }
+.formRequirementDetails {
+  display: grid;
+  width: 100%;
+  max-width: 900px;
+  align-self: stretch;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.formRequirementDetails > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--about-border);
+  border-radius: 11px;
+  background: #fff;
+}
+.formRequirementDetails .formRequirementWide { grid-column: 1 / -1; }
+.formRequirementDetails dt { color: var(--about-muted); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.formRequirementDetails dd { margin: 5px 0 0; color: var(--about-ink); font-size: 0.84rem; line-height: 1.5; overflow-wrap: anywhere; }
 .checklistState { flex-shrink: 0; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 .checklistSummary { margin: 13px 0 0; padding: 11px 13px; border-radius: 12px; font-size: 0.84rem; font-weight: 700; }
 .summaryComplete { border: 1px solid #f0e1c8; background: #fffaf2; color: #77531f; }
 .summaryIncomplete { border: 1px solid #efc2ca; background: var(--about-blush); color: var(--about-maroon); }
-
-/* "Needs Revision" file picker: which documents the student must replace. */
-.revisionPicker { margin-top: 14px; padding: 13px 14px; border: 1px solid var(--about-border); border-radius: 13px; background: #fff; }
-.revisionPickerHead { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
-.revisionPickerHead strong { color: var(--about-ink); font-size: 0.85rem; font-weight: 750; }
-.revisionPickerHead span { color: var(--about-muted); font-size: 0.76rem; }
-.revisionList { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.revisionItem { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--about-border); border-radius: 10px; background: #fff; cursor: pointer; }
-.revisionItem:hover { border-color: #d7b8be; background: var(--about-blush); }
-.revisionItem input { width: 15px; height: 15px; accent-color: var(--about-maroon); cursor: pointer; }
-.revisionLabel { color: var(--about-ink); font-size: 0.82rem; font-weight: 650; }
-.revisionSection { margin-left: auto; color: var(--about-muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 
 .documentGroups { display: flex; flex-direction: column; gap: 20px; }
 .documentGroup { display: flex; flex-direction: column; gap: 8px; }
@@ -528,6 +699,20 @@
   .panelHeader, .reviewSection, .documentsSection, .checklistSection, .configHeader, .configForm, .configItem { padding-left: 16px; padding-right: 16px; }
   .confirmActions { flex-direction: column-reverse; }
   .confirmCancel, .confirmDelete { width: 100%; }
+  .reviewChoiceModal { padding: 22px 18px; }
+  .reviewChoiceActions { flex-direction: column-reverse; }
+  .reviewChoiceActions button { width: 100%; }
+  .previewOverlay { padding: 10px; }
+  .previewModal { max-height: 96vh; }
+  .previewHeader { padding: 14px; }
+  .previewContent { min-height: 160px; padding: 8px; }
+  .previewFrame { min-height: 68vh; }
+  .requirementHistory { max-height: 150px; padding: 10px 12px; }
+  .historyDetails { grid-template-columns: 1fr; }
+  .formRequirementDetails { grid-template-columns: 1fr; gap: 8px; }
+  .formRequirementDetails .formRequirementWide { grid-column: auto; }
+  .previewActions { justify-content: stretch; padding: 12px; }
+  .previewActions > button, .previewActions > a { flex: 1 1 100%; }
 }
 
 .archiveToggleBtn {

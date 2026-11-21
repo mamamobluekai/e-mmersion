@@ -19,7 +19,7 @@ const getCoordinatorProfile = async (req, res) => {
        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
        JOIN students s ON s.id = tbs.student_id
        JOIN users u ON u.id = s.user_id
-       WHERE tb.coordinator_id = $1 AND u.status = 'approved'`,
+       WHERE tb.coordinator_id = $1 AND u.status IN ('approved', 'active')`,
       [coordinator.id]
     );
     const currentStudents = Number(currentCount.rows[0]?.student_count || 0);

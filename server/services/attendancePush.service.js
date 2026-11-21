@@ -121,7 +121,7 @@ async function processAttendanceReminders(now = new Date()) {
             ac.time_out_open, ac.time_out_close,
             sa.check_in_time, sa.check_out_time
      FROM attendance_push_subscriptions aps
-     JOIN users u ON u.id = aps.user_id AND u.role = 'student' AND u.status = 'approved'
+     JOIN users u ON u.id = aps.user_id AND u.role = 'student' AND u.status IN ('approved', 'active')
      JOIN students s ON s.user_id = u.id
      JOIN teacher_batch_students tbs
        ON tbs.student_id = s.id OR tbs.student_id = s.user_id
