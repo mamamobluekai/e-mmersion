@@ -2,6 +2,7 @@ const { Server } = require('socket.io');
 const { verifyAccessToken } = require('../utils/generateToken');
 const { isOriginAllowed } = require('../config/corsOption');
 const pool = require('../db');
+const { getPreImmersion } = require('../services/studentJourney.service');
 
 let io;
 
@@ -9,10 +10,16 @@ async function canAccessBatch(batchId, userId, role) {
   if (!batchId) return false;
 
   if (role === 'student') {
+    const pre = await getPreImmersion(userId);
+    if (!pre.complete) return false;
     const result = await pool.query(
       `SELECT 1 FROM teacher_batch_students tbs
        JOIN students s ON s.id = tbs.student_id
-       WHERE tbs.teacher_batch_id = $1 AND s.user_id = $2
+       JOIN users u ON u.id = s.user_id
+       WHERE tbs.teacher_batch_id = $1 AND u.id = $2
+         AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
+         AND u.role = 'student' AND u.terms_accepted
+         AND u.status NOT IN ('pending', 'disapproved', 'pending_activation')
        LIMIT 1`,
       [batchId, userId]
     );
@@ -115,11 +122,8 @@ function initializeSocket(server) {
       }
     });
 
-    socket.on('chat:leave_batch', async (teacherBatchId) => {
-      if (await hasAccess(teacherBatchId)) {
-        socket.leave(`chat:batch:${teacherBatchId}`);
-        console.log(`Socket ${socket.id} left chat batch:${teacherBatchId}`);
-      }
+    socket.on('chat:leave_batch', (teacherBatchId) => {
+      socket.leave(`chat:batch:${teacherBatchId}`);
     });
 
     socket.on('disconnect', () => {

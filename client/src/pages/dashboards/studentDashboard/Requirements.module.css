@@ -52,6 +52,11 @@
   line-height: 1.6;
 }
 
+.missionHeader {
+  border: 1px solid var(--wim-border-maroon, #eadde0);
+  background: linear-gradient(110deg, var(--wim-bg-surface, #fff), var(--wim-brand-tint, #fff7f8));
+}
+
 /* ---------- Alerts ---------- */
 .message,
 .error {
@@ -305,6 +310,14 @@
   font-size: 0.8rem;
 }
 
+.identityNote {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--about-muted);
+  font-size: .8rem;
+  line-height: 1.5;
+}
+
 /* ---------- Inputs ---------- */
 .input,
 .select,
@@ -523,6 +536,7 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex: 1 1 150px;
   max-width: 100%;
 }
 
@@ -542,6 +556,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 40px;
   padding: 8px 14px;
   border: 1px solid var(--about-border);
   border-radius: 8px;
@@ -573,6 +588,42 @@
 .fileButtonDisabled:hover {
   background: #fff;
   border-color: var(--about-border);
+}
+
+.cameraButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--about-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--about-maroon);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.cameraButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cameraButton:hover {
+  background: #fdf3f5;
+  border-color: #d7b8be;
+}
+
+.cameraButton:focus-visible {
+  outline: 2px solid var(--about-maroon);
+  outline-offset: 2px;
 }
 
 /* ---------- Buttons ---------- */
@@ -726,6 +777,34 @@
   flex-wrap: wrap;
 }
 
+.cameraDialog {
+  width: min(560px, calc(100% - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
+  padding: clamp(12px, 4vw, 20px);
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.cameraDialog::backdrop {
+  background: rgba(38, 20, 24, 0.58);
+}
+
+.cameraPreview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 52dvh;
+  margin-top: 12px;
+  border-radius: 8px;
+  background: #231d21;
+  object-fit: contain;
+}
+
+.cameraPreview[hidden] {
+  display: none;
+}
+
 /* ---------- Save bar ---------- */
 .saveBar {
   margin-top: 22px;
@@ -804,7 +883,8 @@
   }
 
   .filePicker {
-    width: 100%;
+    width: auto;
+    flex: 1 1 150px;
   }
 
   .fileButton {
@@ -833,6 +913,12 @@
 
   .fileButton {
     min-height: 44px;
+    font-size: 0.9rem;
+  }
+
+  .cameraButton {
+    min-height: 44px;
+    padding: 10px 12px;
     font-size: 0.9rem;
   }
 
@@ -900,3 +986,63 @@
     padding: 30px 18px;
   }
 }
+.missionChecklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(265px, 100%), 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.missionChecklist li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 1px solid var(--wim-border, #e0d8db);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.missionChecklist .revisionMission {
+  grid-column: 1 / -1;
+  border-color: var(--wim-border-maroon, #e6b8c1);
+  border-inline-start: 3px solid var(--about-maroon);
+  background: var(--wim-brand-tint, #fff7f8);
+}
+
+.revisionMission > svg { color: var(--about-maroon); }
+
+.missionCopy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: .84rem;
+}
+
+.missionDone, .missionPending { font-size: .77rem; font-weight: 700; }
+.missionDone { color: var(--wim-success-text, #166534); }
+.missionPending { color: var(--about-maroon); }
+.missionWaiting { color: var(--about-muted); font-weight: 500; }
+.missionNote { color: var(--wim-text-secondary, #596579); font-size: .77rem; line-height: 1.45; }
+
+.missionGo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #8b1e2d;
+  color: #fff;
+  font-size: .8rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.missionGo:hover { color: #fff; background: #741725; }
+.missionGo:focus-visible { outline: 2px solid #8b1e2d; outline-offset: 2px; }

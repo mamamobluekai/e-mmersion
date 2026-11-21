@@ -286,7 +286,7 @@ const createAdmin = async (req, res) => {
   }
 };
 
-// Manually create a teacher, supervisor, or coordinator account (pending by default).
+// Manually create a teacher or coordinator account (pending by default).
 const createUser = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -297,7 +297,6 @@ const createUser = async (req, res) => {
       password,
       role,
       employeeId,
-      companyName,
       department,
       position,
       phone,
@@ -307,8 +306,8 @@ const createUser = async (req, res) => {
       return res.status(400).json({ error: 'First name, last name, email, and role are required.' });
     }
 
-    if (!['teacher', 'supervisor', 'coordinator'].includes(role)) {
-      return res.status(400).json({ error: 'Role must be teacher, supervisor, or coordinator.' });
+    if (!['teacher', 'coordinator'].includes(role)) {
+      return res.status(400).json({ error: 'Role must be teacher or coordinator. Register workplace supervisors through Partner Institutions.' });
     }
 
     // Same flow as the Excel upload: no password here. The account starts with
@@ -321,10 +320,6 @@ const createUser = async (req, res) => {
     const existingUser = await client.query('SELECT id FROM users WHERE email = $1', [trimmedEmail]);
     if (existingUser.rows.length > 0) {
       return res.status(409).json({ error: 'Email already registered.' });
-    }
-
-    if (role === 'supervisor' && !companyName) {
-      return res.status(400).json({ error: 'Company name is required for supervisors.' });
     }
 
     await client.query('BEGIN');
@@ -346,17 +341,18 @@ const createUser = async (req, res) => {
     const roleFields = {
       teacher: `INSERT INTO teachers (user_id, first_name, last_name, employee_id, department, designation)
                 VALUES ($1, $2, $3, $4, $5, $6)`,
-      supervisor: `INSERT INTO supervisors (user_id, first_name, last_name, employee_id, company_name, designation, department)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       coordinator: `INSERT INTO coordinators (user_id, first_name, last_name, employee_id, department, designation)
                     VALUES ($1, $2, $3, $4, $5, $6)`,
     }[role];
 
-    const roleParams = role === 'teacher'
-      ? [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, department ? String(department).trim() : null, position ? String(position).trim() : null]
-      : role === 'supervisor'
-      ? [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, String(companyName).trim(), position ? String(position).trim() : null, department ? String(department).trim() : null]
-      : [user.id, String(firstName).trim(), String(lastName).trim(), employeeId ? String(employeeId).trim() : null, department ? String(department).trim() : null, position ? String(position).trim() : null];
+    const roleParams = [
+      user.id,
+      String(firstName).trim(),
+      String(lastName).trim(),
+      employeeId ? String(employeeId).trim() : null,
+      department ? String(department).trim() : null,
+      position ? String(position).trim() : null,
+    ];
 
     await client.query(roleFields, roleParams);
 
@@ -480,6 +476,20 @@ const deleteUser = async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      const partnerAssignments = await client.query(
+        `SELECT 1
+         FROM partner_institution_supervisor_history
+         WHERE supervisor_user_id = $1
+         LIMIT 1`,
+        [id],
+      );
+      if (partnerAssignments.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'This supervisor has partner institution assignment history. Deactivate or replace the supervisor through Partner Institutions instead of deleting the account.',
+        });
+      }
       
       // Delete from tables that reference students
       await client.query('DELETE FROM teacher_batch_students WHERE student_id = $1', [id]);
@@ -1302,7 +1312,7 @@ const archivePeriod = async (req, res) => {
     if (err.message === 'Immersion period not found.') {
       return res.status(404).json({ error: err.message });
     }
-    if (err.message === 'This period has already been archived.') {
+    if (err.status === 409 || err.message === 'This period has already been archived.') {
       return res.status(409).json({ error: err.message });
     }
     res.status(500).json({ error: 'Server error.' });

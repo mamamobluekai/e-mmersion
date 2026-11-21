@@ -1,45 +1,43 @@
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
 const {
-  getMyRequirements,
-  updateMyRequirements,
-  submitMyRequirements,
-  uploadMyDocument,
-  deleteMyDocument,
   getMySubmissionStatus,
   getProgress,
   getMyPlacementInfo,
 } = require('../controllers/studentControllers/student.controller');
+const {
+  getRequirements,
+  upsertRequirements,
+  submitRequirements,
+  uploadDocument,
+  deleteDocument,
+} = require('../controllers/coordinatorControllers/requirements.controller');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
+const { getStudentJourney } = require('../services/studentJourney.service');
+const { requireImmersion, requirePostImmersion } = require('../middleware/studentJourneyAccess');
 
 const router = express.Router();
-const uploadsDir = path.join(__dirname, '../uploads/requirements');
-fs.mkdirSync(uploadsDir, { recursive: true });
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => {
-      const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-      const ext = path.extname(file.originalname);
-      cb(null, `${unique}${ext}`);
-    },
-  }),
-});
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 router.use(authenticate);
 
-router.get('/requirements/me', authorize('student'), getMyRequirements);
+router.get('/requirements/me', authorize('student'), getRequirements);
 router.get('/requirements/me/status', authorize('student'), getMySubmissionStatus);
-router.get('/progress', authorize('student'), getProgress);
-router.get('/placement/me', authorize('student'), getMyPlacementInfo);
-router.put('/requirements/me', authorize('student'), updateMyRequirements);
-router.post('/requirements/me/submit', authorize('student'), submitMyRequirements);
-router.post('/documents/me/upload', authorize('student'), uploadMemory.single('file'), uploadMyDocument);
-router.delete('/documents/me/:id', authorize('student'), deleteMyDocument);
+router.get('/journey', authorize('student'), async (req, res) => {
+  try {
+    res.json(await getStudentJourney(req.user.id));
+  } catch (error) {
+    console.error('Could not load student journey:', error);
+    res.status(503).json({ error: 'Could not load your immersion journey. Try again.' });
+  }
+});
+router.get('/progress', authorize('student'), requirePostImmersion, getProgress);
+router.get('/placement/me', authorize('student'), requireImmersion, getMyPlacementInfo);
+router.put('/requirements/me', authorize('student'), upsertRequirements);
+router.post('/requirements/me/submit', authorize('student'), submitRequirements);
+router.post('/documents/me/upload', authorize('student'), uploadMemory.single('file'), uploadDocument);
+router.delete('/documents/me/:id', authorize('student'), deleteDocument);
 
 module.exports = router;

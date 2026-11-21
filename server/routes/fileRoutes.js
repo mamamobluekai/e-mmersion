@@ -1,5 +1,6 @@
 const express = require('express');
 const multer = require('multer');
+const { requireImmersion } = require('../middleware/studentJourneyAccess');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 const { uploadLimiter } = require('../middleware/rateLimiters');
@@ -22,15 +23,15 @@ router.use(authenticate);
 // extension + MIME + magic bytes before the controller sees the file (#9).
 router.post(
   '/upload',
-  authorize('student'),
+  authorize('student'), requireImmersion,
   uploadLimiter,
   upload.single('file'),
   uploadGuard(['document', 'image', 'spreadsheet']),
   uploadFile
 );
-router.get('/my-files', authorize('student'), getMyFiles);
+router.get('/my-files', authorize('student'), requireImmersion, getMyFiles);
 router.get('/all', authorize('teacher', 'coordinator', 'admin'), getAllFiles);
-router.get('/:id', authorize('student', 'teacher', 'coordinator', 'admin'), getFileById);
-router.delete('/:id', authorize('student'), deleteFile);
+router.get('/:id', authorize('student', 'teacher', 'coordinator', 'admin'), requireImmersion, getFileById);
+router.delete('/:id', authorize('student'), requireImmersion, deleteFile);
 
 module.exports = router;

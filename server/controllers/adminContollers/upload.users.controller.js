@@ -43,44 +43,6 @@ const TEMPLATE_SPECS = {
       'New accounts are created with a random temporary password and a "pending" status that you approve afterwards.',
     ],
   },
-  supervisors: {
-    sheet: 'Supervisors',
-    columns: [
-      'Employee ID',
-      'Company Name',
-      'First Name',
-      'Last Name',
-      'Position',
-      'Email',
-      'Phone Number',
-      'Department',
-    ],
-    sample: [
-      'S-2001',
-      'Ace Hardware Inc.',
-      'Maria',
-      'Santos',
-      'Site Supervisor',
-      'maria.santos@acehardware.ph',
-      '09181234567',
-      'Operations',
-    ],
-    guide: [
-      ['Employee ID', 'Required', 'Unique ID used by the system', 'S-2001'],
-      ['Company Name', 'Required', 'Host company or business name', 'Ace Hardware Inc.'],
-      ['First Name', 'Required', 'Given name', 'Maria'],
-      ['Last Name', 'Required', 'Family name', 'Santos'],
-      ['Position', 'Required', 'Designation or job title', 'Site Supervisor'],
-      ['Email', 'Required', 'Must be unique and a valid email', 'maria.santos@acehardware.ph'],
-      ['Phone Number', 'Optional', 'Contact number', '09181234567'],
-      ['Department', 'Optional', 'Department or division in the company', 'Operations'],
-    ],
-    notes: [
-      'Keep the header row exactly as shown; extra columns are ignored.',
-      'Accepted header aliases: "Company", "Host Company", "Business Name", "Job Title", "Designation".',
-      'New accounts are created with a random temporary password and a "pending" status that you approve afterwards.',
-    ],
-  },
   coordinators: {
     sheet: 'Coordinators',
     columns: [
@@ -268,102 +230,6 @@ const uploadTeachersExcel = async (req, res) => {
   }
 };
 
-const uploadSupervisorsExcel = async (req, res) => {
-  try {
-    const parsed = parseSheetRows(req.file?.buffer, 'supervisors');
-    if (!parsed.ok) {
-      return res.status(400).json({ error: parsed.error });
-    }
-    const rows = parsed.rows;
-
-    const results = { success: 0, failed: 0, errors: [] };
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const employeeId = row.employeeId;
-        const companyName = row.companyName;
-        const firstName = row.firstName;
-        const lastName = row.lastName;
-        const position = row.position;
-        // Canonicalised to match how registration stores an address, so the
-        // duplicate check below and a later login agree.
-        const email = normalizeEmail(row.email);
-        const department = row.department || '';
-        const phone = row.phone || '';
-
-        if (!employeeId || !companyName || !firstName || !lastName || !position || !email) {
-          results.failed++;
-          results.errors.push({ row: i + 2, error: 'Missing required fields' });
-          continue;
-        }
-
-        if (!EMAIL_REGEX.test(email)) {
-          results.failed++;
-          results.errors.push({ row: i + 2, error: `Invalid email: ${email}` });
-          continue;
-        }
-
-        const existing = await client.query(
-          'SELECT id FROM users WHERE email = $1',
-          [email]
-        );
-        if (existing.rows.length > 0) {
-          results.failed++;
-          results.errors.push({ row: i + 2, error: `Duplicate email: ${email}` });
-          continue;
-        }
-
-        const existingEmpId = await client.query(
-          'SELECT id FROM supervisors WHERE employee_id = $1',
-          [employeeId]
-        );
-        if (existingEmpId.rows.length > 0) {
-          results.failed++;
-          results.errors.push({ row: i + 2, error: `Duplicate employee ID: ${employeeId}` });
-          continue;
-        }
-
-        const userResult = await client.query(
-          `INSERT INTO users (email, password, role, phone, status)
-           VALUES ($1, $2, 'supervisor', $3, 'pending')
-           RETURNING id`,
-          [email, NO_PASSWORD_SENTINEL, phone || null]
-        );
-
-        const userId = userResult.rows[0].id;
-
-        // Insert into supervisors table
-        await client.query(
-          `INSERT INTO supervisors (user_id, first_name, last_name, employee_id, company_name, designation, department)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [userId, firstName, lastName, employeeId, companyName, position, department || null]
-        );
-
-        results.success++;
-      }
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-
-    res.json({
-      message: `Upload complete. ${results.success} supervisors added, ${results.failed} failed.`,
-      results,
-    });
-  } catch (err) {
-    console.error('Excel upload error:', err);
-    res.status(500).json({ error: 'Upload failed: ' + err.message });
-  }
-};
-
 const uploadCoordinatorsExcel = async (req, res) => {
   try {
     const parsed = parseSheetRows(req.file?.buffer, 'coordinators');
@@ -476,7 +342,6 @@ const uploadCoordinatorsExcel = async (req, res) => {
 
 module.exports = {
   uploadTeachersExcel,
-  uploadSupervisorsExcel,
   uploadCoordinatorsExcel,
   downloadUploadTemplate,
 };

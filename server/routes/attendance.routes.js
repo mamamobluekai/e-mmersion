@@ -8,9 +8,11 @@ const attendanceController = require('../controllers/studentControllers/attendan
 const attendanceAppeal = require('../controllers/studentControllers/attendanceAppeal.controller');
 const attendancePush = require('../controllers/studentControllers/attendancePush.controller');
 const immersionSchedule = require('../controllers/teacherControllers/immersionSchedule.controller');
+const { requireImmersion } = require('../middleware/studentJourneyAccess');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 const { writeLimiter } = require('../middleware/rateLimiters');
+const { requireLegacyBatch } = require('../middleware/requireLegacyBatch');
 
 // Batch-scoped attendance endpoints are shared by the SUPERVISOR (who owns
 // attendance scheduling), the TEACHER assigned to the batch, and the
@@ -23,7 +25,7 @@ router.post('/teacher/batch/:batchId/open', authenticate, authorize(...BATCH_ROL
 router.post('/teacher/batch/:batchId/close', authenticate, authorize(...BATCH_ROLES), attendanceSettings.closeBatchAttendance);
 router.get('/teacher/batch/:batchId/status', authenticate, authorize(...BATCH_ROLES), attendanceSettings.getBatchAttendanceStatus);
 router.get('/teacher/batch/:batchId/config', authenticate, authorize(...BATCH_ROLES), attendanceSettings.getBatchConfig);
-router.put('/teacher/batch/:batchId/config', authenticate, authorize(...BATCH_ROLES), attendanceSettings.updateBatchConfig);
+router.put('/teacher/batch/:batchId/config', authenticate, authorize(...BATCH_ROLES), requireLegacyBatch, attendanceSettings.updateBatchConfig);
 
 // ----- Records, stats, appeals -----
 router.get('/teacher/batch/:batchId/records', authenticate, authorize(...BATCH_ROLES), attendanceManagement.getBatchRecords);
@@ -34,22 +36,22 @@ router.post('/teacher/appeals/:appealId/review', authenticate, authorize('teache
 
 // ----- Work immersion schedules -----
 router.get('/teacher/batch/:batchId/schedules', authenticate, authorize(...BATCH_ROLES), immersionSchedule.getBatchSchedules);
-router.put('/teacher/batch/:batchId/schedules', authenticate, authorize(...BATCH_ROLES), immersionSchedule.upsertBatchSchedule);
+router.put('/teacher/batch/:batchId/schedules', authenticate, authorize(...BATCH_ROLES), requireLegacyBatch, immersionSchedule.upsertBatchSchedule);
 
 // ----- Student: view own schedule -----
-router.get('/student/schedule', authenticate, authorize('student'), immersionSchedule.getMySchedule);
-router.get('/student/records', authenticate, authorize('student'), attendanceController.getMyAttendanceRecords);
+router.get('/student/schedule', authenticate, authorize('student'), requireImmersion, immersionSchedule.getMySchedule);
+router.get('/student/records', authenticate, authorize('student'), requireImmersion, attendanceController.getMyAttendanceRecords);
 
 // ----- Student: status, check-in/out, appeals -----
-router.get('/student/push/vapid-public-key', authenticate, authorize('student'), attendancePush.getVapidPublicKey);
-router.post('/student/push/subscriptions', authenticate, authorize('student'), writeLimiter, attendancePush.saveSubscription);
-router.delete('/student/push/subscriptions', authenticate, authorize('student'), writeLimiter, attendancePush.deleteSubscription);
-router.get('/student/status', authenticate, authorize('student'), attendanceController.getStudentAttendanceAccess);
-router.post('/check-in', authenticate, authorize('student'), attendanceController.checkIn);
-router.post('/check-out', authenticate, authorize('student'), attendanceController.checkOut);
-router.post('/location-issue', authenticate, authorize('student'), attendanceController.reportLocationIssue);
-router.post('/appeal', authenticate, authorize('student'), attendanceAppeal.upload.single('file'), attendanceAppeal.submitAppeal);
-router.get('/appeals/me', authenticate, authorize('student'), attendanceAppeal.getMyAppeals);
-router.delete('/appeals/:appealId', authenticate, authorize('student'), attendanceAppeal.deleteMyAppeal);
+router.get('/student/push/vapid-public-key', authenticate, authorize('student'), requireImmersion, attendancePush.getVapidPublicKey);
+router.post('/student/push/subscriptions', authenticate, authorize('student'), requireImmersion, writeLimiter, attendancePush.saveSubscription);
+router.delete('/student/push/subscriptions', authenticate, authorize('student'), requireImmersion, writeLimiter, attendancePush.deleteSubscription);
+router.get('/student/status', authenticate, authorize('student'), requireImmersion, attendanceController.getStudentAttendanceAccess);
+router.post('/check-in', authenticate, authorize('student'), requireImmersion, attendanceController.checkIn);
+router.post('/check-out', authenticate, authorize('student'), requireImmersion, attendanceController.checkOut);
+router.post('/location-issue', authenticate, authorize('student'), requireImmersion, attendanceController.reportLocationIssue);
+router.post('/appeal', authenticate, authorize('student'), requireImmersion, attendanceAppeal.upload.single('file'), attendanceAppeal.submitAppeal);
+router.get('/appeals/me', authenticate, authorize('student'), requireImmersion, attendanceAppeal.getMyAppeals);
+router.delete('/appeals/:appealId', authenticate, authorize('student'), requireImmersion, attendanceAppeal.deleteMyAppeal);
 
 module.exports = router;

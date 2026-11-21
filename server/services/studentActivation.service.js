@@ -15,7 +15,7 @@ async function createTemporaryCredential() {
 async function sendTemporaryPasswordEmail(user, temporaryPassword) {
   const to = String(user?.email || '').trim();
   if (!EMAIL_REGEX.test(to)) {
-    const reason = `The student email address "${to}" is missing or invalid. Correct it on the student profile, then resend.`;
+    const reason = `The account email address "${to}" is missing or invalid. Correct it on the account profile, then resend.`;
     return { emailSent: false, emailError: reason };
   }
 
@@ -23,6 +23,8 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
   if (configError) return { emailSent: false, emailError: configError };
 
   const name = `${user.first_name || ''} ${user.last_name || ''}`.trim();
+  const roleLabel = user.role === 'supervisor' ? 'Workplace Supervisor' : 'Student';
+  const possessiveRole = user.role === 'supervisor' ? 'supervisor' : 'student';
   const safeName = mailer.escapeHtml(name);
   const safeEmail = mailer.escapeHtml(to);
   const safePassword = mailer.escapeHtml(temporaryPassword);
@@ -31,10 +33,10 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
   try {
     result = await mailer.sendMail({
       to,
-      subject: 'Your Work Immersion student login credentials',
+      subject: `Your Work Immersion ${possessiveRole} login credentials`,
       html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2a5298;">Your Student Account Is Ready</h2>
+        <h2 style="color: #2a5298;">Your ${roleLabel} Account Is Ready</h2>
         <p>Hello${safeName ? ` <strong>${safeName}</strong>` : ''},</p>
         <p>Use these credentials to sign in to the Work Immersion Monitoring System:</p>
         <p><strong>Email:</strong> ${safeEmail}<br />
@@ -46,7 +48,7 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
       </div>
       `,
       text: [
-        'Your Student Account Is Ready',
+        `Your ${roleLabel} Account Is Ready`,
         '',
         name ? `Hello ${name},` : 'Hello,',
         '',
@@ -61,30 +63,34 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
       ].join('\n'),
     });
   } catch (err) {
-    console.error(`Student activation email send failed for ${to}:`, err);
+    console.error(`Account activation email send failed for ${to}:`, err);
     return {
       emailSent: false,
       emailError: `The mail service failed: ${err.message || 'unknown sending error'}`,
     };
   }
 
-  if (result.sent) console.log(`Student activation email sent to ${to}`);
+  if (result.sent) console.log(`Account activation email sent to ${to}`);
   return {
     emailSent: result.sent,
     emailError: result.reason || (result.sent ? null : 'The mail provider did not accept the message.'),
   };
 }
 
-async function resendTemporaryPassword(user) {
+async function resendTemporaryPassword(user, role = 'student') {
+  if (!['student', 'supervisor'].includes(role)) {
+    throw new Error('Temporary credential resend is not supported for this account role.');
+  }
+
   const credential = await createTemporaryCredential();
   const result = await pool.query(
     `UPDATE users
      SET password = $1,
          temporary_password_expires_at = CURRENT_TIMESTAMP + make_interval(hours => $2),
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $3 AND role = 'student' AND status = 'pending_activation'
+     WHERE id = $3 AND role = $4 AND status = 'pending_activation'
      RETURNING email`,
-    [credential.passwordHash, TEMPORARY_PASSWORD_TTL_HOURS, user.id],
+    [credential.passwordHash, TEMPORARY_PASSWORD_TTL_HOURS, user.id, role],
   );
 
   if (result.rows.length === 0) return { eligible: false };
@@ -92,7 +98,7 @@ async function resendTemporaryPassword(user) {
   return {
     eligible: true,
     ...(await sendTemporaryPasswordEmail(
-      { ...user, email: result.rows[0].email },
+      { ...user, email: result.rows[0].email, role },
       credential.temporaryPassword,
     )),
   };

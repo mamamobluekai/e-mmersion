@@ -97,7 +97,12 @@ const getAllFiles = async (req, res) => {
 
 const getFileById = async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM files WHERE id = $1', [req.params.id]);
+    const result = req.user.role === 'student'
+      ? await pool.query(
+          'SELECT f.* FROM files f JOIN students s ON s.id = f.student_id WHERE f.id = $1 AND s.user_id = $2',
+          [req.params.id, req.user.id]
+        )
+      : await pool.query('SELECT * FROM files WHERE id = $1', [req.params.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'File not found.' });
     res.json(result.rows[0]);
   } catch (err) {

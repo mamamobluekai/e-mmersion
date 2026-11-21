@@ -50,6 +50,10 @@ export async function getMyProgress() {
   return apiFetch('/progress');
 }
 
+export async function getMyJourney(signal) {
+  return apiFetch('/journey', { signal });
+}
+
 export async function getMyPlacementInfo() {
   return apiFetch('/placement/me');
 }

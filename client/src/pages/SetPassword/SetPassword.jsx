@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 
 import { resetPassword, verifyResetToken } from '../../api/authApi';
-import { setStudentActivationPassword } from '../../api/userApi';
+import { setActivationPassword } from '../../api/userApi';
 import { useAuth } from '../../context/AuthContext';
 import { getPasswordFormProblem } from '../../utils/passwordPolicy';
 import { API_BASE } from '../../config/api';
@@ -37,7 +37,8 @@ export default function SetPassword() {
 
   const token = searchParams.get('token');
   const email = searchParams.get('email');
-  const activationMode = user?.role === 'student' && user.must_change_password;
+  const activationMode =
+    ['student', 'supervisor'].includes(user?.role) && user.must_change_password;
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -99,7 +100,7 @@ export default function SetPassword() {
     loading;
 
   if (activationMode && !user.terms_accepted) {
-    return <Navigate to="/dashboard/student" replace />;
+    return <Navigate to={`/dashboard/${user.role}`} replace />;
   }
 
   const handleSubmit = async (e) => {
@@ -122,13 +123,13 @@ export default function SetPassword() {
 
     try {
       if (activationMode) {
-        const data = await setStudentActivationPassword(password, confirmPassword);
+        const data = await setActivationPassword(password, confirmPassword);
         updateUser({
           ...data.user,
           must_change_password: false,
           temporary_password_expires_at: null,
         });
-        navigate('/dashboard/student', { replace: true });
+        navigate(`/dashboard/${user.role}`, { replace: true });
         return;
       } else if (token) {
         await resetPassword({ token, password, confirmPassword });

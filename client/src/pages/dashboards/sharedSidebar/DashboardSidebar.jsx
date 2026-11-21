@@ -118,15 +118,33 @@ function DashboardSidebar({
             {links.map((link) => {
               const Icon = link.icon;
 
+              const linkContent = (
+                <>
+                  <span className={styles.activeBar} aria-hidden="true" />
+                  <span className={styles.linkIcon} aria-hidden="true">
+                    {Icon && <Icon size={20} strokeWidth={2} />}
+                  </span>
+                  <span className={styles.linkLabel}>{link.label}</span>
+                  {link.badge != null && <span className={styles.badge}>{link.badge}</span>}
+                </>
+              );
+
               return (
                 <li
                   key={link.to}
                   className={styles.navItem}
+                  data-trail={link.trail}
                 >
 
-                  <NavLink
+                  {link.group && <div className={styles.navGroup}>{link.group}</div>}
+                  {link.disabled ? (
+                    <span className={`${styles.navLink} ${styles.navDisabled}`} aria-disabled="true">
+                      {linkContent}
+                    </span>
+                  ) : <NavLink
                     to={link.to}
                     end={link.end}
+                    aria-current={link.children?.length ? 'location' : undefined}
                     onClick={(event) => handleLinkClick(event, link)}
                     className={({ isActive }) =>
                       `${styles.navLink} ${
@@ -137,39 +155,25 @@ function DashboardSidebar({
                     }
                   >
 
-                    {/* Active indicator */}
-                    <span
-                      className={styles.activeBar}
-                      aria-hidden="true"
-                    />
+                    {linkContent}
+                  </NavLink>}
 
-                    {/* Icon */}
-                    <span
-                      className={styles.linkIcon}
-                      aria-hidden="true"
-                    >
-                      {Icon && (
-                        <Icon
-                          size={20}
-                          strokeWidth={2}
-                        />
-                      )}
-                    </span>
-
-                    {/* Label */}
-                    <span className={styles.linkLabel}>
-                      {link.label}
-                    </span>
-
-                    {/* Badge */}
-                    {link.badge != null && (
-                      <span className={styles.badge}>
-                        {link.badge}
-                      </span>
-                    )}
-
-                  </NavLink>
-
+                  {link.children?.length > 0 && (
+                    <ul className={styles.navChildren} aria-label={link.label}>
+                      {link.children.map((child) => (
+                        <li key={child.to}>
+                          <NavLink
+                            to={child.to}
+                            end
+                            onClick={(event) => handleLinkClick(event, child)}
+                            className={({ isActive }) => `${styles.navLink} ${isActive ? styles.active : ''}`}
+                          >
+                            {child.label}
+                          </NavLink>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </li>
               );
             })}

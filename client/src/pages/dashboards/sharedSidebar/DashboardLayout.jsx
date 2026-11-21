@@ -7,6 +7,7 @@ function DashboardLayout({
   sidebar,
   children,
   enableMobileKeyboardFocus = false,
+  compactGutters = false,
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -62,7 +63,7 @@ function DashboardLayout({
         {/* CONTENT */}
 
         <main className={styles.content}>
-          <div className={styles.contentInner}>
+          <div className={`${styles.contentInner} ${compactGutters ? styles.compactGutters : ''}`}>
             {children}
           </div>
         </main>

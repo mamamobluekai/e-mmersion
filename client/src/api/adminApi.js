@@ -353,23 +353,6 @@ export async function uploadTeachersExcel(file) {
   }));
 }
 
-export async function uploadSupervisorsExcel(file) {
-  const formData = new FormData();
-  formData.append('file', file);
-  return fetch(`${API_BASE}/admin/upload/supervisors`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: withCsrf(authHeaders()),
-    body: formData,
-  }).then(res => res.json().then(data => {
-    if (!res.ok) {
-      const { message } = mapErrorResponse(data);
-      throw new Error(message);
-    }
-    return data;
-  }));
-}
-
 export async function uploadCoordinatorsExcel(file) {
   const formData = new FormData();
   formData.append('file', file);

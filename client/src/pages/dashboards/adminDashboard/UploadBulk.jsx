@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   AlertCircle,
   Users,
-  BriefcaseBusiness,
   ShieldCheck,
   FileText,
   Loader2,
@@ -18,7 +17,6 @@ import {
 
 import {
   uploadTeachersExcel,
-  uploadSupervisorsExcel,
   uploadCoordinatorsExcel,
   getUploadTemplateUrl,
 } from '../../../api/adminApi';
@@ -35,23 +33,6 @@ const UPLOAD_TYPES = [
     required: ['Employee ID', 'First Name', 'Last Name', 'Email', 'Department', 'Position'],
     optional: ['Phone Number'],
     upload: uploadTeachersExcel,
-  },
-  {
-    key: 'supervisors',
-    title: 'Supervisors',
-    icon: BriefcaseBusiness,
-    description:
-      'Add partner company supervisors in bulk, including the host company they represent.',
-    required: [
-      'Employee ID',
-      'Company Name',
-      'First Name',
-      'Last Name',
-      'Position',
-      'Email',
-    ],
-    optional: ['Phone Number', 'Department'],
-    upload: uploadSupervisorsExcel,
   },
   {
     key: 'coordinators',
@@ -319,7 +300,7 @@ export default function UploadBulk() {
           <h1>Upload Users</h1>
 
           <p>
-            Import teachers, supervisors, and coordinators in bulk from an Excel
+            Import teachers and coordinators in bulk from an Excel
             workbook. Download the template for each role to get the exact
             columns, a sample row, and a read-me sheet.
           </p>

@@ -9,6 +9,16 @@ const studentSubmissionBlockMessage = (status) => {
   return null;
 };
 
+const isMissingRequirementFile = (status, hasDocument) =>
+  !hasDocument && (!status || status === 'PENDING');
+
+const canStudentUploadRequirementFile = (submissionStatus, requirementStatus, hasDocument) => {
+  const normalizedStatus = String(submissionStatus || '').trim().toLowerCase();
+  if (normalizedStatus === 'hold') return false;
+  if (isMissingRequirementFile(requirementStatus, hasDocument)) return true;
+  return normalizedStatus !== 'approved' && requirementStatus === 'NEEDS REVISION';
+};
+
 const reviewStatusTransitionError = (currentStatus, nextStatus) => {
   const current = String(currentStatus || '').trim().toLowerCase();
   const next = String(nextStatus || '').trim().toLowerCase();
@@ -25,7 +35,21 @@ const reviewStatusTransitionError = (currentStatus, nextStatus) => {
   return null;
 };
 
+const STAFF_MANAGED_STUDENT_FIELDS = new Set([
+  'first_name', 'middle_name', 'last_name', 'email', 'section', 'track_strand', 'school',
+]);
+
+const editableRequirementsPayload = (role, body = {}) => {
+  if (role !== 'student') return body;
+  return Object.fromEntries(
+    Object.entries(body).filter(([field]) => !STAFF_MANAGED_STUDENT_FIELDS.has(field))
+  );
+};
+
 module.exports = {
+  editableRequirementsPayload,
+  isMissingRequirementFile,
+  canStudentUploadRequirementFile,
   studentSubmissionBlockMessage,
   reviewStatusTransitionError,
 };

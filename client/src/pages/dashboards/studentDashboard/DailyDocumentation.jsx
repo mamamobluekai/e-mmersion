@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
 import {
   getMySchedule,
@@ -17,6 +18,10 @@ function normalizeDateKey(value) {
   if (str.includes('T')) return str.substring(0, 10);
   if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
   return str.slice(0, 10);
+}
+
+function workdayKey(batchId, date) {
+  return `${batchId}:${normalizeDateKey(date)}`;
 }
 
 function formatDateLabel(value) {
@@ -53,6 +58,10 @@ function todayKey() {
 
 function DailyDocumentation() {
   const { token } = useAuth();
+  const [searchParams] = useSearchParams();
+  const requestedDate = searchParams.get('date');
+  const requestedBatch = searchParams.get('batch');
+  const requestedDay = requestedDate && requestedBatch ? workdayKey(requestedBatch, requestedDate) : null;
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -68,7 +77,7 @@ function DailyDocumentation() {
   const [uploading, setUploading] = useState(false);
   const [modalError, setModalError] = useState('');
   // Which day card is expanded (2x2 grid; click a card to open it).
-  const [expandedDay, setExpandedDay] = useState(null);
+  const [expandedDay, setExpandedDay] = useState(requestedDay);
 
   const loadAll = useCallback(async () => {
     if (!token) return;
@@ -84,11 +93,11 @@ function DailyDocumentation() {
       const schedules = scheduleRes?.schedules || [];
       const attendance = {};
       (attendanceRes?.records || []).forEach((r) => {
-        attendance[normalizeDateKey(r.date)] = r;
+        attendance[workdayKey(r.teacher_batch_id, r.date)] = r;
       });
       const docs = {};
       (docsRes?.docs || []).forEach((d) => {
-        docs[normalizeDateKey(d.date)] = d;
+        docs[workdayKey(d.teacher_batch_id, d.date)] = d;
       });
 
       const days = [];
@@ -103,7 +112,7 @@ function DailyDocumentation() {
             batchLabel: s.batch_label,
             supervisorName: [s.supervisor_first_name, s.supervisor_last_name].filter(Boolean).join(' '),
             date,
-            dayNumber: idx + 1,
+            dayNumber: idx + (s.first_day_number || 1),
           });
         });
       });
@@ -124,15 +133,20 @@ function DailyDocumentation() {
     loadAll();
   }, [loadAll]);
 
+  useEffect(() => {
+    if (!requestedDay || loading) return;
+    document.getElementById(`documentation-day-${requestedDay}`)?.scrollIntoView({ block: 'center' });
+  }, [requestedDay, loading]);
+
   const today = useMemo(() => todayKey(), []);
 
   const scheduledCount = scheduleDays.filter((day) => day.date).length;
   const submittedCount = scheduleDays.filter((day) => {
-    const doc = docMap[normalizeDateKey(day.date)];
+    const doc = docMap[workdayKey(day.batchId, day.date)];
     return doc && ['submitted', 'reviewed', 'graded'].includes(doc.status);
   }).length;
   const gradedCount = scheduleDays.filter((day) => {
-    const doc = docMap[normalizeDateKey(day.date)];
+    const doc = docMap[workdayKey(day.batchId, day.date)];
     return doc && ['reviewed', 'graded'].includes(doc.status);
   }).length;
   const progressLabel = scheduledCount > 0 && gradedCount >= scheduledCount ? 'Completed' : 'In Progress';
@@ -294,21 +308,22 @@ function DailyDocumentation() {
         <div className={styles.list}>
           {scheduleDays.map((day) => {
             const key = normalizeDateKey(day.date);
-            const rec = attendanceMap[key];
-            const doc = docMap[key];
+            const missionKey = workdayKey(day.batchId, day.date);
+            const rec = attendanceMap[missionKey];
+            const doc = docMap[missionKey];
             const inTime = rec?.check_in_time ? formatTime(rec.check_in_time) : null;
             const outTime = rec?.check_out_time ? formatTime(rec.check_out_time) : null;
             const isToday = key === today;
             const isFuture = key > today;
             const docLabel = docStatusLabel(doc);
-            const isExpanded = expandedDay === day.key;
+            const isExpanded = expandedDay === missionKey;
             // A submitted/reviewed/graded doc turns the status text green.
             const isSubmittedNow = ['submitted', 'reviewed', 'graded'].includes(doc?.status);
             // Upload is allowed for any scheduled (non-future) day where the
             // student was present (at least Time In OR Time Out). Days where
             // the student was absent (neither recorded) or future days are locked.
             // Finalized (graded/rejected) docs also block the action.
-            const isPresent = !!inTime || !!outTime;
+            const isPresent = !!inTime || !!outTime || rec?.status === 'present';
             const editable = !isFuture && isPresent && (!doc || doc.status === 'pending' || doc.status === 'submitted');
             const lockedReason = isFuture
               ? 'Not yet scheduled'
@@ -319,12 +334,13 @@ function DailyDocumentation() {
             return (
               <div
                 key={day.key}
+                id={`documentation-day-${missionKey}`}
                 className={`${styles.item} ${isToday ? styles.itemToday : ''} ${isExpanded ? styles.itemOpen : ''}`}
               >
                 <button
                   type="button"
                   className={styles.itemToggle}
-                  onClick={() => setExpandedDay(isExpanded ? null : day.key)}
+                  onClick={() => setExpandedDay(isExpanded ? null : missionKey)}
                   aria-expanded={isExpanded}
                 >
                   <span className={styles.itemToggleTop}>
@@ -410,8 +426,8 @@ function DailyDocumentation() {
             </div>
             <form onSubmit={handleSubmit} className={styles.modalBody}>
               <div className={styles.modalInfo}>
-                Time In: {formatTime(attendanceMap[normalizeDateKey(activeDay.date)]?.check_in_time) || '—'} ·
-                Time Out: {formatTime(attendanceMap[normalizeDateKey(activeDay.date)]?.check_out_time) || '—'}
+                Time In: {formatTime(attendanceMap[workdayKey(activeDay.batchId, activeDay.date)]?.check_in_time) || '—'} ·
+                Time Out: {formatTime(attendanceMap[workdayKey(activeDay.batchId, activeDay.date)]?.check_out_time) || '—'}
               </div>
 
               {modalError && <div className={styles.error}>{modalError}</div>}

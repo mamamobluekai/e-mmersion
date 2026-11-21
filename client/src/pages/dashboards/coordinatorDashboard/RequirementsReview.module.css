@@ -164,9 +164,9 @@
   font-weight: 700;
 }
 
-.verifyButton:hover,
+.verifyButton:hover:not(:disabled),
 .bulkApproveBtn:hover:not(:disabled),
-.revisionButton:hover,
+.revisionButton:hover:not(:disabled),
 .bulkRejectBtn:hover:not(:disabled) {
   transform: translateY(-1px);
 }
@@ -181,6 +181,8 @@
 .primaryButton:disabled,
 .saveReqBtn:disabled,
 .confirmDelete:disabled,
+.verifyButton:disabled,
+.revisionButton:disabled,
 .bulkApproveBtn:disabled,
 .bulkRejectBtn:disabled,
 .bulkClearBtn:disabled {
@@ -547,6 +549,50 @@
   padding: 14px 20px;
   border-top: 1px solid var(--about-border);
   background: #fff;
+}
+
+.previewActions .verifyButton {
+  border-color: #805719;
+  background: #9a6b22;
+  color: #fff;
+}
+
+.previewActions .verifyButton:hover:not(:disabled) {
+  border-color: #684715;
+  background: #805719;
+}
+
+.previewActions .revisionButton {
+  border-color: #a61f1f;
+  background: #c62828;
+  color: #fff;
+}
+
+.previewActions .revisionButton:hover:not(:disabled) {
+  border-color: #861b1b;
+  background: #a61f1f;
+}
+
+.previewActions .verifyButton:focus-visible,
+.previewActions .revisionButton:focus-visible {
+  outline: 3px solid rgb(139 30 45 / 30%);
+  outline-offset: 2px;
+}
+
+.previewError {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--about-maroon);
+  font-size: 0.84rem;
+}
+
+.actionSpinner {
+  flex-shrink: 0;
+  animation: spin 0.75s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .actionSpinner { animation: none; }
 }
 
 @keyframes panelIn {

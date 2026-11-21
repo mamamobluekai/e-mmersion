@@ -105,7 +105,7 @@ const getBatchSchedules = async (req, res) => {
        FROM work_immersion_schedules wis
        LEFT JOIN users u ON u.id = wis.supervisor_id
        LEFT JOIN supervisors sv ON sv.user_id = wis.supervisor_id
-       WHERE wis.teacher_batch_id = $1
+        WHERE wis.teacher_batch_id = $1
        ORDER BY wis.supervisor_id NULLS FIRST, wis.id ASC`,
       [batchId]
     );
@@ -292,6 +292,46 @@ const upsertBatchSchedule = async (req, res) => {
   }
 };
 
+async function getStudentSchedules(studentId) {
+  const result = await pool.query(
+    `SELECT DISTINCT ON (tb.id) wis.*, tb.batch_label, tbs.assigned_at,
+            to_jsonb(tbs)->>'deployment_started_on' AS deployment_started_on,
+            to_jsonb(tbs)->>'deployment_ended_on' AS deployment_ended_on,
+            to_jsonb(dr)->'confirmed_schedule'->>'daily_hours' AS daily_hours,
+            COALESCE((to_jsonb(dr)->'confirmed_schedule'->>'required_hours')::int, ip.required_hours) AS period_hours,
+            u.email AS supervisor_email,
+            sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
+     FROM work_immersion_schedules wis
+     JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = wis.teacher_batch_id
+     JOIN teacher_batches tb ON tb.id = wis.teacher_batch_id
+     LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND to_jsonb(dr)->>'workflow_version' = '2'
+     LEFT JOIN immersion_periods ip ON ip.id = tb.immersion_period_id
+     LEFT JOIN users u ON u.id = wis.supervisor_id
+     LEFT JOIN supervisors sv ON sv.user_id = wis.supervisor_id
+     WHERE tbs.student_id = $1
+     ORDER BY tb.id, (wis.supervisor_id IS NOT DISTINCT FROM tb.supervisor_id) DESC,
+              (wis.supervisor_id IS NULL) DESC, wis.id DESC`,
+    [studentId]
+  );
+
+  const schedules = [];
+  for (const row of result.rows) {
+    const { blocked } = await loadExcludedDates(row.teacher_batch_id, row.supervisor_id ?? null);
+    const dates = buildImmersionDayList(row.start_date, row.duration_type, row.duration_value, {
+      blockedDates: blocked,
+    });
+    const assignedDates = dates.filter((date) =>
+      (!row.deployment_started_on || date >= row.deployment_started_on) &&
+      (!row.deployment_ended_on || date < row.deployment_ended_on));
+    if (row.deployment_ended_on && !assignedDates.length) continue;
+    schedules.push({
+      ...row, attendance_dates: assignedDates.join(','),
+      first_day_number: assignedDates.length ? dates.indexOf(assignedDates[0]) + 1 : 1,
+    });
+  }
+  return schedules;
+}
+
 // GET /api/attendance/student/schedule
 const getMySchedule = async (req, res) => {
   try {
@@ -301,28 +341,7 @@ const getMySchedule = async (req, res) => {
     if (!studentRow.rows.length) return res.status(404).json({ error: 'Student profile not found.' });
     const studentId = studentRow.rows[0].id;
 
-    const result = await pool.query(
-      `SELECT wis.*, tb.batch_label, u.email AS supervisor_email,
-              sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
-       FROM work_immersion_schedules wis
-       JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = wis.teacher_batch_id
-       JOIN teacher_batches tb ON tb.id = wis.teacher_batch_id
-       LEFT JOIN users u ON u.id = wis.supervisor_id
-       LEFT JOIN supervisors sv ON sv.user_id = wis.supervisor_id
-       WHERE tbs.student_id = $1
-       ORDER BY wis.start_date DESC, wis.id DESC`,
-      [studentId]
-    );
-
-    const schedules = [];
-    for (const row of result.rows) {
-      const { blocked } = await loadExcludedDates(row.teacher_batch_id, row.supervisor_id ?? null);
-      const dates = buildImmersionDayList(row.start_date, row.duration_type, row.duration_value, {
-        blockedDates: blocked,
-      });
-      schedules.push({ ...row, attendance_dates: dates.join(',') });
-    }
-
+    const schedules = await getStudentSchedules(studentId);
     res.json({ schedules });
   } catch (err) {
     console.error('getMySchedule error:', err);
@@ -336,4 +355,5 @@ module.exports = {
   getBatchSchedules,
   upsertBatchSchedule,
   getMySchedule,
+  getStudentSchedules,
 };

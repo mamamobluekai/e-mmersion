@@ -53,6 +53,7 @@ CREATE TABLE students (
   last_name VARCHAR(100) NOT NULL,
   suffix VARCHAR(20),
   gender VARCHAR(20),
+  has_special_needs BOOLEAN NOT NULL DEFAULT FALSE,
   birthdate DATE,
   age INTEGER,
   contact_number VARCHAR(50),
@@ -92,6 +93,51 @@ CREATE TABLE supervisors (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Partner companies are managed by coordinators. Supervisor assignments are
+-- ended rather than deleted so replacement/deactivation history is retained.
+CREATE TABLE partner_institutions (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  industry VARCHAR(120) NOT NULL DEFAULT 'Other',
+  description TEXT,
+  address TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT partner_institutions_name_not_blank CHECK (length(btrim(name)) > 0)
+);
+
+CREATE UNIQUE INDEX idx_partner_institutions_name_ci
+  ON partner_institutions (lower(btrim(name)));
+
+CREATE TABLE partner_institution_supervisor_history (
+  id SERIAL PRIMARY KEY,
+  institution_id INTEGER NOT NULL REFERENCES partner_institutions(id) ON DELETE RESTRICT,
+  supervisor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  supervisor_first_name VARCHAR(100) NOT NULL,
+  supervisor_last_name VARCHAR(100) NOT NULL,
+  supervisor_email VARCHAR(255) NOT NULL,
+  supervisor_phone VARCHAR(50),
+  assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ended_at TIMESTAMPTZ,
+  end_reason VARCHAR(30) CHECK (end_reason IN ('replaced', 'deactivated', 'institution_deactivated')),
+  CONSTRAINT partner_supervisor_assignment_dates
+    CHECK (ended_at IS NULL OR ended_at >= assigned_at)
+);
+
+CREATE UNIQUE INDEX idx_partner_supervisor_one_active_institution
+  ON partner_institution_supervisor_history (institution_id)
+  WHERE ended_at IS NULL;
+
+CREATE UNIQUE INDEX idx_partner_supervisor_one_active_assignment
+  ON partner_institution_supervisor_history (supervisor_user_id)
+  WHERE ended_at IS NULL;
+
+CREATE INDEX idx_partner_supervisor_history_institution
+  ON partner_institution_supervisor_history (institution_id, assigned_at DESC);
 
 -- Coordinator Role Specific Table
 CREATE TABLE coordinators (

@@ -70,7 +70,7 @@ const authenticate = async (req, res, next) => {
     const isLogout = req.method === 'POST' && path === '/logout';
 
     if (
-      current.role === 'student' &&
+      ['student', 'supervisor'].includes(current.role) &&
       !current.terms_accepted &&
       !isTermsAcceptance &&
       !isLogout
@@ -81,7 +81,7 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    if (status === 'pending_activation' && !isLogout && !isPasswordSetup) {
+    if (status === 'pending_activation' && !isLogout && !isPasswordSetup && !isTermsAcceptance) {
       return res.status(403).json({
         error: 'Set your permanent password to activate your account.',
         code: 'PASSWORD_SETUP_REQUIRED',

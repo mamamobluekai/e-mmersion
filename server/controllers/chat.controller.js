@@ -110,7 +110,7 @@ async function getAccessibleBatches(req, res) {
          JOIN coordinators c ON c.id = tb.coordinator_id
          JOIN teachers t ON t.id = tb.teacher_id
          LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-         WHERE su.id = $1
+         WHERE su.id = $1 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
          ORDER BY tb.created_at DESC`,
         [userId]
       );
@@ -191,7 +191,7 @@ async function ensureBatchAccess(batchId, userId, role) {
          JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
          JOIN students s ON s.id = tbs.student_id
          JOIN users su ON su.id = s.user_id
-         WHERE tb.id = $1 AND su.id = $2`,
+         WHERE tb.id = $1 AND su.id = $2 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL`,
         [batchId, userId]
       );
       return check.rows.length > 0;
@@ -234,7 +234,7 @@ async function getBatchMembers(req, res) {
        FROM teacher_batch_students tbs
        JOIN students s ON s.id = tbs.student_id
        JOIN users u ON u.id = s.user_id
-       WHERE tbs.teacher_batch_id = $1
+       WHERE tbs.teacher_batch_id = $1 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
        ORDER BY s.last_name, s.first_name`,
       [batchId]
     );

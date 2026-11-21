@@ -1334,6 +1334,41 @@ padding: 20px;
    THEME TOGGLE BUTTONS
    ========================================================= */
 
+.singleSectionHeader {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.profileHeroSecurityHidden {
+  display: none;
+}
+
+.singleSectionHeader h1 {
+  margin: 0;
+  color: var(--wim-text-strong, #172033);
+  font-size: clamp(1.35rem, 3vw, 1.8rem);
+}
+
+.singleSectionGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.singleSectionGrid[data-active-section='profile'] > section:not([data-section='profile']),
+.singleSectionGrid[data-active-section='security'] > section:not([data-section='security']),
+.singleSectionGrid[data-active-section='additional'] > section:not([data-section='additional']) {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .singleSectionHeader {
+    margin-bottom: 14px;
+  }
+}
+
 .themeButton {
   transition: all 0.15s ease;
 }

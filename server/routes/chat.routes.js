@@ -8,11 +8,12 @@ const {
   addReaction,
   removeReaction,
 } = require('../controllers/chat.controller');
+const { requireImmersion } = require('../middleware/studentJourneyAccess');
 const authenticate = require('../middleware/verifyToken');
 
 const router = express.Router();
 
-router.use(authenticate);
+router.use(authenticate, requireImmersion);
 
 router.get('/batches', getAccessibleBatches);
 router.get('/batch/:batchId/members', getBatchMembers);

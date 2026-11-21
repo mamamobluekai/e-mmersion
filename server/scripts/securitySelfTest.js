@@ -145,6 +145,44 @@ async function runUploadTests() {
   });
 }
 
+async function runSupervisorActivationTests() {
+  const mailer = require('../utils/mailer');
+  const activation = require('../services/studentActivation.service');
+
+  await asyncTest('supervisor activation email includes temporary credentials and required setup steps', async () => {
+    const originalConfigError = mailer.mailConfigError;
+    const originalSendMail = mailer.sendMail;
+    let message;
+    try {
+      mailer.mailConfigError = () => null;
+      mailer.sendMail = async (payload) => {
+        message = payload;
+        return { sent: true };
+      };
+
+      const result = await activation.sendTemporaryPasswordEmail(
+        {
+          role: 'supervisor',
+          first_name: 'Taylor',
+          last_name: 'Example',
+          email: 'supervisor@example.com',
+        },
+        'TemporaryPass123',
+      );
+
+      assert.strictEqual(result.emailSent, true);
+      assert(message.subject.includes('supervisor'), 'supervisor role missing from subject');
+      assert(message.html.includes('supervisor@example.com'), 'login email missing from message');
+      assert(message.html.includes('TemporaryPass123'), 'temporary password missing from message');
+      assert(message.html.includes('accept the Terms and Agreement'), 'terms step missing from message');
+      assert(message.html.includes('permanent password'), 'permanent password step missing from message');
+    } finally {
+      mailer.mailConfigError = originalConfigError;
+      mailer.sendMail = originalSendMail;
+    }
+  });
+}
+
 // --- token signing ------------------------------------------------------------
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'self-test-secret-do-not-use-in-prod';
 const jwt = require('jsonwebtoken');
@@ -172,6 +210,7 @@ test('alg:none forgery is rejected', () => {
 // --- run + summary ------------------------------------------------------------
 (async () => {
   await runUploadTests();
+  await runSupervisorActivationTests();
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length) {
     process.exitCode = 1;

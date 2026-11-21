@@ -216,7 +216,7 @@ const createTeacherBatch = async (req, res) => {
     res.status(201).json({ batch: result.rows[0] });
   } catch (err) {
     if (err.code === '23505') {
-      if (err.constraint === 'idx_teacher_batches_supervisor_unique') {
+      if (['idx_teacher_batches_supervisor_unique', 'idx_teacher_batches_legacy_supervisor'].includes(err.constraint)) {
         return res.status(409).json({ error: 'This supervisor is already assigned to another batch. A supervisor can only be assigned to one batch.' });
       }
       return res.status(409).json({ error: 'A batch with this label already exists.' });
@@ -368,7 +368,7 @@ const updateTeacherBatch = async (req, res) => {
 
     res.json({ batch: result.rows[0] });
   } catch (err) {
-    if (err.code === '23505' && err.constraint === 'idx_teacher_batches_supervisor_unique') {
+    if (err.code === '23505' && ['idx_teacher_batches_supervisor_unique', 'idx_teacher_batches_legacy_supervisor'].includes(err.constraint)) {
       return res.status(409).json({ error: 'This supervisor is already assigned to another batch. A supervisor can only be assigned to one batch.' });
     }
     console.error('updateTeacherBatch error:', err);
@@ -669,6 +669,8 @@ const assignApprovedStudentsToBatch = async (req, res) => {
     // This applies GLOBALLY (across every coordinator and supervisor), not just
     // within the current coordinator's own batches. Re-assigning within the same
     // batchId is still allowed (the student is already in this batch).
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM students WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [normalizedStudentIds]);
     const conflictCheck = await client.query(
       `SELECT DISTINCT tbs.student_id,
               tb.batch_label,
@@ -683,6 +685,7 @@ const assignApprovedStudentsToBatch = async (req, res) => {
     const conflictedIds = conflictCheck.rows.map((r) => r.student_id);
     if (conflictedIds.length > 0) {
       const firstConflict = conflictCheck.rows[0];
+      await client.query('ROLLBACK');
       return res.status(409).json({
         error: firstConflict.batch_label
           ? `One or more students are already assigned to another batch (${firstConflict.batch_label}). A student can only be assigned to one batch.`
@@ -690,8 +693,6 @@ const assignApprovedStudentsToBatch = async (req, res) => {
         conflicts: conflictedIds,
       });
     }
-
-    await client.query('BEGIN');
 
     await client.query(
       `DELETE FROM teacher_batch_students WHERE teacher_batch_id = $1`,
@@ -1035,6 +1036,7 @@ async function buildCoordinatorBatches(coordinatorId, { archivedOnly = false } =
          tb.supervisor_id,
          tb.teacher_id,
          tb.archived_at,
+         dr.id AS partner_request_id,
           t.first_name,
           t.last_name,
           t.employee_id,
@@ -1052,8 +1054,11 @@ async function buildCoordinatorBatches(coordinatorId, { archivedOnly = false } =
          st.track_strand AS student_strand
         FROM teacher_batches tb
         JOIN teachers t ON t.id = tb.teacher_id
+        LEFT JOIN deployment_requests dr ON (to_jsonb(dr)->>'teacher_batch_id')::int = tb.id
+          AND to_jsonb(dr)->>'workflow_version' = '2'
         LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
         LEFT JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
+          AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
         LEFT JOIN students st ON st.id = tbs.student_id
         LEFT JOIN users su ON su.id = st.user_id
         WHERE tb.coordinator_id = $1
@@ -1087,6 +1092,7 @@ async function buildCoordinatorBatches(coordinatorId, { archivedOnly = false } =
         teacher_user_id: r.teacher_user_id,
         students: [],
         archived_at: r.archived_at,
+        partner_request_id: r.partner_request_id,
         created_at: r.created_at,
         updated_at: r.updated_at,
       });

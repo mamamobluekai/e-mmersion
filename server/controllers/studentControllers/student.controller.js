@@ -1,206 +1,8 @@
 const pool = require('../../db/');
-const cloudinary = require('../../db/cloudinary');
-const { normalize, validateStudentPayload } = require('../coordinatorControllers/regexes/validation');
 const {
   getOrCreateStudent,
   getOrCreateSubmission,
-  serializeRequirements,
-  ensureRevisionDocumentColumn,
-  ensureDefaultGradeLevel,
-  getActiveDocumentTypes,
-  buildRequirementStatuses,
-  describeOutstanding,
 } = require('../coordinatorControllers/regexes/requirementsHelpers');
-const streamifier = require('streamifier');
-const { buildImmersionDateList, loadExcludedDates } = require('../../utils/immersionDays');
-
-const updateMyRequirements = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const errors = validateStudentPayload(req.body, true);
-    if (Object.keys(errors).length) return res.status(400).json({ error: 'Please review highlighted fields.', errors });
-
-    await client.query('BEGIN');
-    const student = await getOrCreateStudent(client, req.user.id, req.body);
-    await getOrCreateSubmission(client, student, req.user.id);
-
-    const fields = [
-      'student_number','first_name','middle_name','last_name','suffix','gender','birthdate','age',
-      'contact_number','email','home_address','grade_level','section','track_strand','school',
-      'preferred_industry','preferred_company','career_goal','industry_reason','guardian_name',
-      'guardian_relationship','guardian_contact','guardian_email','guardian_address',
-      'emergency_contact','emergency_contact_number','academic_notes',
-    ];
-    const updates = fields.filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
-    if (updates.length) {
-      const setSql = updates.map((field, index) => `${field} = $${index + 1}`).join(', ');
-      await client.query(
-        `UPDATE students SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = $${updates.length + 1}`,
-        [...updates.map((field) => normalize(req.body[field]) || null), student.id]
-      );
-    }
-
-    // Grade Level is fixed at Grade 12, so it is filled in here rather than
-    // asked for in the form.
-    await ensureDefaultGradeLevel(client, student.id);
-
-    const data = await serializeRequirements(client, student.id);
-    await client.query('COMMIT');
-    res.json({ message: 'Requirements saved automatically.', ...data });
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
-    console.error('updateMyRequirements error:', err);
-    res.status(500).json({ error: err.message || 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
-const submitMyRequirements = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    await ensureRevisionDocumentColumn();
-    await client.query('BEGIN');
-    const student = await getOrCreateStudent(client, req.user.id, req.body);
-    const submission = await getOrCreateSubmission(client, student, req.user.id);
-    const data = await serializeRequirements(client, student.id);
-
-    if (data.progress < 100) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: describeOutstanding(data.requirementStatuses),
-        missingDocuments: data.missingDocuments,
-      });
-    }
-
-    await client.query(
-      `UPDATE student_requirement_submissions
-       SET status = 'Pending', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP),
-           revision_document_ids = NULL, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1`,
-      [submission.id]
-    );
-    await client.query(
-      `INSERT INTO submission_logs (submission_id, actor_id, action, remarks) VALUES ($1,$2,'Submitted','Requirements submitted successfully.')`,
-      [submission.id, req.user.id]
-    );
-    await client.query('COMMIT');
-    res.json({ message: 'Requirements submitted successfully.', status: 'Pending' });
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
-    console.error('submitMyRequirements error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
-const getMyRequirements = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const student = await getOrCreateStudent(client, req.user.id, {});
-    await getOrCreateSubmission(client, student, req.user.id);
-    res.json(await serializeRequirements(client, student.id));
-  } catch (err) {
-    console.error('getMyRequirements error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
-const uploadMyDocument = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { document_code } = req.body;
-    if (!req.file) return res.status(400).json({ error: 'Please choose a file to upload.' });
-    if (!document_code) return res.status(400).json({ error: 'Document type is required.' });
-
-    await client.query('BEGIN');
-    const student = await getOrCreateStudent(client, req.user.id, {});
-    const submission = await getOrCreateSubmission(client, student, req.user.id);
-    const type = await client.query('SELECT * FROM document_types WHERE code = $1', [document_code]);
-    if (!type.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Invalid document type.' });
-    }
-
-    await client.query(
-      `DELETE FROM student_documents WHERE student_id = $1 AND document_type_id = $2`,
-      [student.id, type.rows[0].id]
-    );
-
-    const resourceType = req.file.mimetype.startsWith('image/') ? 'image' : 'raw';
-    const result = await uploadToCloudinary(req.file.buffer, resourceType);
-
-    // The document is returned with its requirement code and section, the same
-    // shape the requirements payload uses. Without the code the page cannot match
-    // the new row to its requirement, so the row keeps reading "Not uploaded"
-    // until the next full load.
-    const inserted = await client.query(
-      `WITH ins AS (
-         INSERT INTO student_documents
-         (submission_id, student_id, document_type_id, document_name, file_path, original_name, mime_type, file_size, cloudinary_public_id, cloudinary_url, resource_type, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Uploaded')
-         RETURNING *
-       )
-       SELECT ins.*, dt.code, dt.section
-         FROM ins
-         JOIN document_types dt ON dt.id = ins.document_type_id`,
-      [
-        submission.id,
-        student.id,
-        type.rows[0].id,
-        type.rows[0].name,
-        result.secure_url,
-        req.file.originalname,
-        req.file.mimetype,
-        req.file.size,
-        result.public_id,
-        result.secure_url,
-        resourceType,
-      ]
-    );
-    await client.query(
-      `INSERT INTO submission_logs (submission_id, actor_id, action, remarks) VALUES ($1,$2,'Uploaded document',$3)`,
-      [submission.id, req.user.id, type.rows[0].name]
-    );
-    // The whole progress payload, not just the percentage: the page keeps the
-    // per-requirement statuses and the completed/total counters in step with
-    // the upload without a reload.
-    const progressState = await require('../coordinatorControllers/regexes/requirementsHelpers').calculateProgress(client, student.id);
-    await client.query('COMMIT');
-    res.status(201).json({ message: 'File uploaded successfully.', document: inserted.rows[0], ...progressState });
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
-    console.error('uploadMyDocument error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
-const deleteMyDocument = async (req, res) => {
-  try {
-    const result = await pool.query(
-      `DELETE FROM student_documents sd
-       USING students s
-       WHERE sd.id = $1 AND sd.student_id = s.id AND s.user_id = $2
-       RETURNING sd.student_id`,
-      [req.params.id, req.user.id]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'Document not found or not authorized.' });
-    // Recompute so the page's requirement counters drop with the file.
-    const progressState = await require('../coordinatorControllers/regexes/requirementsHelpers').calculateProgress(
-      pool,
-      result.rows[0].student_id
-    );
-    res.json({ message: 'Document deleted.', ...progressState });
-  } catch (err) {
-    console.error('deleteMyDocument error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  }
-};
 
 const getMySubmissionStatus = async (req, res) => {
   try {
@@ -218,176 +20,40 @@ const getMySubmissionStatus = async (req, res) => {
   }
 };
 
-function uploadToCloudinary(buffer, resourceType) {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      { resource_type: resourceType, folder: 'student_documents' },
-      (err, result) => err ? reject(err) : resolve(result)
-    );
-    streamifier.createReadStream(buffer).pipe(stream);
-  });
-}
-
-// GET /api/student/progress
-// Aggregates immersion completion across requirements, documentation, and
-// attendance so the student dashboard can render a single progress view.
-//
-// The documentation and attendance figures are sourced from the SAME tables
-// the student sees on their Daily Documentation and Attendance pages:
-//   - student_attendance  (dates with at least a Time In = "present")
-//   - student_daily_documentation  (dates with submitted / graded docs)
-// instead of the unrelated student_documents (requirements uploads) table.
-const REQUIRED_ATTENDANCE_DAYS = 10;
-
-// Parse a DATE column (now a 'YYYY-MM-DD' string after the pg setTypeParser(1082)
-// fix) into a local-timezone Date for weekday expansion, matching the logic in
-// immersionSchedule.controller.js getMySchedule so scheduled-day counts stay in
-// sync with what the Daily Documentation page renders.
-// Scheduled days are now produced by the shared builder in
-// server/utils/immersionDays.js, the same one the teacher and supervisor views
-// use, so all three agree on the count.
-
+// Preserve the legacy response shape for clients that still use /progress.
 const getProgress = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const student = await getOrCreateStudent(client, req.user.id, {});
-    const studentId = student.id;
-
-    // Requirements approval
-    const submission = await getOrCreateSubmission(client, student, req.user.id);
-    const requirementsApproved = submission.status === 'Approved';
-
-    // Requirements checklist is driven by the coordinator's ACTIVE requirement
-    // list only, so deactivating one immediately updates the student total.
-    // Form requirements (Personal Information, Guardian & Emergency) count as
-    // done once their fields are filled in; file requirements once uploaded.
-    const activeTypes = await getActiveDocumentTypes(client);
-    const studentRow = await client.query('SELECT * FROM students WHERE id = $1', [studentId]);
-    const uploadRows = await client.query(
-      `SELECT DISTINCT document_type_id FROM student_documents WHERE student_id = $1`,
-      [studentId]
-    );
-    const requirementStatuses = buildRequirementStatuses(
-      activeTypes,
-      studentRow.rows[0] || {},
-      new Set(uploadRows.rows.map((row) => row.document_type_id))
-    );
-    const requiredRequirementCount = requirementStatuses.length;
-    const uploadedRequirementCount = requirementStatuses.filter((status) => status.completed).length;
-
-    // --- Scheduled days: expand work_immersion_schedules through the shared
-    // builder, so weekends, Philippine holidays and supervisor-blocked dates
-    // are excluded exactly as the teacher and supervisor views exclude them. ---
-    const scheduleResult = await client.query(
-      `SELECT wis.teacher_batch_id, wis.supervisor_id,
-              wis.start_date, wis.duration_type, wis.duration_value
-       FROM work_immersion_schedules wis
-       JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = wis.teacher_batch_id
-       WHERE tbs.student_id = $1`,
-      [studentId]
-    );
-
-    const scheduledDates = new Set();
-    for (const row of scheduleResult.rows) {
-      const { blocked } = await loadExcludedDates(row.teacher_batch_id, row.supervisor_id ?? null);
-      for (const iso of buildImmersionDateList(row.start_date, row.duration_type, row.duration_value, {
-        blockedDates: blocked,
-      })) {
-        scheduledDates.add(iso);
-      }
-    }
-    const scheduledDays = scheduledDates.size;
-
-    // --- Attendance: days where the student was present (at least Time In
-    // recorded), sourced from the same student_attendance table the Attendance
-    // page reads. ---
-    const attRecords = await client.query(
-      `SELECT DISTINCT date FROM student_attendance
-       WHERE student_id = $1 AND check_in_time IS NOT NULL`,
-      [studentId]
-    );
-    const attendedDates = new Set(
-      attRecords.rows
-        .map((r) => String(r.date).slice(0, 10))
-        .filter((d) => scheduledDates.size === 0 || scheduledDates.has(d))
-    );
-    const attendanceDays = attendedDates.size;
-    const requiredDays = scheduledDays > 0 ? scheduledDays : REQUIRED_ATTENDANCE_DAYS;
-    const attendanceComplete = attendanceDays >= requiredDays;
-
-    // --- Daily Documentation: sourced from student_daily_documentation (the same
-    // table the Daily Documentation page reads), not student_documents. ---
-    const docRecords = await client.query(
-      `SELECT DISTINCT date, status FROM student_daily_documentation
-       WHERE student_id = $1`,
-      [studentId]
-    );
-    const submittedDates = new Set();
-    const gradedDates = new Set();
-    docRecords.rows.forEach((r) => {
-      const d = String(r.date).slice(0, 10);
-      if (scheduledDates.size > 0 && !scheduledDates.has(d)) return;
-      if (r.status === 'submitted' || r.status === 'reviewed' || r.status === 'graded') {
-        submittedDates.add(d);
-      }
-      if (r.status === 'reviewed' || r.status === 'graded') {
-        gradedDates.add(d);
-      }
-    });
-    const documentedDays = submittedDates.size;
-    const gradedDays = gradedDates.size;
-    // "graded" = every scheduled immersion day has a graded documentation entry
-    // (not merely all submitted docs are graded). This ensures the Progress page
-    // only marks documentation as "Completed" when the full 10/10 (or all scheduled
-    // days) have been graded by the teacher; otherwise it stays "In Progress".
-    const documentationGraded = scheduledDays > 0 && gradedDays >= scheduledDays;
-
-    const completed =
-      requirementsApproved && documentationGraded && attendanceComplete;
-
-    const certificateResult = await client.query(
-      `SELECT id, certificate_number, full_name, completion_date, cloudinary_url, created_at
-       FROM certificates
-       WHERE student_id = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [studentId]
-    );
-    const certificate = certificateResult.rows[0] || null;
-
-    res.json({
-      requirements: {
-        approved: requirementsApproved,
-        status: submission.status,
-        required: requiredRequirementCount,
-        uploaded: uploadedRequirementCount,
-      },
-      documentation: {
-        graded: documentationGraded,
-        total: scheduledDays,
-        submitted: documentedDays,
-        verified: gradedDays,
-      },
-      attendance: {
-        complete: attendanceComplete,
-        days: attendanceDays,
-        scheduled: scheduledDays,
-        required: requiredDays,
-      },
-      completed,
-      certificate: certificate
-        ? {
-            issued: true,
-            ...certificate,
-          }
-        : { issued: false },
-    });
-  } catch (err) {
-    console.error('getProgress error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
+  const journey = res.locals.studentJourney;
+  const [certificate] = journey.certificate.issued
+    ? (await pool.query(
+        `SELECT c.id, c.certificate_number, c.full_name, c.completion_date, c.cloudinary_url, c.created_at
+         FROM certificates c JOIN students s ON s.id = c.student_id
+         WHERE s.user_id = $1 AND NULLIF(c.cloudinary_url, '') IS NOT NULL
+         ORDER BY c.created_at DESC, c.id DESC LIMIT 1`,
+        [req.user.id]
+      )).rows
+    : [];
+  res.json({
+    requirements: {
+      approved: journey.requirements.complete,
+      status: journey.requirements.status,
+      required: journey.requirements.total,
+      uploaded: journey.requirements.approved,
+    },
+    documentation: {
+      graded: journey.documentation.completed === journey.documentation.total,
+      total: journey.documentation.total,
+      submitted: journey.days.filter((day) => ['Submitted', 'Completed'].includes(day.documentation.status)).length,
+      verified: journey.documentation.completed,
+    },
+    attendance: {
+      complete: journey.attendance.completed === journey.attendance.total,
+      days: journey.attendance.completed,
+      scheduled: journey.attendance.total,
+      required: journey.attendance.total,
+    },
+    completed: true,
+    certificate: certificate ? { issued: true, ...certificate } : { issued: false },
+  });
 };
 
 // GET /api/student/placement/me
@@ -418,19 +84,25 @@ const getMyPlacementInfo = async (req, res) => {
               tu.email AS teacher_email,
               sv.first_name AS supervisor_first_name,
               sv.last_name AS supervisor_last_name,
+              COALESCE(pi.name, sv.company_name) AS company_name,
+              COALESCE(to_jsonb(dr)->'proposal'->>'worksite', pi.address, sv.company_address) AS company_address,
               su.email AS supervisor_email,
               c.first_name AS coordinator_first_name,
               c.last_name AS coordinator_last_name,
               cu.email AS coordinator_email
        FROM teacher_batch_students tbs
        JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
+       LEFT JOIN partner_institutions pi ON pi.id = (to_jsonb(tb)->>'partner_institution_id')::int
+       LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND to_jsonb(dr)->>'workflow_version' = '2'
        LEFT JOIN teachers t ON t.id = tb.teacher_id
        LEFT JOIN users tu ON tu.id = t.user_id
        LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
        LEFT JOIN users su ON su.id = tb.supervisor_id
        LEFT JOIN coordinators c ON c.id = tb.coordinator_id
        LEFT JOIN users cu ON cu.id = c.user_id
-       WHERE tbs.student_id = $1
+       WHERE tbs.student_id = $1 AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
+         (now() AT TIME ZONE 'Asia/Manila')::date < (to_jsonb(tbs)->>'deployment_ended_on')::date)
+         AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
        ORDER BY tbs.assigned_at DESC NULLS LAST, tb.created_at DESC
        LIMIT 1`,
       [studentId]
@@ -453,7 +125,7 @@ const getMyPlacementInfo = async (req, res) => {
        FROM teacher_batch_students tbs
        JOIN students s ON s.id = tbs.student_id
        LEFT JOIN users u ON u.id = s.user_id
-       WHERE tbs.teacher_batch_id = $1
+       WHERE tbs.teacher_batch_id = $1 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
        ORDER BY s.last_name ASC, s.first_name ASC`,
       [batch.batch_id]
     );
@@ -467,6 +139,8 @@ const getMyPlacementInfo = async (req, res) => {
       placement: {
         batch_id: batch.batch_id,
         batch_label: batch.batch_label,
+        company_name: batch.company_name,
+        company_address: batch.company_address,
         max_students: batch.max_students,
         created_at: batch.created_at,
         teacher: batch.teacher_first_name || batch.teacher_last_name
@@ -502,11 +176,6 @@ const getMyPlacementInfo = async (req, res) => {
 };
 
 module.exports = {
-  updateMyRequirements,
-  submitMyRequirements,
-  getMyRequirements,
-  uploadMyDocument,
-  deleteMyDocument,
   getMySubmissionStatus,
   getProgress,
   getMyPlacementInfo,

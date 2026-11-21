@@ -45,13 +45,15 @@ export async function acceptTermsAgreement() {
   });
 }
 
-export async function setStudentActivationPassword(password, confirmPassword) {
+export async function setActivationPassword(password, confirmPassword) {
   return apiFetch('/activation/set-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password, confirmPassword }),
   });
 }
+
+export const setStudentActivationPassword = setActivationPassword;
 
 export async function updateUserProfile(profile) {
   return apiFetch('/profile', {

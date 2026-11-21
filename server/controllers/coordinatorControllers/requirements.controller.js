@@ -18,14 +18,18 @@ const {
 } = require('./regexes/requirementsHelpers');
 const { ensureDocumentTypesSchema } = require('./regexes/documentTypeSchema');
 const { formFieldsFor } = require('./regexes/formRequirements');
+const { isStudentRequirementImage } = require('./requirementsFilePolicy');
+const mailer = require('../../utils/mailer');
 const {
+  editableRequirementsPayload,
+  isMissingRequirementFile,
+  canStudentUploadRequirementFile,
   studentSubmissionBlockMessage,
   reviewStatusTransitionError,
 } = require('./requirementsSubmissionPolicy');
 const streamifier = require('streamifier');
 
-const getStudentSubmissionBlockMessage = async (client, role, submissionId) => {
-  if (role !== 'student') return null;
+const lockSubmissionStatus = async (client, submissionId) => {
   const result = await client.query(
     'SELECT status FROM student_requirement_submissions WHERE id = $1 FOR UPDATE',
     [submissionId]
@@ -33,7 +37,12 @@ const getStudentSubmissionBlockMessage = async (client, role, submissionId) => {
   if (!result.rows.length) {
     throw new Error('Student requirement submission was not found after creation.');
   }
-  return studentSubmissionBlockMessage(result.rows[0].status);
+  return result.rows[0].status;
+};
+
+const getStudentSubmissionBlockMessage = async (client, role, submissionId) => {
+  if (role !== 'student') return null;
+  return studentSubmissionBlockMessage(await lockSubmissionStatus(client, submissionId));
 };
 
 const recordRequirementStatus = async (client, {
@@ -95,15 +104,101 @@ const refreshSubmissionReviewStatus = async (client, submissionId) => {
   );
 };
 
+const sendStudentRequirementsEmail = async ({
+  student,
+  subject,
+  title,
+  message,
+  feedback = '',
+}) => {
+  const to = String(student?.notification_email || student?.email || '').trim();
+  const studentLabel = student?.student_number || student?.id || 'unknown student';
+  if (!to) {
+    const reason = 'Student email address is unavailable.';
+    console.error(`Requirements review email not sent for ${studentLabel}: ${reason}`);
+    return { sent: false, reason };
+  }
+
+  const name = [student?.first_name, student?.last_name].filter(Boolean).join(' ') || 'Student';
+  const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  const requirementsUrl = `${clientUrl}/dashboard/student/requirements`;
+  const cleanFeedback = String(feedback || '').trim();
+  const escapedName = mailer.escapeHtml(name);
+  const escapedTitle = mailer.escapeHtml(title);
+  const escapedMessage = mailer.escapeHtml(message);
+  const escapedFeedback = mailer.escapeHtml(cleanFeedback);
+  const escapedUrl = mailer.escapeHtml(requirementsUrl);
+  const feedbackHtml = cleanFeedback
+    ? `<p style="white-space:pre-wrap;"><strong>Coordinator feedback:</strong> ${escapedFeedback}</p>`
+    : '';
+  const feedbackText = cleanFeedback ? `\n\nCoordinator feedback:\n${cleanFeedback}` : '';
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#26313f;line-height:1.6;">
+      <h2 style="color:#8b1e2d;">${escapedTitle}</h2>
+      <p>Hello ${escapedName},</p>
+      <p>${escapedMessage}</p>
+      ${feedbackHtml}
+      <p><a href="${escapedUrl}" style="color:#8b1e2d;font-weight:bold;">Open your requirements</a></p>
+      <p style="color:#667085;font-size:12px;">Marinduque National High School - Work Immersion Office</p>
+    </div>
+  `;
+  const text = `Hello ${name},\n\n${message}${feedbackText}\n\nOpen your requirements: ${requirementsUrl}\n\nMarinduque National High School - Work Immersion Office`;
+
+  try {
+    const result = await mailer.sendMail({ to, subject, html, text });
+    if (!result.sent) {
+      console.error(`Requirements review email to ${to} failed: ${result.reason}`);
+    }
+    return result;
+  } catch (err) {
+    const reason = err.message || 'Unexpected email provider error.';
+    console.error(`Requirements review email to ${to} failed: ${reason}`);
+    return { sent: false, reason };
+  }
+};
+
+const sendRequirementDecisionEmail = (student, requirementName, status, feedback) => {
+  const name = requirementName || 'Your requirement';
+  const needsRevision = status === 'NEEDS REVISION';
+  return sendStudentRequirementsEmail({
+    student,
+    subject: needsRevision
+      ? 'Action Required: Requirement Needs Revision'
+      : 'Requirement Approved',
+    title: needsRevision ? 'Requirement Needs Revision' : 'Requirement Approved',
+    message: needsRevision
+      ? `Your requirement "${name}" was reviewed and needs revision. Please sign in to review the coordinator feedback and submit a corrected version.`
+      : `Your requirement "${name}" has been approved by your coordinator.`,
+    feedback,
+  });
+};
+
+const sendSubmissionApprovalEmail = (student, feedback) =>
+  sendStudentRequirementsEmail({
+    student,
+    subject: 'Congratulations! Your Work Immersion Requirements Are Approved',
+    title: 'Congratulations! Your Requirements Are Approved',
+    message: 'Your complete Work Immersion requirements submission has been approved by your coordinator.',
+    feedback,
+  });
+
+const summarizeEmailNotification = (result) => ({
+  sent: result.sent,
+  message: result.sent
+    ? 'Student notification email sent.'
+    : 'Review was saved, but the student notification email could not be sent. Check the server mail logs.',
+});
+
 const upsertRequirements = async (req, res) => {
   const client = await pool.connect();
   try {
-    const errors = validateStudentPayload(req.body, req.method === 'PUT');
+    const payload = editableRequirementsPayload(req.user.role, req.body || {});
+    const errors = validateStudentPayload(payload, req.method === 'PUT');
     if (Object.keys(errors).length) return res.status(400).json({ error: 'Please review highlighted fields.', errors });
 
     await client.query('BEGIN');
-    const userId = req.user.role === 'student' ? req.user.id : req.body.user_id;
-    const student = await getOrCreateStudent(client, userId, req.body);
+    const userId = req.user.role === 'student' ? req.user.id : payload.user_id;
+    const student = await getOrCreateStudent(client, userId, payload);
     const submission = await getOrCreateSubmission(client, student, userId);
     const blockMessage = await getStudentSubmissionBlockMessage(client, req.user.role, submission.id);
     if (blockMessage) {
@@ -114,14 +209,15 @@ const upsertRequirements = async (req, res) => {
 
     const fields = [
       'student_number','first_name','middle_name','last_name','suffix','gender','birthdate','age',
+      'has_special_needs',
       'contact_number','email','home_address','grade_level','section','track_strand','school',
       'preferred_industry','preferred_company','career_goal','industry_reason','guardian_name',
       'guardian_relationship','guardian_contact','guardian_email','guardian_address',
       'emergency_contact','emergency_contact_number','academic_notes',
     ];
     const updates = fields.filter((field) => (
-      Object.prototype.hasOwnProperty.call(req.body, field) &&
-      String(normalize(req.body[field]) || '') !== String(normalize(student[field]) || '')
+      Object.prototype.hasOwnProperty.call(payload, field) &&
+      String(normalize(payload[field]) || '') !== String(normalize(student[field]) || '')
     ));
     let changedFormCodes = [];
     if (req.user.role === 'student' && submission.submitted_at && updates.length) {
@@ -163,7 +259,9 @@ const upsertRequirements = async (req, res) => {
       const setSql = updates.map((field, index) => `${field} = $${index + 1}`).join(', ');
       await client.query(
         `UPDATE students SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = $${updates.length + 1}`,
-        [...updates.map((field) => normalize(req.body[field]) || null), student.id]
+        [...updates.map((field) => (
+          typeof payload[field] === 'boolean' ? payload[field] : normalize(payload[field]) || null
+        )), student.id]
       );
 
       if (changedFormCodes.length) {
@@ -181,7 +279,10 @@ const upsertRequirements = async (req, res) => {
           [changedFormCodes]
         );
         const updatedStudent = { ...student, ...Object.fromEntries(
-          updates.map((field) => [field, normalize(req.body[field]) || null])
+          updates.map((field) => [
+            field,
+            typeof payload[field] === 'boolean' ? payload[field] : normalize(payload[field]) || null,
+          ])
         ) };
         for (const type of formTypes.rows) {
           const details = Object.fromEntries(
@@ -221,7 +322,8 @@ const submitRequirements = async (req, res) => {
   try {
     await ensureRevisionDocumentColumn();
     await client.query('BEGIN');
-    const student = await getOrCreateStudent(client, req.user.id, req.body);
+    const payload = editableRequirementsPayload(req.user.role, req.body || {});
+    const student = await getOrCreateStudent(client, req.user.id, payload);
     const submission = await getOrCreateSubmission(client, student, req.user.id);
     const blockMessage = await getStudentSubmissionBlockMessage(client, req.user.role, submission.id);
     if (blockMessage) {
@@ -337,15 +439,15 @@ const uploadDocument = async (req, res) => {
     const { document_code } = req.body;
     if (!req.file) return res.status(400).json({ error: 'Please choose a file to upload.' });
     if (!document_code) return res.status(400).json({ error: 'Document type is required.' });
+    if (req.user.role === 'student' && !isStudentRequirementImage(req.file)) {
+      return res.status(400).json({ error: 'Only PNG and JPG image files can be uploaded.' });
+    }
 
     await client.query('BEGIN');
     const student = await getOrCreateStudent(client, req.user.id, {});
     const submission = await getOrCreateSubmission(client, student, req.user.id);
-    const blockMessage = await getStudentSubmissionBlockMessage(client, req.user.role, submission.id);
-    if (blockMessage) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: blockMessage });
-    }
+    const isStudent = req.user.role === 'student';
+    const submissionStatus = isStudent ? await lockSubmissionStatus(client, submission.id) : submission.status;
     await ensureDocumentTypesSchema();
     await ensureRequirementReviewSchema();
 
@@ -373,23 +475,27 @@ const uploadDocument = async (req, res) => {
     const existingDocument = await client.query(
       `SELECT id
          FROM student_documents
-        WHERE submission_id = $1 AND document_type_id = $2
+        WHERE student_id = $1 AND document_type_id = $2
         ORDER BY uploaded_date DESC, id DESC
         LIMIT 1
         FOR UPDATE`,
-      [submission.id, type.rows[0].id]
+      [student.id, type.rows[0].id]
     );
     const previousStatus = currentState.rows[0]?.status || null;
     const isResubmission = previousStatus === 'NEEDS REVISION';
-    if (
-      (previousStatus && !isResubmission) ||
-      (!previousStatus && (existingDocument.rows.length > 0 || submission.submitted_at))
-    ) {
+    const hasDocument = existingDocument.rows.length > 0;
+    const canUpload = isStudent
+      ? canStudentUploadRequirementFile(submissionStatus, previousStatus, hasDocument)
+      : isResubmission || (!previousStatus && !hasDocument && !submission.submitted_at);
+    if (!canUpload) {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        error: 'Only a requirement marked Needs Revision can be replaced.',
+        error: (isStudent && studentSubmissionBlockMessage(submissionStatus)) ||
+          'Only a requirement marked Needs Revision can be replaced.',
       });
     }
+    const reopened = isStudent && String(submissionStatus).trim().toLowerCase() === 'approved' &&
+      isMissingRequirementFile(previousStatus, hasDocument);
     const requirementStatus = isResubmission
       ? 'RESUBMITTED - AWAITING REVIEW'
       : 'PENDING';
@@ -431,7 +537,15 @@ const uploadDocument = async (req, res) => {
       cloudinaryUrl: result.secure_url,
       actorId: req.user.id,
     });
-    if (isResubmission) {
+    if (reopened) {
+      await client.query(
+        `UPDATE student_requirement_submissions
+            SET status = 'Pending', submitted_at = COALESCE(submitted_at, CURRENT_TIMESTAMP),
+                reviewed_at = NULL, reviewed_by = NULL, coordinator_feedback = NULL
+          WHERE id = $1`,
+        [submission.id]
+      );
+    } else if (isResubmission) {
       await refreshSubmissionReviewStatus(client, submission.id);
     }
     await client.query(
@@ -441,9 +555,11 @@ const uploadDocument = async (req, res) => {
     const data = await serializeRequirements(client, student.id);
     await client.query('COMMIT');
     res.status(201).json({
-      message: isResubmission
-        ? 'Corrected requirement uploaded and resubmitted for review.'
-        : 'File uploaded successfully.',
+      message: reopened
+        ? 'Missing requirement uploaded. Your coordinator can now review it.'
+        : isResubmission
+          ? 'Corrected requirement uploaded and resubmitted for review.'
+          : 'File uploaded successfully.',
       document: inserted.rows[0],
       ...data,
     });
@@ -692,6 +808,7 @@ async function findUnapprovedRequirements(client, submissionId) {
 
 const reviewSubmission = async (req, res) => {
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     const { status, remarks } = req.body;
     const allowed = ['Pending', 'Approved', 'Hold'];
@@ -700,7 +817,13 @@ const reviewSubmission = async (req, res) => {
     await ensureRevisionDocumentColumn();
 
     const currentRow = await client.query(
-      'SELECT status FROM student_requirement_submissions WHERE id = $1',
+      `SELECT srs.status, srs.student_id, st.first_name, st.last_name,
+              st.student_number,
+              COALESCE(NULLIF(BTRIM(u.email), ''), NULLIF(BTRIM(st.email), '')) AS notification_email
+         FROM student_requirement_submissions srs
+         LEFT JOIN students st ON st.id = srs.student_id
+         LEFT JOIN users u ON u.id = st.user_id
+        WHERE srs.id = $1`,
       [req.params.id]
     );
     if (!currentRow.rows.length) {
@@ -763,13 +886,25 @@ const reviewSubmission = async (req, res) => {
       ]
     );
     await client.query('COMMIT');
-    res.json({ message: 'Submission updated.', submission: result.rows[0] });
+    client.release();
+    clientReleased = true;
+    const emailNotification =
+      status === 'Approved' && currentRow.rows[0].status !== 'Approved'
+        ? await sendSubmissionApprovalEmail(currentRow.rows[0], remarks)
+        : null;
+    res.json({
+      message: 'Submission updated.',
+      submission: result.rows[0],
+      ...(emailNotification
+        ? { emailNotification: summarizeEmailNotification(emailNotification) }
+        : {}),
+    });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('reviewSubmission error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 };
 
@@ -782,6 +917,7 @@ const bulkReviewSubmissions = async (req, res) => {
   }
 
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     // Approved submissions can only stay approved or be put on hold.
     if (!['Approved', 'Hold'].includes(status)) {
@@ -861,14 +997,29 @@ const bulkReviewSubmissions = async (req, res) => {
     }
 
     await client.query('BEGIN');
+    const previousApprovalStates = status === 'Approved'
+      ? await client.query(
+        `SELECT id, status
+           FROM student_requirement_submissions
+          WHERE id = ANY($1)
+          FOR UPDATE`,
+        [submission_ids]
+      )
+      : { rows: [] };
+    const previouslyApprovedIds = new Set(
+      previousApprovalStates.rows
+        .filter((row) => row.status === 'Approved')
+        .map((row) => row.id)
+    );
     const result = await client.query(
       `UPDATE student_requirement_submissions
        SET status = $1, coordinator_feedback = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
        WHERE id = ANY($4) RETURNING id`,
       [status, remarks || null, req.user.id, submission_ids],
     );
+    const updatedIds = result.rows.map((row) => row.id);
+    let approvalRecipients = [];
     if (result.rows.length) {
-      const updatedIds = result.rows.map((row) => row.id);
       const heldIdSet = new Set(heldRows.rows.map((row) => row.id));
       const unheldIds = status === 'Pending'
         ? updatedIds.filter((id) => heldIdSet.has(id))
@@ -893,18 +1044,56 @@ const bulkReviewSubmissions = async (req, res) => {
           ],
         );
       }
+
+      const newlyApprovedIds = status === 'Approved'
+        ? updatedIds.filter((id) => !previouslyApprovedIds.has(id))
+        : [];
+      if (newlyApprovedIds.length) {
+        const recipients = await client.query(
+          `SELECT st.first_name, st.last_name, st.student_number,
+                  COALESCE(NULLIF(BTRIM(u.email), ''), NULLIF(BTRIM(st.email), '')) AS notification_email
+             FROM student_requirement_submissions srs
+             LEFT JOIN students st ON st.id = srs.student_id
+             LEFT JOIN users u ON u.id = st.user_id
+            WHERE srs.id = ANY($1)`,
+          [newlyApprovedIds]
+        );
+        approvalRecipients = recipients.rows;
+      }
     }
     await client.query('COMMIT');
+    client.release();
+    clientReleased = true;
+
+    let emailNotification = null;
+    if (approvalRecipients.length) {
+      let sentCount = 0;
+      for (const student of approvalRecipients) {
+        const result = await sendSubmissionApprovalEmail(student, remarks);
+        if (result.sent) sentCount += 1;
+      }
+      const failedCount = approvalRecipients.length - sentCount;
+      emailNotification = {
+        sent: failedCount === 0,
+        sentCount,
+        failedCount,
+        message: failedCount
+          ? `${failedCount} student notification email(s) could not be sent. Check the server mail logs.`
+          : `Approval email sent to ${sentCount} student(s).`,
+      };
+    }
+
     res.json({
       message: `${result.rows.length} submission(s) updated.`,
       updated: result.rows.length,
+      ...(emailNotification ? { emailNotification } : {}),
     });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('bulkReviewSubmissions error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 };
 
@@ -921,6 +1110,7 @@ const reviewRequirement = async (req, res) => {
   }
 
   const client = await pool.connect();
+  let clientReleased = false;
   try {
     await ensureDocumentTypesSchema();
     await ensureRequirementReviewSchema();
@@ -975,7 +1165,11 @@ const reviewRequirement = async (req, res) => {
     }
 
     const studentResult = await client.query(
-      'SELECT * FROM students WHERE id = $1',
+      `SELECT st.*,
+              COALESCE(NULLIF(BTRIM(u.email), ''), NULLIF(BTRIM(st.email), '')) AS notification_email
+         FROM students st
+         LEFT JOIN users u ON u.id = st.user_id
+        WHERE st.id = $1`,
       [submission.rows[0].student_id]
     );
     if (!studentResult.rows.length) {
@@ -1050,9 +1244,18 @@ const reviewRequirement = async (req, res) => {
     );
     const data = await serializeRequirements(client, submission.rows[0].student_id);
     await client.query('COMMIT');
+    client.release();
+    clientReleased = true;
+    const emailNotification = await sendRequirementDecisionEmail(
+      studentResult.rows[0],
+      requirement.name,
+      status,
+      feedback
+    );
     res.json({
       message: status === 'APPROVED' ? 'Requirement approved.' : 'Requirement marked Needs Revision.',
       ...data,
+      emailNotification: summarizeEmailNotification(emailNotification),
     });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (rollbackErr) {
@@ -1061,7 +1264,7 @@ const reviewRequirement = async (req, res) => {
     console.error('reviewRequirement error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    client.release();
+    if (!clientReleased) client.release();
   }
 };
 

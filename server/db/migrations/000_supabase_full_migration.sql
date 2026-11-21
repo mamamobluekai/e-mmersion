@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS students (
   last_name VARCHAR(100) NOT NULL,
   suffix VARCHAR(20),
   gender VARCHAR(20),
+  has_special_needs BOOLEAN NOT NULL DEFAULT FALSE,
   birthdate DATE,
   age INTEGER,
   contact_number VARCHAR(50),
@@ -1363,6 +1364,232 @@ WHERE supervisor_id IS NULL
     WHERE supervisor_id IS NULL
     GROUP BY teacher_batch_id
   );
+
+-- ===========================================================================
+-- Partner deployment workflow and its prerequisites (029, 031, 032, 040?042, 044).
+-- ===========================================================================
+BEGIN;
+-- Migration 029: Terms and Agreement acceptance.
+--
+-- Every account must accept the Work Immersion Monitoring System Terms and
+-- Agreement once. The flag lives on the users row so acceptance is per-user and
+-- permanent: once set it is never shown again, and it survives re-login on any
+-- device.
+--
+-- Existing accounts default to false, so the very next sign-in from each of them
+-- is asked to read and accept the terms before reaching their dashboard.
+--
+-- Run with: node scripts/runMigration.js db/migrations/029_terms_agreement.sql
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS terms_accepted BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMP;
+
+COMMENT ON COLUMN users.terms_accepted IS
+  'True once the user has read and accepted the Terms and Agreement. Until then the app shows the agreement after login and blocks the dashboard.';
+COMMENT ON COLUMN users.terms_accepted_at IS
+  'Timestamp of when the user accepted the Terms and Agreement.';
+
+-- Migration: Add archived_at soft-delete column to students (2026-11-14)
+-- When a coordinator removes a student, archived_at is set and the student
+-- moves to the archived section instead of being hard-deleted.
+
+ALTER TABLE students ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
+
+-- Migration: Add archived_at soft-delete column to teacher_batches (2026-11-15)
+-- A batch whose immersion is already completed cannot be edited or removed any
+-- more; it is archived instead so its students, schedule and history stay
+-- intact. Archived batches live in the archive modal on the Deployment page.
+--
+-- Run with: node scripts/runMigration.js db/migrations/032_teacher_batch_archived_at.sql
+
+ALTER TABLE teacher_batches ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
+
+-- A batch can schedule more than ten days. The submission controller derives
+-- the day number from the assigned schedule and enforces its actual bounds.
+ALTER TABLE student_daily_documentation
+  DROP CONSTRAINT IF EXISTS student_daily_documentation_day_number_check;
+ALTER TABLE student_daily_documentation
+  ADD CONSTRAINT student_daily_documentation_day_number_check CHECK (day_number >= 1);
+
+CREATE TABLE IF NOT EXISTS partner_institutions (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  industry VARCHAR(120) NOT NULL DEFAULT 'Other',
+  description TEXT,
+  address TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT partner_institutions_name_not_blank CHECK (length(btrim(name)) > 0)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_institutions_name_ci
+  ON partner_institutions (lower(btrim(name)));
+
+CREATE TABLE IF NOT EXISTS partner_institution_supervisor_history (
+  id SERIAL PRIMARY KEY,
+  institution_id INTEGER NOT NULL
+    REFERENCES partner_institutions(id) ON DELETE RESTRICT,
+  supervisor_user_id INTEGER NOT NULL
+    REFERENCES users(id) ON DELETE RESTRICT,
+  supervisor_first_name VARCHAR(100) NOT NULL,
+  supervisor_last_name VARCHAR(100) NOT NULL,
+  supervisor_email VARCHAR(255) NOT NULL,
+  supervisor_phone VARCHAR(50),
+  assigned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ended_at TIMESTAMPTZ,
+  end_reason VARCHAR(30) CHECK (end_reason IN ('replaced', 'deactivated', 'institution_deactivated')),
+  CONSTRAINT partner_supervisor_assignment_dates
+    CHECK (ended_at IS NULL OR ended_at >= assigned_at)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_supervisor_one_active_institution
+  ON partner_institution_supervisor_history (institution_id)
+  WHERE ended_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_supervisor_one_active_assignment
+  ON partner_institution_supervisor_history (supervisor_user_id)
+  WHERE ended_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_partner_supervisor_history_institution
+  ON partner_institution_supervisor_history (institution_id, assigned_at DESC);
+
+INSERT INTO partner_institutions (name, industry, address)
+SELECT DISTINCT ON (lower(btrim(s.company_name)))
+       btrim(s.company_name),
+       'Other',
+       s.company_address
+FROM supervisors s
+WHERE length(btrim(s.company_name)) > 0
+ORDER BY lower(btrim(s.company_name)), s.created_at DESC, s.id DESC
+ON CONFLICT DO NOTHING;
+
+INSERT INTO partner_institution_supervisor_history (
+  institution_id,
+  supervisor_user_id,
+  supervisor_first_name,
+  supervisor_last_name,
+  supervisor_email,
+  supervisor_phone,
+  assigned_at
+)
+SELECT i.id, latest.user_id, latest.first_name, latest.last_name, latest.email,
+       latest.phone, COALESCE(latest.created_at, CURRENT_TIMESTAMP)
+FROM (
+  SELECT DISTINCT ON (lower(btrim(s.company_name)))
+         s.user_id,
+         s.company_name,
+         u.created_at,
+         s.first_name,
+         s.last_name,
+         u.email,
+         u.phone
+  FROM supervisors s
+  JOIN users u ON u.id = s.user_id AND u.role = 'supervisor'
+  WHERE length(btrim(s.company_name)) > 0
+    AND lower(u.status) IN ('approved', 'active')
+  ORDER BY lower(btrim(s.company_name)), u.created_at DESC, s.id DESC
+) latest
+JOIN partner_institutions i
+  ON lower(btrim(i.name)) = lower(btrim(latest.company_name))
+ON CONFLICT DO NOTHING;
+
+ALTER TABLE partner_institution_supervisor_history
+  ADD COLUMN IF NOT EXISTS supervisor_first_name VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS supervisor_last_name VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS supervisor_email VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS supervisor_phone VARCHAR(50);
+
+UPDATE partner_institution_supervisor_history h
+SET supervisor_first_name = COALESCE(h.supervisor_first_name, s.first_name, 'Unknown'),
+    supervisor_last_name = COALESCE(h.supervisor_last_name, s.last_name, 'Unknown'),
+    supervisor_email = COALESCE(h.supervisor_email, u.email),
+    supervisor_phone = COALESCE(h.supervisor_phone, u.phone)
+FROM users u
+LEFT JOIN supervisors s ON s.user_id = u.id
+WHERE u.id = h.supervisor_user_id
+  AND (
+    h.supervisor_first_name IS NULL
+    OR h.supervisor_last_name IS NULL
+    OR h.supervisor_email IS NULL
+  );
+
+ALTER TABLE partner_institution_supervisor_history
+  ALTER COLUMN supervisor_first_name SET NOT NULL,
+  ALTER COLUMN supervisor_last_name SET NOT NULL,
+  ALTER COLUMN supervisor_email SET NOT NULL;
+
+-- Legacy requests and batches retain their existing workflow.
+ALTER TABLE teacher_batches
+  ADD COLUMN IF NOT EXISTS partner_institution_id INTEGER REFERENCES partner_institutions(id) ON DELETE RESTRICT;
+
+DROP INDEX IF EXISTS idx_teacher_batches_supervisor_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teacher_batches_legacy_supervisor
+  ON teacher_batches (supervisor_id)
+  WHERE supervisor_id IS NOT NULL AND partner_institution_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_teacher_batches_supervisor_lookup ON teacher_batches (supervisor_id);
+
+ALTER TABLE deployment_requests
+  ADD COLUMN IF NOT EXISTS workflow_version SMALLINT NOT NULL DEFAULT 1,
+  ADD COLUMN IF NOT EXISTS partner_institution_id INTEGER REFERENCES partner_institutions(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS teacher_id INTEGER REFERENCES teachers(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS immersion_period_id INTEGER REFERENCES immersion_periods(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS teacher_batch_id INTEGER REFERENCES teacher_batches(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS creation_key UUID,
+  ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS proposal JSONB,
+  ADD COLUMN IF NOT EXISTS confirmed_schedule JSONB,
+  ADD COLUMN IF NOT EXISTS schedule_amendment JSONB,
+  ADD COLUMN IF NOT EXISTS school_clearance JSONB;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_deployment_creation
+  ON deployment_requests (coordinator_id, creation_key) WHERE creation_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_deployment_batch
+  ON deployment_requests (teacher_batch_id) WHERE teacher_batch_id IS NOT NULL AND workflow_version = 2;
+CREATE INDEX IF NOT EXISTS idx_partner_deployment_partner
+  ON deployment_requests (partner_institution_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_partner_deployment_inbox
+  ON deployment_requests (supervisor_id, id DESC) WHERE workflow_version = 2;
+
+-- Additional approved affiliations supplement the institution's existing primary contact.
+CREATE TABLE IF NOT EXISTS partner_deployment_supervisors (
+  institution_id INTEGER NOT NULL REFERENCES partner_institutions(id) ON DELETE RESTRICT,
+  supervisor_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  authorized_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  reason TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (institution_id, supervisor_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS partner_deployment_events (
+  id BIGSERIAL PRIMARY KEY,
+  deployment_request_id INTEGER NOT NULL REFERENCES deployment_requests(id) ON DELETE CASCADE,
+  actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  before_state JSONB,
+  after_state JSONB,
+  reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_partner_deployment_events_request
+  ON partner_deployment_events (deployment_request_id, id DESC);
+
+ALTER TABLE teacher_batch_students
+  ADD COLUMN IF NOT EXISTS deployment_started_on DATE,
+  ADD COLUMN IF NOT EXISTS deployment_ended_on DATE;
+CREATE INDEX IF NOT EXISTS idx_deployment_roster_student
+  ON teacher_batch_students (student_id, deployment_ended_on);
+
+ALTER TABLE partner_deployment_supervisors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE partner_deployment_events ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE archive_deployment_requests ADD COLUMN IF NOT EXISTS partner_deployment JSONB;
+COMMIT;
 
 -- ===========================================================================
 -- SECTION 4 - OPTIONAL: Row Level Security note

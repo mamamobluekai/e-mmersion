@@ -1,20 +1,10 @@
-// Supervisor → "Request Students".
-//
-// The supervisor asks a coordinator for a number of students. The batch LABEL is
-// deliberately NOT collected here: the coordinator names the batch when they
-// fulfil the request, and the supervisor is then attached to that batch exactly
-// the way a teacher is.
-//
-// Design system: Lexend + the maroon palette from RequirementsReview.
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  getCoordinators,
-  createSupervisorRequest,
   getSupervisorDeploymentRequests,
   getDeploymentRequestStudents,
 } from '../../../api/coordinatorApi';
 import {
-  Send,
   Users,
   Clock3,
   CheckCircle2,
@@ -44,21 +34,10 @@ const fmtDate = (value) => {
 };
 
 function CreateDeploymentRequest() {
-  const [coordinators, setCoordinators] = useState([]);
   const [requests, setRequests] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [toasts, setToasts] = useState([]);
-
-  // NOTE: no batch_label — the coordinator labels the batch.
-  const [form, setForm] = useState({
-    coordinator_id: '',
-    strand: '',
-    num_students: '',
-    notes: '',
-  });
-  const [formError, setFormError] = useState('');
 
   const [viewing, setViewing] = useState(null);
   const [viewStudents, setViewStudents] = useState([]);
@@ -72,25 +51,7 @@ function CreateDeploymentRequest() {
     setToasts((prev) => [...prev, { id, type, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   };
-  const showSuccess = (m) => showToast('success', m);
   const showError = (m) => showToast('error', m);
-
-  const loadAll = async () => {
-    setLoading(true);
-    try {
-      const [c, r] = await Promise.all([getCoordinators(), getSupervisorDeploymentRequests()]);
-      setCoordinators(c.coordinators || []);
-      setRequests(r.deployment_requests || []);
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadAll();
-  }, []);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -102,39 +63,6 @@ function CreateDeploymentRequest() {
       return label.includes(q) || coordinator.includes(q) || strand.includes(q);
     });
   }, [requests, search]);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setFormError('');
-
-    if (!form.coordinator_id) {
-      setFormError('Please choose a coordinator.');
-      return;
-    }
-    const num = Number(form.num_students);
-    if (!Number.isInteger(num) || num <= 0) {
-      setFormError('Number of students must be a positive whole number.');
-      return;
-    }
-
-    setCreating(true);
-    try {
-      await createSupervisorRequest({
-        coordinator_id: Number(form.coordinator_id),
-        strand: form.strand.trim() || null,
-        num_students: num,
-        notes: form.notes.trim() || null,
-      });
-      setForm({ coordinator_id: '', strand: '', num_students: '', notes: '' });
-      showSuccess('Request sent. The coordinator will label the batch and assign your students.');
-      await loadAll();
-    } catch (err) {
-      setFormError(err.message);
-      showError(err.message);
-    } finally {
-      setCreating(false);
-    }
-  };
 
   const handleView = async (id) => {
     setViewLoading(true);
@@ -158,11 +86,14 @@ function CreateDeploymentRequest() {
   const openRequests = async () => {
     setSearch('');
     setShowRequests(true);
+    setLoading(true);
     try {
       const r = await getSupervisorDeploymentRequests();
       setRequests(r.deployment_requests || []);
     } catch (err) {
       showError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -192,106 +123,20 @@ function CreateDeploymentRequest() {
       <div className={styles.pageHeader}>
         <div className={styles.headerLeft}>
           <div>
-            <h1>Request Students</h1>
-            <p>
-              Ask a coordinator for students. You set the headcount — the coordinator names the
-              batch and assigns you to it as the supervisor.
-            </p>
+            <h1>Earlier Deployment Requests</h1>
+            <p>Review requests and batches created through the earlier deployment workflow.</p>
           </div>
         </div>
       </div>
 
-      {/* NEW REQUEST */}
-      <div className={styles.card}>
-        <div className={styles.cardHeader}>
-          <div>
-            <h2>New Student Request</h2>
-            <p>The coordinator handles the batch label — you only set the headcount.</p>
-          </div>
-        </div>
-
-        <form onSubmit={handleSubmit}>
-          <div className={styles.cardBody}>
-            {formError && (
-              <div className={styles.errorAlert} role="alert">
-                <X size={15} />
-                <span>{formError}</span>
-              </div>
-            )}
-
-            <div className={styles.formGrid}>
-              <div className={styles.formGroup}>
-                <label htmlFor="req-coordinator">Coordinator *</label>
-                <select
-                  id="req-coordinator"
-                  className={styles.formInput}
-                  value={form.coordinator_id}
-                  onChange={(e) => setForm({ ...form, coordinator_id: e.target.value })}
-                  required
-                >
-                  <option value="">Select a coordinator</option>
-                  {coordinators.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.first_name} {c.last_name}
-                      {c.department ? ` — ${c.department}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className={styles.formGroup}>
-                <label htmlFor="req-count">Number of students *</label>
-                <input
-                  id="req-count"
-                  type="number"
-                  min="1"
-                  step="1"
-                  className={styles.formInput}
-                  placeholder="e.g. 25"
-                  value={form.num_students}
-                  onChange={(e) => setForm({ ...form, num_students: e.target.value })}
-                  required
-                />
-              </div>
-
-              <div className={styles.formGroup}>
-                <label htmlFor="req-strand">Track / Strand</label>
-                <input
-                  id="req-strand"
-                  type="text"
-                  className={styles.formInput}
-                  placeholder="e.g. TVL — ICT"
-                  value={form.strand}
-                  onChange={(e) => setForm({ ...form, strand: e.target.value })}
-                />
-              </div>
-
-              <div className={`${styles.formGroup} ${styles.formGroupFull}`}>
-                <label htmlFor="req-notes">Notes</label>
-                <textarea
-                  id="req-notes"
-                  rows={3}
-                  className={styles.formInput}
-                  placeholder="Anything the coordinator should know about this request."
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className={styles.formActions}>
-            <button type="submit" className={styles.primaryButton} disabled={creating}>
-              <Send size={15} />
-              {creating ? 'Sending…' : 'Send Request'}
-            </button>
-            <button type="button" className={styles.secondaryButton} onClick={openRequests}>
-              <Inbox size={15} />
-              My Requests
-              {requests.length > 0 && <span className={styles.buttonCount}>{requests.length}</span>}
-            </button>
-          </div>
-        </form>
+      <div className={styles.formActions}>
+        <button type="button" className={styles.primaryButton} onClick={openRequests}>
+          <Inbox size={15} />
+          View earlier requests
+        </button>
+        <Link className={styles.secondaryButton} to="/dashboard/supervisor/deployment-requests">
+          Deployment Requests
+        </Link>
       </div>
 
       {/* MY REQUESTS — centered modal */}

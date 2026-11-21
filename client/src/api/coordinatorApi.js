@@ -70,6 +70,10 @@ export async function getAllStudents({
   return apiFetch(`/students/all${qs ? `?${qs}` : ''}`);
 }
 
+export async function getSpecialNeedsStudents() {
+  return apiFetch('/students/special');
+}
+
 export async function createStudentAccountReport(studentId, { reason, comments }) {
   return apiFetch(`/students/${studentId}/reports`, jsonBody({ reason, comments }));
 }
@@ -221,6 +225,55 @@ export async function getTeachers(status) {
 export async function getSupervisors(status) {
   const qs = status ? `?status=${encodeURIComponent(status)}` : '';
   return apiFetch(`/supervisors${qs}`);
+}
+
+/* ---------------- Partner institutions / workplace supervisors ---------------- */
+export async function getPartnerInstitutions() {
+  return apiFetch('/partner-institutions');
+}
+
+export async function createPartnerInstitution(institution) {
+  return apiFetch('/partner-institutions', jsonBody(institution));
+}
+
+export async function updatePartnerInstitution(id, institution) {
+  return apiFetch(`/partner-institutions/${id}`, jsonBody(institution, 'PUT'));
+}
+
+export async function deactivatePartnerInstitution(id) {
+  return apiFetch(`/partner-institutions/${id}/deactivate`, jsonBody({}));
+}
+
+export async function reactivatePartnerInstitution(id) {
+  return apiFetch(`/partner-institutions/${id}/reactivate`, jsonBody({}));
+}
+
+export async function assignPartnerSupervisor(institutionId, supervisor) {
+  return apiFetch(
+    `/partner-institutions/${institutionId}/supervisors`,
+    jsonBody(supervisor),
+  );
+}
+
+export async function updatePartnerSupervisor(institutionId, supervisorId, supervisor) {
+  return apiFetch(
+    `/partner-institutions/${institutionId}/supervisors/${supervisorId}`,
+    jsonBody(supervisor, 'PUT'),
+  );
+}
+
+export async function deactivatePartnerSupervisor(institutionId, supervisorId) {
+  return apiFetch(
+    `/partner-institutions/${institutionId}/supervisors/${supervisorId}/deactivate`,
+    jsonBody({}),
+  );
+}
+
+export async function resendPartnerSupervisorActivation(institutionId, supervisorId) {
+  return apiFetch(
+    `/partner-institutions/${institutionId}/supervisors/${supervisorId}/resend-activation`,
+    jsonBody({}),
+  );
 }
 
 /* ---------------- Teacher batches ---------------- */

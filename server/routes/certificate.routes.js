@@ -4,6 +4,8 @@ const certificate = require('../controllers/certificateControllers/certificate.c
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 
+const { requirePostImmersion } = require('../middleware/studentJourneyAccess');
+
 router.use(authenticate);
 
 router.get('/eligible', authorize('supervisor', 'admin'), certificate.getEligibleStudents);
@@ -15,7 +17,7 @@ router.put('/template/me', authorize('supervisor', 'admin'), certificate.saveMyC
 router.post('/generate/:studentId', authorize('supervisor', 'admin'), certificate.generateCertificate);
 router.post('/force/:studentId', authorize('supervisor', 'admin'), certificate.forceGenerateCertificate);
 router.delete('/undo/:studentId', authorize('supervisor', 'admin'), certificate.undoForceIssue);
-router.get('/me', authorize('student', 'admin'), certificate.getMyCertificate);
-router.get('/me/download', authorize('student'), certificate.downloadMyCertificate);
+router.get('/me', authorize('student', 'admin'), requirePostImmersion, certificate.getMyCertificate);
+router.get('/me/download', authorize('student'), requirePostImmersion, certificate.downloadMyCertificate);
 
 module.exports = router;

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   getMyRequirements,
   updateMyRequirements,
@@ -7,6 +8,8 @@ import {
   deleteMyDocument,
   getActiveRequirements,
 } from '../../../api/studentApi';
+import { ArrowRight, Camera, CheckCircle2, Circle, CircleAlert } from 'lucide-react';
+import RequirementCamera from './RequirementCamera';
 import styles from './Requirements.module.css';
 
 const SECTION_META = {
@@ -27,6 +30,8 @@ const SECTION_META = {
     shortLabel: 'Academic',
   },
 };
+
+const STAFF_MANAGED_FIELDS = new Set(['first_name', 'middle_name', 'last_name', 'email', 'section', 'track_strand', 'school']);
 
 const FALLBACK_DOCS = [
   { code: 'guardian_consent', section: 'guardian', name: 'Guardian Consent' },
@@ -123,10 +128,15 @@ const intProblem = (field, value) => {
   return null;
 };
 
-function Requirements() {
+function Requirements({ checklistOnly = false }) {
+  const [searchParams] = useSearchParams();
+  const requestedSection = searchParams.get('section');
+  const requestedRequirement = searchParams.get('requirement');
   const [data, setData] = useState(null);
   const [docTypes, setDocTypes] = useState(FALLBACK_DOCS);
-  const [activeTab, setActiveTab] = useState('personal');
+  const [activeTab, setActiveTab] = useState(() =>
+    Object.hasOwn(SECTION_META, requestedSection) ? requestedSection : 'personal'
+  );
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
@@ -141,6 +151,7 @@ function Requirements() {
   const [phoneTouched, setPhoneTouched] = useState({});
   // The uploaded document a removal is waiting on, if any.
   const [confirmRemove, setConfirmRemove] = useState(null);
+  const [cameraItem, setCameraItem] = useState(null);
 
   // Live-check every phone field. The message says what is actually wrong - an
   // all-digit number of the wrong length used to read as "numbers only", which
@@ -166,7 +177,7 @@ function Requirements() {
       try {
         const [reqResult, typesResult] = await Promise.all([
           getMyRequirements(),
-          getActiveRequirements().catch(() => null),
+          checklistOnly ? null : getActiveRequirements().catch(() => null),
         ]);
         if (!cancelled) {
           setData(reqResult);
@@ -188,7 +199,13 @@ function Requirements() {
     }
     init();
     return () => { cancelled = true; };
-  }, []);
+  }, [checklistOnly]);
+
+  const requirementsLoaded = Boolean(data);
+  useEffect(() => {
+    if (checklistOnly || !requirementsLoaded || !requestedRequirement || activeTab !== requestedSection) return;
+    document.getElementById(`requirement-${requestedRequirement}`)?.scrollIntoView({ block: 'nearest' });
+  }, [checklistOnly, requirementsLoaded, requestedRequirement, requestedSection, activeTab]);
 
   const student = data?.student || {};
   const submission = data?.submission || {};
@@ -413,7 +430,7 @@ function Requirements() {
         {}
       );
       const result = await updateMyRequirements({
-        ...student,
+        ...Object.fromEntries(Object.entries(student).filter(([field]) => !STAFF_MANAGED_FIELDS.has(field))),
         ...phoneValues,
         suffix: suffixValue,
       });
@@ -535,15 +552,25 @@ function Requirements() {
     }
   };
 
-  const handleFileChange = (docCode, e) => {
-    const file = e.target.files[0];
+  const selectFile = (docCode, file) => {
     if (!file) return;
-    if (file.size > 10 * 1024 * 1024) {
-      setError('File must be under 10MB.');
-      e.target.value = '';
+    const isAllowedImage =
+      ['image/png', 'image/jpeg'].includes(String(file.type || '').toLowerCase()) &&
+      /\.(png|jpe?g)$/i.test(file.name || '');
+    if (!isAllowedImage) {
+      setError('Only PNG and JPG images can be uploaded.');
       return;
     }
+    if (file.size > 10 * 1024 * 1024) {
+      setError('File must be under 10MB.');
+      return;
+    }
+    setError('');
     setUploadFile((p) => ({ ...p, [docCode]: file }));
+  };
+
+  const handleFileChange = (docCode, e) => {
+    selectFile(docCode, e.target.files[0]);
     // Clear the picker so choosing the same file again still fires a change
     // ("Edit File" invites exactly that).
     e.target.value = '';
@@ -566,15 +593,18 @@ function Requirements() {
     const currentFile = uploadFile[item.code];
     const hasExisting = !!doc;
     const code = String(item.code || '').toLowerCase();
-    const status = requirementStatusByCode.get(code)?.requirement_status ||
+    const requirement = requirementStatusByCode.get(code);
+    const status = requirement?.requirement_status ||
       (revisionCodes.has(code) ? 'NEEDS REVISION' : (doc ? 'PENDING' : null));
     const needsRevision = status === 'NEEDS REVISION';
-    const canEditRequirement = !isCoordinatorLocked &&
-      (needsRevision || (!isSubmitted && !hasExisting && !status));
+    const canEditRequirement = requirement?.can_upload ?? (!isOnHold && (
+      (!hasExisting && (!status || status === 'PENDING')) || (!isApproved && needsRevision)
+    ));
 
     return (
       <div
         key={item.code}
+        id={`requirement-${item.code}`}
         className={`${styles.docItem} ${needsRevision ? styles.docItemRevision : ''}`}
       >
         <div className={styles.docInfo}>
@@ -649,6 +679,7 @@ function Requirements() {
               id={`requirement-file-${item.code}`}
               className={styles.fileInput}
               type="file"
+              accept=".png,.jpg,.jpeg,image/png,image/jpeg"
               onChange={(e) => handleFileChange(item.code, e)}
               disabled={!canEditRequirement || isUploadingDoc}
             />
@@ -666,6 +697,15 @@ function Requirements() {
               {currentFile ? 'Edit File' : 'Choose File'}
             </label>
           </span>
+          <button
+            type="button"
+            className={styles.cameraButton}
+            disabled={!canEditRequirement || isUploadingDoc}
+            onClick={() => setCameraItem(item)}
+          >
+            <Camera size={17} aria-hidden="true" />
+            <span>Take Photo</span>
+          </button>
         </div>
       </div>
     );
@@ -674,7 +714,8 @@ function Requirements() {
   const renderPersonalForm = () => {
     const lockFields = !canEditFormRequirement('personal_information');
     return (
-      <div className={styles.grid2}>
+      <div id="requirement-personal_information" className={styles.grid2}>
+      <p className={styles.identityNote}>Contact your administrator to correct your name, email, section, or strand.</p>
       <div className={styles.field}>
         <label>Student Number <span className={styles.requiredDiamond}>*</span></label>
         <input
@@ -684,33 +725,30 @@ function Requirements() {
         {intErrorText('student_number')}
       </div>
       <div className={styles.field}>
-        <label>First Name <span className={styles.requiredDiamond}>*</span></label>
+        <label htmlFor="requirements-first-name">First Name <span className={styles.requiredDiamond}>*</span></label>
         <input
+          id="requirements-first-name"
           className={styles.input}
           value={student.first_name || ''}
-          onChange={(e) => handleFieldChange('first_name', e.target.value)}
-          placeholder="Juan"
-          readOnly={lockFields}
+          readOnly
         />
       </div>
       <div className={styles.field}>
-        <label>Middle Name <span className={styles.requiredDiamond}>*</span></label>
+        <label htmlFor="requirements-middle-name">Middle Name <span className={styles.requiredDiamond}>*</span></label>
         <input
+          id="requirements-middle-name"
           className={styles.input}
           value={student.middle_name || ''}
-          onChange={(e) => handleFieldChange('middle_name', e.target.value)}
-          placeholder="Dela"
-          readOnly={lockFields}
+          readOnly
         />
       </div>
       <div className={styles.field}>
-        <label>Last Name <span className={styles.requiredDiamond}>*</span></label>
+        <label htmlFor="requirements-last-name">Last Name <span className={styles.requiredDiamond}>*</span></label>
         <input
+          id="requirements-last-name"
           className={styles.input}
           value={student.last_name || ''}
-          onChange={(e) => handleFieldChange('last_name', e.target.value)}
-          placeholder="Cruz"
-          readOnly={lockFields}
+          readOnly
         />
       </div>
       <div className={styles.field}>
@@ -742,6 +780,19 @@ function Requirements() {
         </select>
       </div>
       <div className={styles.field}>
+        <label htmlFor="requirements-special-needs">1. Do you have a disability or special needs?</label>
+        <select
+          id="requirements-special-needs"
+          className={styles.select}
+          value={student.has_special_needs === true ? 'yes' : 'no'}
+          onChange={(e) => handleFieldChange('has_special_needs', e.target.value === 'yes')}
+          disabled={lockFields}
+        >
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </div>
+      <div className={styles.field}>
         <label>Birthdate <span className={styles.requiredDiamond}>*</span></label>
         <input
           className={styles.input}
@@ -768,14 +819,13 @@ function Requirements() {
         {phoneErrorText('contact_number')}
       </div>
       <div className={styles.field}>
-        <label>Email <span className={styles.requiredDiamond}>*</span></label>
+        <label htmlFor="requirements-email">Email <span className={styles.requiredDiamond}>*</span></label>
         <input
+          id="requirements-email"
           className={styles.input}
           type="email"
           value={student.email || ''}
-          onChange={(e) => handleFieldChange('email', e.target.value)}
-          placeholder="student@example.com"
-          readOnly={lockFields}
+          readOnly
         />
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
@@ -791,33 +841,21 @@ function Requirements() {
       {/* Grade Level is not asked for: every work immersion student is
           Grade 12 and the server fills the value in on save. */}
       <div className={styles.field}>
-        <label>Section Name <span className={styles.requiredDiamond}>*</span></label>
+        <label htmlFor="requirements-section">Section Name <span className={styles.requiredDiamond}>*</span></label>
         <input
+          id="requirements-section"
           className={styles.input}
           value={student.section || ''}
-          onChange={(e) => handleFieldChange('section', e.target.value)}
-          placeholder="e.g., 12-A"
-          readOnly={lockFields}
+          readOnly
         />
       </div>
       <div className={styles.field}>
-        <label>Track & Strand <span className={styles.requiredDiamond}>*</span></label>
+        <label htmlFor="requirements-strand">Track & Strand <span className={styles.requiredDiamond}>*</span></label>
         <input
+          id="requirements-strand"
           className={styles.input}
           value={student.track_strand || ''}
-          onChange={(e) => handleFieldChange('track_strand', e.target.value)}
-          placeholder="STEM, ABM, HUMSS..."
-          readOnly={lockFields}
-        />
-      </div>
-      <div className={styles.field}>
-        <label>School <span className={styles.requiredDiamond}>*</span></label>
-        <input
-          className={styles.input}
-          value={student.school || ''}
-          onChange={(e) => handleFieldChange('school', e.target.value)}
-          placeholder="School name"
-          readOnly={lockFields}
+          readOnly
         />
       </div>
       <div className={styles.field}>
@@ -869,7 +907,7 @@ function Requirements() {
   const renderGuardianForm = () => {
     const lockFields = !canEditFormRequirement('guardian_emergency');
     return (
-      <div className={styles.grid2}>
+      <div id="requirement-guardian_emergency" className={styles.grid2}>
       <div className={styles.field}>
         <label>Guardian/Parent Name <span className={styles.requiredDiamond}>*</span></label>
         <input
@@ -1011,6 +1049,10 @@ function Requirements() {
   const isApproved = submissionStatus === 'approved';
   const isOnHold = submissionStatus === 'hold';
   const isCoordinatorLocked = isApproved || isOnHold;
+  const hasMissingUpload = requirementStatuses.some((item) => (
+    item.input_type === 'file' && !item.completed && item.can_upload &&
+    item.requirement_status !== 'NEEDS REVISION'
+  ));
 
   const revisionCodes = new Set(
     revisionDocuments.map((doc) => String(doc.code || '').toLowerCase()).filter(Boolean)
@@ -1024,6 +1066,123 @@ function Requirements() {
   };
   const hasEditableFormRevision = ['personal_information', 'guardian_emergency']
     .some((code) => canEditFormRequirement(code) && isSubmitted);
+
+  if (checklistOnly) {
+    const missions = requirementStatuses.map((item) => {
+      const status = item.requirement_status;
+      const code = String(item.code || '').toLowerCase();
+      const approved = status === 'APPROVED';
+      const needsRevision = !approved && (['NEEDS REVISION', 'REJECTED'].includes(status) || revisionCodes.has(code));
+      const done = approved || (!needsRevision && item.completed);
+      const canGo = !done && !isOnHold && (
+        item.input_type === 'form' ? canEditFormRequirement(code) : item.can_upload
+      );
+      const waiting = done && !approved && (isSubmitted || status === 'RESUBMITTED - AWAITING REVIEW');
+      const label = approved ? 'Approved' : done ? 'Completed' : needsRevision ? 'Needs Revision' : 'Missing';
+      return { item, approved, done, canGo, waiting, label, needsRevision };
+    }).sort((a, b) => Number(b.needsRevision) - Number(a.needsRevision) || Number(a.done) - Number(b.done));
+    const approvedCount = missions.filter((mission) => mission.approved).length;
+    const readyToSubmit = !isSubmitted && !isCoordinatorLocked && progress >= 100 &&
+      missions.length > 0 && missions.every((mission) => mission.done);
+
+    return (
+      <div className={styles.page}>
+        <header className={`${styles.pageHeader} ${styles.missionHeader}`}>
+          <div className={styles.headerMain}>
+            <h2>Pre-Immersion</h2>
+            <p>Complete your requirement missions and submit them to your coordinator for approval.</p>
+          </div>
+        </header>
+        {error && <p className={styles.error} role="alert">{error}</p>}
+        {message && <p className={styles.message} role="status">{message}</p>}
+        {data && (
+          <>
+            <section className={styles.section} aria-label="Requirements progress">
+              <div className={styles.progressLabel}>
+                <span><strong>Progress</strong> &mdash; {progress}% provided</span>
+                <span>{completedRequirements}/{totalRequirements} requirements provided</span>
+              </div>
+              <div className={styles.progressBar}>
+                <div className={styles.progressFill} style={{ width: `${progress}%`, background: progressColor }} />
+              </div>
+              {submission?.status && (
+                <div className={styles.statusRow}>
+                  <span className={styles.muted}>Submission status:</span>
+                  <span className={`${styles.badge} ${statusBadgeClass(submission.status)}`}>
+                    {statusLabel(submission.status)}
+                  </span>
+                  {submission?.reviewed_at && (
+                    <span className={styles.muted}>
+                      Reviewed on {formatDate(submission.reviewed_at)}
+                      {submission.reviewed_by_name ? ` by ${submission.reviewed_by_name}` : ''}
+                    </span>
+                  )}
+                  {!submission?.reviewed_at && submission?.submitted_at && (
+                    <span className={styles.muted}>
+                      Submitted on {formatDate(submission.submitted_at)}
+                    </span>
+                  )}
+                </div>
+              )}
+            </section>
+            <section className={styles.section} aria-labelledby="requirement-missions-title">
+              <h2 id="requirement-missions-title">Requirement missions</h2>
+              {missions.length === 0 ? <p>No requirements have been configured.</p> : (
+                <>
+                  <p>{approvedCount}/{missions.length} approved by your coordinator</p>
+                  <ul className={styles.missionChecklist}>
+                    {missions.map(({ item, done, canGo, waiting, label, needsRevision }) => {
+                      const Icon = needsRevision ? CircleAlert : done ? CheckCircle2 : Circle;
+                      const flaggedFile = needsRevision && item.input_type === 'file'
+                        ? documents.find((document) => document.code === item.code)
+                        : null;
+                      const feedback = needsRevision && (item.requirement_feedback || flaggedFile?.remarks);
+                      const query = new URLSearchParams({
+                        section: item.section || 'academic',
+                        requirement: item.code,
+                      });
+                      return (
+                        <li key={item.id} className={needsRevision ? styles.revisionMission : undefined}>
+                          <Icon size={17} aria-hidden="true" />
+                          <div className={styles.missionCopy}>
+                            <strong>{item.name}</strong>
+                            <span className={done ? styles.missionDone : styles.missionPending}>
+                              {label}
+                              {waiting && <span className={styles.missionWaiting}> · {isOnHold ? 'On hold' : 'Waiting for approval'}</span>}
+                            </span>
+                            {flaggedFile?.original_name && (
+                              <span className={styles.missionNote}>File to revise: {flaggedFile.original_name}</span>
+                            )}
+                            {feedback && <span className={styles.missionNote}>{feedback}</span>}
+                          </div>
+                          {canGo && (
+                            <Link
+                              className={styles.missionGo}
+                              to={`/dashboard/student/pre-immersion/requirements?${query}`}
+                              aria-label={`Go to ${item.name}`}
+                            >
+                              Go <ArrowRight size={15} aria-hidden="true" />
+                            </Link>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+              {readyToSubmit && (
+                <div className={styles.saveBar}>
+                  <button type="button" className={styles.submitBtn} onClick={handleSubmit} disabled={submitting}>
+                    {submitting ? 'Submitting...' : 'Submit Requirements'}
+                  </button>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={styles.page}>
@@ -1066,52 +1225,31 @@ function Requirements() {
         </div>
       )}
 
-      <div className={styles.section}>
-        <div className={styles.progressLabel}>
-          <span><strong>Progress</strong> &mdash; {progress}% provided</span>
-          <span>{completedRequirements}/{totalRequirements} requirements provided</span>
-        </div>
-        <div className={styles.progressBar}>
-          <div className={styles.progressFill} style={{ width: `${progress}%`, background: progressColor }} />
-        </div>
-        {submission?.status && (
-          <div className={styles.statusRow}>
-            <span className={styles.muted}>Submission status:</span>
-            <span className={`${styles.badge} ${statusBadgeClass(submission.status)}`}>
-              {statusLabel(submission.status)}
-            </span>
-            {submission?.reviewed_at && (
-              <span className={styles.muted}>
-                Reviewed on {formatDate(submission.reviewed_at)}
-                {submission.reviewed_by_name ? ` by ${submission.reviewed_by_name}` : ''}
-              </span>
-            )}
-            {!submission?.reviewed_at && submission?.submitted_at && (
-              <span className={styles.muted}>
-                Submitted on {formatDate(submission.submitted_at)}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* What the coordinator wrote when they reviewed the submission. */}
-        {submission?.coordinator_feedback && (
-          <div className={styles.feedbackNotice}>
-            <strong>Coordinator feedback</strong>
-            <p>{submission.coordinator_feedback}</p>
-          </div>
-        )}
-        {isOnHold && (
-          <div className={styles.holdNotice} role="status">
-            <strong>Submission on hold</strong>
-            <p>
-              Your coordinator has placed this approved submission on hold. You
-              cannot edit or resubmit it until the coordinator releases the hold.
-              Contact your coordinator if you have questions.
+      {(submission?.coordinator_feedback || isOnHold || (isApproved && hasMissingUpload)) && (
+        <div className={styles.section}>
+          {submission?.coordinator_feedback && (
+            <div className={styles.feedbackNotice}>
+              <strong>Coordinator feedback</strong>
+              <p>{submission.coordinator_feedback}</p>
+            </div>
+          )}
+          {isOnHold && (
+            <div className={styles.holdNotice} role="status">
+              <strong>Submission on hold</strong>
+              <p>
+                Your coordinator has placed this approved submission on hold. You
+                cannot edit or resubmit it until the coordinator releases the hold.
+                Contact your coordinator if you have questions.
+              </p>
+            </div>
+          )}
+          {isApproved && hasMissingUpload && (
+            <p role="status">
+              A required document is missing. Upload it from its section to send it to your coordinator for review.
             </p>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       <div className={styles.section}>
         <div className={styles.tabs}>
@@ -1159,7 +1297,6 @@ function Requirements() {
         {activeTab === 'medical' && renderMedicalDocs()}
         {activeTab === 'academic' && renderAcademicDocs()}
 
-        {/* Submitted requirements stay locked except for items sent back. */}
         {!isCoordinatorLocked && (
           <div className={styles.saveBar}>
             {!isSubmitted ? (
@@ -1184,13 +1321,24 @@ function Requirements() {
             ) : null}
             {isSubmitted && (
               <p className={styles.muted}>
-                Submitted requirements stay locked except for items marked Needs Revision.
+                You can upload missing files and correct items marked Needs Revision.
                 Corrected files are resubmitted automatically; save corrected forms here.
               </p>
             )}
           </div>
         )}
       </div>
+
+      {cameraItem && (
+        <RequirementCamera
+          requirement={cameraItem}
+          onClose={() => setCameraItem(null)}
+          onSelect={(file) => {
+            selectFile(cameraItem.code, file);
+            setCameraItem(null);
+          }}
+        />
+      )}
 
       {/* Removal confirmation. A panel rather than a browser pop-up or a toast:
           it names the file and stays until the student answers. */}

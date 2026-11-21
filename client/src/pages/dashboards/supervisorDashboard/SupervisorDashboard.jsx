@@ -4,6 +4,7 @@ import DashboardLayout from '../sharedSidebar/DashboardLayout';
 import DashboardTopNav from '../sharedSidebar/DashboardTopNav';
 import SupervisorSidebar from './SupervisorSidebar';
 import CreateDeploymentRequest from './CreateDeploymentRequest';
+import PartnerDeployments from '../PartnerDeployments';
 import SupervisorStudents from './SupervisorStudents';
 import SupervisorAttendance from './SupervisorAttendance';
 import SupervisorReportsConcerns from './SupervisorReportsConcerns';
@@ -42,6 +43,7 @@ function SupervisorDashboard({ user, onLogout }) {
           path="create-deployment-request"
           element={<CreateDeploymentRequest />}
         />
+        <Route path="deployment-requests" element={<PartnerDeployments role="supervisor" />} />
 
         <Route path="students" element={<SupervisorStudents />} />
 

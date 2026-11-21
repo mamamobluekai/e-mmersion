@@ -59,12 +59,17 @@ function inkFor(hex, mix = 0) {
 async function getIssuerDisplayName(db, userId, fallback = '') {
   if (!userId) return fallback || 'Administrator';
   const res = await db.query(
-    `SELECT first_name, middle_name, last_name, suffix, email FROM users WHERE id = $1 LIMIT 1`,
+    `SELECT COALESCE(s.first_name, a.first_name) AS first_name,
+            COALESCE(s.last_name, a.last_name) AS last_name, u.email
+       FROM users u
+       LEFT JOIN supervisors s ON s.user_id = u.id
+       LEFT JOIN admins a ON a.user_id = u.id
+      WHERE u.id = $1`,
     [userId]
   );
   const row = res.rows[0];
   if (!row) return fallback || 'Administrator';
-  const name = [row.first_name, row.middle_name, row.last_name, row.suffix]
+  const name = [row.first_name, row.last_name]
     .map((p) => (p == null ? '' : String(p).trim()))
     .filter(Boolean)
     .join(' ');
@@ -665,80 +670,11 @@ async function resolveTemplate(db, supervisorUserId, teacherBatchId) {
   return { ...DEFAULT_TEMPLATE };
 }
 
-/**
- * Has this student completed everything a certificate requires? Mirrors the
- * student's own Progress page gate (approved requirements, all documentation
- * graded, and enough completed attendance days) so a student who sees
- * "Completed" can actually download a certificate.
- */
-async function isStudentComplete(db, student, teacherBatchId) {
-  const requirementsApproved = student.requirements_status === 'Approved';
-
-  const docs = await db.query(
-    `SELECT COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE status = 'Verified')::int AS verified
-       FROM student_documents
-      WHERE student_id = $1`,
-    [student.student_id]
-  );
-  const total = docs.rows[0]?.total ?? 0;
-  const verified = docs.rows[0]?.verified ?? 0;
-
-  // Graded against the daily documentation the student actually had to file,
-  // which is schedule-aware, rather than against a hardcoded 10.
-  const grading = await db.query(
-    `SELECT COUNT(*)::int AS graded
-       FROM student_daily_documentation sdd
-      WHERE sdd.student_id = $1
-        AND sdd.status = 'Graded'`,
-    [student.student_id]
-  );
-  const graded = grading.rows[0]?.graded ?? 0;
-
-  let requiredDays = 10;
-  if (teacherBatchId != null) {
-    const sched = await db.query(
-      `SELECT duration_type, duration_value
-         FROM work_immersion_schedules
-        WHERE teacher_batch_id = $1
-        ORDER BY start_date ASC
-        LIMIT 1`,
-      [teacherBatchId]
-    );
-    const row = sched.rows[0];
-    if (row) {
-      requiredDays =
-        row.duration_type === 'hours'
-          ? Math.ceil(Number(row.duration_value) / 8)
-          : Number(row.duration_value);
-    }
-  }
-
-  const attendance = await db.query(
-    `SELECT COUNT(DISTINCT date)::int AS days
-       FROM student_attendance
-      WHERE student_id = $1
-        AND check_in_time IS NOT NULL
-        AND check_out_time IS NOT NULL`,
-    [student.student_id]
-  );
-  const attendanceDays = attendance.rows[0]?.days ?? 0;
-
-  return {
-    complete: requirementsApproved && verified === total && total > 0 && graded > 0 && attendanceDays >= requiredDays,
-    attendanceDays,
-    requiredDays,
-    requirementsApproved,
-    documentationGraded: total > 0 && verified === total,
-    gradedDocumentation: graded,
-  };
-}
-
 const downloadMyCertificate = async (req, res) => {
   try {
     await ensureBatchTemplateSchema();
 
-    let result = await pool.query(
+    const result = await pool.query(
       `SELECT c.id,
               c.certificate_number,
               c.full_name,
@@ -762,108 +698,11 @@ const downloadMyCertificate = async (req, res) => {
        JOIN users u ON u.id = s.user_id
        JOIN certificates c ON c.student_id = s.id
        LEFT JOIN users issuer ON issuer.id = c.issued_by
-       WHERE s.user_id = $1
+       WHERE s.user_id = $1 AND NULLIF(c.cloudinary_url, '') IS NOT NULL
        ORDER BY c.created_at DESC
        LIMIT 1`,
       [req.user.id]
     );
-
-    // Nothing issued yet: if the student has actually finished, issue it now so
-    // they can download straight away. Previously the UI showed a download
-    // button for any "completed" student and this endpoint replied 404.
-    if (!result.rows.length) {
-      const studentRes = await pool.query(
-        `SELECT s.id AS student_id, s.first_name, s.middle_name, s.last_name, s.suffix,
-                s.student_number, s.grade_level, s.track_strand,
-                srs.status AS requirements_status,
-                tb.supervisor_id AS supervisor_user_id
-           FROM students s
-           JOIN users u ON u.id = s.user_id
-           LEFT JOIN student_requirement_submissions srs ON srs.user_id = u.id
-           LEFT JOIN teacher_batch_students tbs ON tbs.student_id = s.id
-           LEFT JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-          WHERE u.id = $1 AND u.role = 'student'
-          ORDER BY tbs.assigned_at ASC
-          LIMIT 1`,
-        [req.user.id]
-      );
-      const student = studentRes.rows[0];
-      if (!student) {
-        return res.status(404).json({ error: 'No certificate found for your account yet.' });
-      }
-
-      const teacherBatchId = await getStudentBatchId(pool, student.student_id);
-      const status = await isStudentComplete(pool, student, teacherBatchId);
-
-      if (!status.complete) {
-        return res.status(400).json({
-          error: 'You have not completed all immersion requirements yet.',
-        });
-      }
-
-      const template = await resolveTemplate(
-        pool,
-        student.supervisor_user_id,
-        teacherBatchId
-      );
-      const certificateNumber = `CERT-${Date.now()}-${student.student_id}`;
-      const completionDate = new Date().toISOString().slice(0, 10);
-      const issuerName = await getIssuerDisplayName(pool, student.supervisor_user_id);
-      const pdfBuffer = await buildCertificatePdf(
-        {
-          ...student,
-          full_name: buildFullName(student),
-          attendance_days: status.attendanceDays,
-          certificate_number: certificateNumber,
-          completion_date: completionDate,
-        },
-        issuerName,
-        template
-      );
-      const publicId = certificateNumber;
-      const uploadResult = await uploadPdfToCloudinary(pdfBuffer, publicId);
-
-      // No unique constraint exists on certificates.student_id (a student can
-      // legitimately hold several), so ON CONFLICT cannot be used. Guard the
-      // insert instead, which is safe against a concurrent double download.
-      await pool.query(
-        `INSERT INTO certificates
-           (student_id, full_name, certificate_number, completion_date,
-            requirements_status, documentation_status, attendance_days,
-            issued_by, cloudinary_public_id, cloudinary_url, teacher_batch_id)
-         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
-          WHERE NOT EXISTS (SELECT 1 FROM certificates WHERE student_id = $1)`,
-        [
-          student.student_id,
-          buildFullName(student),
-          certificateNumber,
-          completionDate,
-          'Approved',
-          'Verified',
-          status.attendanceDays,
-          student.supervisor_user_id ?? null,
-          uploadResult.public_id,
-          uploadResult.secure_url,
-          teacherBatchId,
-        ]
-      );
-
-      result = await pool.query(
-        `SELECT c.id, c.certificate_number, c.full_name, c.completion_date,
-                c.issued_by, c.teacher_batch_id AS certificate_batch_id,
-                s.id AS student_id, s.first_name, s.middle_name, s.last_name, s.suffix,
-                s.student_number, s.grade_level, s.track_strand, u.email,
-                issuer.email AS issuer_email
-           FROM students s
-           JOIN users u ON u.id = s.user_id
-           JOIN certificates c ON c.student_id = s.id
-           LEFT JOIN users issuer ON issuer.id = c.issued_by
-          WHERE s.user_id = $1
-          ORDER BY c.created_at DESC
-          LIMIT 1`,
-        [req.user.id]
-      );
-    }
 
     if (!result.rows.length) {
       return res.status(404).json({ error: 'No certificate generated yet.' });

@@ -5,7 +5,7 @@ import {
   Users,
   ClipboardList,
   Library,
-  BriefcaseBusiness,
+  Building2,
   Megaphone,
   User,
   LayoutDashboard,
@@ -31,6 +31,11 @@ const links = [
     icon: List,
   },
   {
+    to: '/dashboard/coordinator/special-students',
+    label: 'Special Students',
+    icon: Users,
+  },
+  {
     to: '/dashboard/coordinator/requirements',
     label: 'Requirements',
     icon: ClipboardList,
@@ -41,9 +46,9 @@ const links = [
     icon: Library,
   },
   {
-    to: '/dashboard/coordinator/supervisors',
-    label: 'Supervisors',
-    icon: BriefcaseBusiness,
+    to: '/dashboard/coordinator/partner-institutions',
+    label: 'Partner Institutions',
+    icon: Building2,
   },
   {
     to: '/dashboard/coordinator/deployment',

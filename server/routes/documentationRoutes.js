@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { requireImmersion } = require('../middleware/studentJourneyAccess');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 const {
@@ -14,10 +15,10 @@ const {
 
 router.use(authenticate);
 
-router.get('/daily', authorize('teacher', 'coordinator', 'admin', 'student'), getStudentDailyDocs);
-router.post('/daily/submit', authorize('student'), submitDailyDoc);
+router.get('/daily', authorize('teacher', 'coordinator', 'admin', 'student'), requireImmersion, getStudentDailyDocs);
+router.post('/daily/submit', authorize('student'), requireImmersion, submitDailyDoc);
 router.post('/daily/:docId/grade', authorize('teacher', 'coordinator', 'admin'), gradeDailyDoc);
-router.get('/criteria', authorize('teacher', 'coordinator', 'admin', 'student'), getDocumentationCriteria);
+router.get('/criteria', authorize('teacher', 'coordinator', 'admin', 'student'), requireImmersion, getDocumentationCriteria);
 router.put('/criteria', authorize('teacher', 'coordinator', 'admin'), saveDocumentationCriteria);
 router.get('/batch/:batchId/summary', authorize('teacher', 'coordinator', 'admin'), getBatchDailyDocSummary);
 

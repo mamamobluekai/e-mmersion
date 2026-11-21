@@ -4,12 +4,18 @@ const router = express.Router();
 const supervisor = require('../controllers/supervisorControllers/supervisor.controller');
 const supervisorDashboard = require('../controllers/supervisorControllers/dashboard.controller');
 const immersionExclusions = require('../controllers/supervisorControllers/immersionExclusions.controller');
+const partnerDeployment = require('../controllers/coordinatorControllers/partnerDeployment.controller');
+const { requireLegacyBatch } = require('../middleware/requireLegacyBatch');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 
 router.use(authenticate);
 
 router.get('/dashboard', authorize('supervisor'), supervisorDashboard.getSupervisorDashboard);
+router.get('/partner-deployments', authorize('supervisor'), partnerDeployment.list);
+router.get('/partner-deployments/:id', authorize('supervisor'), partnerDeployment.detail);
+router.put('/partner-deployments/:id/review', authorize('supervisor'), partnerDeployment.review);
+router.put('/partner-deployments/:id/schedule', authorize('supervisor'), partnerDeployment.setSchedule);
 
 // Supervisor: their deployment batches and the students assigned to each.
 router.get('/batches', authorize('supervisor'), supervisor.getSupervisorBatchStudents);
@@ -34,6 +40,7 @@ router.get(
 router.post(
   '/batches/:batchId/blocked-dates',
   authorize('supervisor'),
+  requireLegacyBatch,
   immersionExclusions.addBlockedDate
 );
 router.delete(

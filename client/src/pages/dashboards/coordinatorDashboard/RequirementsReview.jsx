@@ -19,6 +19,7 @@ import {
   XCircle,
   Download,
   Clock3,
+  LoaderCircle,
   ClipboardCheck,
   ChevronRight,
   X,
@@ -228,6 +229,8 @@ function RequirementsReview() {
   const [selected, setSelected] = useState(null);
   const [studentData, setStudentData] = useState(null);
   const [previewRequirement, setPreviewRequirement] = useState(null);
+  const [requirementDecision, setRequirementDecision] = useState(null);
+  const [requirementError, setRequirementError] = useState('');
   const [reviewCandidate, setReviewCandidate] = useState(null);
   const [showAutomaticCheckingInfo, setShowAutomaticCheckingInfo] = useState(false);
 
@@ -247,13 +250,16 @@ function RequirementsReview() {
   }, [remarks, selected]);
 
   useEffect(() => {
-    if (!previewRequirement) return undefined;
+    if (!previewRequirement || requirementDecision) return undefined;
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') setPreviewRequirement(null);
+      if (event.key === 'Escape') {
+        setRequirementError('');
+        setPreviewRequirement(null);
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [previewRequirement]);
+  }, [previewRequirement, requirementDecision]);
 
   const [saving, setSaving] = useState(false);
   const [docLoading, setDocLoading] = useState(false);
@@ -393,20 +399,24 @@ function RequirementsReview() {
   };
 
   const handleReview = async () => {
-    if (!selected) return;
+    if (!selected || saving || requirementDecision) return;
 
     setSaving(true);
     try {
-      await reviewSubmission(selected.id, {
+      const result = await reviewSubmission(selected.id, {
         status: reviewStatus,
         remarks,
       });
 
-      showSuccess(
-        selected.status === HOLD_STATUS && reviewStatus === 'Pending'
-          ? 'Submission unheld. The student can update and resubmit requirements.'
-          : 'Submission review saved.',
-      );
+      if (result.emailNotification && !result.emailNotification.sent) {
+        showError(result.emailNotification.message);
+      } else {
+        showSuccess(
+          selected.status === HOLD_STATUS && reviewStatus === 'Pending'
+            ? 'Submission unheld. The student can update and resubmit requirements.'
+            : result.emailNotification?.message || 'Submission review saved.',
+        );
+      }
       setSelected(null);
       setStudentData(null);
       loadSubmissions();
@@ -547,18 +557,35 @@ function RequirementsReview() {
   };
 
   const handleReviewRequirement = async (item, status) => {
+    if (!selected || saving || requirementDecision) return;
+
+    setRequirementError('');
+    setRequirementDecision(status);
     try {
       const data = await reviewRequirement(selected.id, item.id, { status });
       setPreviewRequirement(null);
-      showSuccess(
-        status === 'APPROVED'
-          ? `${item.label} approved.`
-          : `${item.label} marked Needs Revision.`,
-      );
+      if (data.emailNotification && !data.emailNotification.sent) {
+        showError(data.emailNotification.message);
+      } else {
+        showSuccess(
+          data.emailNotification?.message ||
+            (status === 'APPROVED'
+              ? `${item.label} approved.`
+              : `${item.label} marked Needs Revision.`),
+        );
+      }
       setStudentData(data);
     } catch (err) {
-      showError(err.message || 'Failed to review requirement.');
+      setRequirementError(err.message || 'Failed to review requirement.');
+    } finally {
+      setRequirementDecision(null);
     }
+  };
+
+  const closeRequirementPreview = () => {
+    if (requirementDecision) return;
+    setRequirementError('');
+    setPreviewRequirement(null);
   };
 
   const documents = studentData?.documents || [];
@@ -1527,13 +1554,16 @@ function RequirementsReview() {
                         !reviewStatus
                       }
                       onClick={handleReview}
+                      aria-busy={saving}
                       title={
                         approvalBlocked
                           ? 'Approve only after every requirement is submitted and verified'
                           : undefined
                       }
                     >
-                      <CheckCircle2 size={17} />
+                      {saving
+                        ? <LoaderCircle size={17} className={styles.actionSpinner} aria-hidden="true" />
+                        : <CheckCircle2 size={17} />}
 
                       {saving
                         ? 'Saving...'
@@ -1564,7 +1594,7 @@ function RequirementsReview() {
       {previewRequirement && (
         <div
           className={styles.previewOverlay}
-          onClick={() => setPreviewRequirement(null)}
+          onClick={closeRequirementPreview}
         >
           <section
             className={styles.previewModal}
@@ -1588,7 +1618,8 @@ function RequirementsReview() {
               <button
                 type="button"
                 className={styles.closeButton}
-                onClick={() => setPreviewRequirement(null)}
+                onClick={closeRequirementPreview}
+                disabled={Boolean(requirementDecision)}
                 aria-label="Close requirement preview"
               >
                 <X size={20} />
@@ -1669,6 +1700,7 @@ function RequirementsReview() {
             )}
 
             <footer className={styles.previewActions}>
+              {requirementError && <p className={styles.previewError} role="alert">{requirementError}</p>}
               {checklistLocked ? (
                 <span className={styles.viewFirstHint}>
                   This submission is locked; review actions are unavailable.
@@ -1685,18 +1717,24 @@ function RequirementsReview() {
                   <button
                     type="button"
                     className={styles.verifyButton}
+                    disabled={Boolean(requirementDecision) || saving}
+                    aria-busy={requirementDecision === 'APPROVED'}
                     onClick={() => handleReviewRequirement(previewRequirement.item, 'APPROVED')}
                   >
-                    <CheckCircle2 size={15} />
-                    Approve
+                    {requirementDecision === 'APPROVED'
+                      ? <><LoaderCircle size={15} className={styles.actionSpinner} aria-hidden="true" /> Approving…</>
+                      : <><CheckCircle2 size={15} /> Approve</>}
                   </button>
                   <button
                     type="button"
                     className={styles.revisionButton}
+                    disabled={Boolean(requirementDecision) || saving}
+                    aria-busy={requirementDecision === 'NEEDS REVISION'}
                     onClick={() => handleReviewRequirement(previewRequirement.item, 'NEEDS REVISION')}
                   >
-                    <XCircle size={15} />
-                    Needs Revision
+                    {requirementDecision === 'NEEDS REVISION'
+                      ? <><LoaderCircle size={15} className={styles.actionSpinner} aria-hidden="true" /> Saving revision request…</>
+                      : <><XCircle size={15} /> Needs Revision</>}
                   </button>
                 </>
               ) : (

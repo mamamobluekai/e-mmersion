@@ -63,7 +63,6 @@ const {
 
 const {
   uploadTeachersExcel,
-  uploadSupervisorsExcel,
   uploadCoordinatorsExcel,
   downloadUploadTemplate,
 } = require('../controllers/adminContollers/upload.users.controller');
@@ -144,7 +143,6 @@ router.get('/archives/:archiveId', getArchivePeriod);
 router.get('/upload/template/:type', downloadUploadTemplate);
 
 router.post('/upload/teachers', uploadLimiter, upload.single('file'), uploadGuard(['spreadsheet']), uploadTeachersExcel);
-router.post('/upload/supervisors', uploadLimiter, upload.single('file'), uploadGuard(['spreadsheet']), uploadSupervisorsExcel);
 router.post('/upload/coordinators', uploadLimiter, upload.single('file'), uploadGuard(['spreadsheet']), uploadCoordinatorsExcel);
 
 module.exports = router;

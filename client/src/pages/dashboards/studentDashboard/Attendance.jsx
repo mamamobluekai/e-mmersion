@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
 import {
   getStudentAttendanceStatus,
@@ -13,9 +14,6 @@ import {
   saveAttendancePushSubscription,
   deleteAttendancePushSubscription,
 } from '../../../api/attendanceApi';
-import {
-  getMyDailyDocs,
-} from '../../../api/fileApi';
 import { API_BASE } from '../../../config/api';
 import styles from './Attendance.module.css';
 
@@ -332,7 +330,7 @@ function buildScheduleDays(schedules) {
           .filter(Boolean)
       : [];
 
-    let scheduleDayNumber = 0;
+    let scheduleDayNumber = (scheduleItem.first_day_number || 1) - 1;
 
     dates.forEach((date) => {
       if (seen.has(date)) return;
@@ -402,6 +400,8 @@ function TrashIcon({ size = 14 }) {
 
 function Attendance() {
   const { token } = useAuth();
+  const [searchParams] = useSearchParams();
+  const requestedDay = searchParams.get('date');
 
   const [loading, setLoading] = useState(true);
   const [access, setAccess] = useState(null);
@@ -426,7 +426,7 @@ function Attendance() {
   const [showAppealForm, setShowAppealForm] =
     useState(false);
   const [showAppealHistory, setShowAppealHistory] = useState(false);
-  const [expandedDay, setExpandedDay] = useState(null);
+  const [expandedDay, setExpandedDay] = useState(requestedDay);
   const [clearingAppeals, setClearingAppeals] = useState(false);
   // Styled confirmation, replacing the browser confirm() dialog.
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -452,10 +452,15 @@ function Attendance() {
   const watchIdRef = useRef(null);
 
   useEffect(() => {
-    if (access?.date && today?.check_in_time && !today?.check_out_time) {
+    if (!requestedDay && access?.date && today?.check_in_time && !today?.check_out_time) {
       setExpandedDay(access.date);
     }
-  }, [access?.date, today?.check_in_time, today?.check_out_time]);
+  }, [requestedDay, access?.date, today?.check_in_time, today?.check_out_time]);
+
+  useEffect(() => {
+    if (!requestedDay || loading || scheduleLoading) return;
+    document.getElementById(`attendance-day-${requestedDay}`)?.scrollIntoView({ block: 'center' });
+  }, [requestedDay, loading, scheduleLoading]);
 
   const refresh = useCallback(async () => {
     try {
@@ -546,80 +551,6 @@ function Attendance() {
     }
   };
 
-  /*
-   * ============================================================
-   * DOCUMENT LOADING
-   * ============================================================
-   *
-   * FIX:
-   * Documents are now stored using a normalized YYYY-MM-DD key.
-   *
-   * This prevents:
-   *
-   * 2026-08-28
-   *
-   * from being different from:
-   *
-   * 2026-08-28T00:00:00.000Z
-   *
-   * or:
-   *
-   * 2026-08-28 00:00:00
-   */
-  const loadDocs = useCallback(async (batchId) => {
-    if (!batchId) return;
-
-    try {
-      const result = await getMyDailyDocs({
-        batchId,
-      });
-
-      console.log(
-        '[DEBUG DOC] loadDocs result:',
-        result
-      );
-
-      // eslint-disable-next-line no-undef
-      setDocMap((prev) => {
-        const newMap = { ...prev };
-
-        (result.docs || []).forEach((d) => {
-          const key = normalizeDateKey(
-            d.date ||
-              d.document_date ||
-              d.attendance_date
-          );
-
-          if (key) {
-            newMap[key] = d;
-
-            console.log(
-              '[DEBUG DOC] Stored document:',
-              {
-                key,
-                id: d.id,
-                date: d.date,
-                status: d.status,
-                file_id: d.file_id,
-                original_name:
-                  d.original_name,
-              }
-            );
-          }
-        });
-
-        console.log(
-          '[DEBUG DOC] Final docMap:',
-          newMap
-        );
-
-        return newMap;
-      });
-    } catch (err) {
-      console.error('loadDocs error:', err);
-    }
-  }, []);
-
   useEffect(() => {
     refresh();
 
@@ -658,20 +589,6 @@ function Attendance() {
             recMap[normalizeDateKey(r.date)] = r;
           });
           setAttendanceMap(recMap);
-
-          const batchIds = [
-            ...new Set(
-              (scheduleData.schedules || [])
-                .map((s) => s.teacher_batch_id)
-                .filter(Boolean)
-            ),
-          ];
-
-          for (const bid of batchIds) {
-            loadDocs(bid).catch(
-              (err) => console.error('loadDocs failed:', err)
-            );
-          }
         }
       } catch {
         // ignore schedule load error
@@ -687,43 +604,7 @@ function Attendance() {
     return () => {
       cancelled = true;
     };
-  }, [token, loadDocs]);
-
-  const refreshDocs = useCallback(async () => {
-    if (!schedules.length) return;
-
-    const batchIds = [
-      ...new Set(
-        schedules
-          .map(
-            (s) =>
-              s.teacher_batch_id
-          )
-          .filter(Boolean)
-      ),
-    ];
-
-    for (const bid of batchIds) {
-      await loadDocs(bid).catch(
-        (err) =>
-          console.error(
-            'refreshDocs failed:',
-            err
-          )
-      );
-    }
-  }, [schedules, loadDocs]);
-
-  useEffect(() => {
-    if (!refreshDocs) return;
-
-    const id = setInterval(
-      refreshDocs,
-      15000
-    );
-
-    return () => clearInterval(id);
-  }, [refreshDocs]);
+  }, [token]);
 
   const flash = (type, text) => {
     setNotice({
@@ -1628,6 +1509,7 @@ const openAppeal = (
                       return (
                         <div
                           key={day.key}
+                          id={`attendance-day-${day.date}`}
                           className={`${styles.dayCard} ${isToday ? styles.dayToday : ''} ${isExpanded ? styles.dayCardOpen : ''}`}
                         >
                           <button

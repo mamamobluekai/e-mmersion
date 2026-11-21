@@ -12,6 +12,7 @@ import {
   Info,
   ShieldCheck,
   Flag,
+  ClipboardList,
 } from 'lucide-react';
 
 const links = [
@@ -40,6 +41,11 @@ const links = [
     to: '/dashboard/admin/archives',
     label: 'Archived Periods',
     icon: Archive,
+  },
+  {
+    to: '/dashboard/admin/deployments',
+    label: 'Partner Deployments',
+    icon: ClipboardList,
   },
   {
     to: '/dashboard/admin/account-problems',

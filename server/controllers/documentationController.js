@@ -1,4 +1,5 @@
 const pool = require('../db');
+const { getStudentSchedules } = require('./teacherControllers/immersionSchedule.controller');
 const { nowInManilaDateOnly, isValidManilaDate } = require('../utils/manilaDate');
 const { computeGradeFromRatings, ratingForScore, validateRatings } = require('../utils/criteriaGrading');
 const { createNotification, getStudentUserId, getBatchTeacherUserId } = require('../services/notification.service');
@@ -10,7 +11,7 @@ async function ensureDocumentationTables() {
       student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
       teacher_batch_id INTEGER NOT NULL REFERENCES teacher_batches(id) ON DELETE CASCADE,
       date DATE NOT NULL,
-      day_number INTEGER NOT NULL CHECK (day_number BETWEEN 1 AND 10),
+      day_number INTEGER NOT NULL CHECK (day_number >= 1),
       file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
       reasoning TEXT,
       status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'submitted', 'reviewed', 'graded')),
@@ -89,13 +90,13 @@ async function getStudentDailyDocs(req, res) {
     const params = [];
     const isStudent = req.user?.role === 'student';
 
-    if (studentId) {
-      params.push(studentId);
-      query += ` AND sdd.student_id = $${params.length}`;
-    } else if (isStudent) {
+    if (isStudent) {
       const studentResult = await pool.query('SELECT id FROM students WHERE user_id = $1 LIMIT 1', [req.user.id]);
       if (!studentResult.rows.length) return res.status(404).json({ error: 'Student profile not found.' });
       params.push(studentResult.rows[0].id);
+      query += ` AND sdd.student_id = $${params.length}`;
+    } else if (studentId) {
+      params.push(studentId);
       query += ` AND sdd.student_id = $${params.length}`;
     }
 
@@ -118,7 +119,7 @@ async function submitDailyDoc(req, res) {
     if (!studentResult.rows.length) return res.status(404).json({ error: 'Student profile not found.' });
     const studentId = studentResult.rows[0].id;
 
-    const { date, reasoning, fileId, batchId, day_number } = req.body || {};
+    const { date, reasoning, fileId, batchId } = req.body || {};
     if (!date) return res.status(400).json({ error: 'Date is required.' });
     if (!isValidManilaDate(date)) {
       return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
@@ -134,24 +135,19 @@ async function submitDailyDoc(req, res) {
       return res.status(400).json({ error: 'Cannot upload documentation for a future date.' });
     }
 
-    let finalBatchId = batchId;
-    if (!finalBatchId) {
-      const batchResult = await pool.query(
-        'SELECT teacher_batch_id FROM teacher_batch_students WHERE student_id = $1 LIMIT 1',
-        [studentId]
-      );
-      if (!batchResult.rows.length) return res.status(404).json({ error: 'Student is not assigned to a batch.' });
-      finalBatchId = batchResult.rows[0].teacher_batch_id;
+    const schedules = await getStudentSchedules(studentId);
+    const schedule = schedules.find((item) =>
+      (!batchId || Number(batchId) === item.teacher_batch_id) &&
+      item.attendance_dates.split(',').includes(date)
+    );
+    if (!schedule) return res.status(400).json({ error: 'Choose a day on your assigned immersion schedule.' });
+    const finalBatchId = schedule.teacher_batch_id;
+    const dayNumber = schedule.attendance_dates.split(',').indexOf(date) + (schedule.first_day_number || 1);
+    if (!Number.isSafeInteger(Number(fileId))) {
+      return res.status(400).json({ error: 'Attach an evidence file from your account.' });
     }
-
-    const batchResult = await pool.query('SELECT id FROM teacher_batches WHERE id = $1 LIMIT 1', [finalBatchId]);
-    if (!batchResult.rows.length) return res.status(404).json({ error: 'Batch not found.' });
-
-    const dateObj = new Date(date);
-    const dayNumber = parseInt(day_number || '0', 10);
-    if (isNaN(dateObj.getTime()) || dayNumber < 1 || dayNumber > 10) {
-      return res.status(400).json({ error: 'Invalid date or day number.' });
-    }
+    const file = await pool.query('SELECT id FROM files WHERE id = $1 AND student_id = $2', [Number(fileId), studentId]);
+    if (!file.rows.length) return res.status(400).json({ error: 'Attach an evidence file from your account.' });
 
     // No attendance gate: students may upload documentation regardless of
     // whether they completed Time In / Time Out for the day.
@@ -182,9 +178,13 @@ async function submitDailyDoc(req, res) {
          reasoning = EXCLUDED.reasoning,
          status = 'submitted',
          updated_at = CURRENT_TIMESTAMP
+       WHERE student_daily_documentation.status NOT IN ('reviewed', 'graded')
        RETURNING *`,
       [studentId, finalBatchId, date, dayNumber, fileId || null, reasoning || '']
     );
+    if (!result.rows.length) {
+      return res.status(409).json({ error: 'Your teacher has already reviewed this documentation.' });
+    }
     const teacherUserId = await getBatchTeacherUserId(finalBatchId);
     void createNotification({
       userId: teacherUserId,

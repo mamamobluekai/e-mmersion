@@ -1,5 +1,6 @@
-const { DEFAULT_GRADE_LEVEL } = require('../helpers/constant');
+const { DEFAULT_GRADE_LEVEL, DEFAULT_STUDENT_SCHOOL } = require('../helpers/constant');
 const { normalize } = require('./validation');
+const { canStudentUploadRequirementFile } = require('../requirementsSubmissionPolicy');
 const pool = require('../../../db');
 const { ensureDocumentTypesSchema } = require('./documentTypeSchema');
 const {
@@ -279,13 +280,26 @@ const getOrCreateStudent = async (client, userId, body = {}) => {
   const user = userResult.rows[0];
 
   const existing = await client.query('SELECT * FROM students WHERE user_id = $1', [userId]);
-  if (existing.rows.length) return existing.rows[0];
+  if (existing.rows.length) {
+    const student = existing.rows[0];
+    if (student.school?.trim() && student.email?.trim()) return student;
+    const updated = await client.query(
+      `UPDATE students
+          SET school = CASE WHEN NULLIF(BTRIM(school), '') IS NULL THEN $2 ELSE school END,
+              email = CASE WHEN NULLIF(BTRIM(email), '') IS NULL THEN $3 ELSE email END,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        RETURNING *`,
+      [student.id, DEFAULT_STUDENT_SCHOOL, user.email]
+    );
+    return updated.rows[0];
+  }
 
   const studentNumber = normalize(body.student_number) || `S-${userId}`;
 
   const created = await client.query(
-    `INSERT INTO students (user_id, student_number, first_name, last_name, email, contact_number, grade_level)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO students (user_id, student_number, first_name, last_name, email, contact_number, grade_level, school)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       userId,
@@ -295,6 +309,7 @@ const getOrCreateStudent = async (client, userId, body = {}) => {
       user.email,
       user.phone || normalize(body.contact_number) || '',
       DEFAULT_GRADE_LEVEL,
+      DEFAULT_STUDENT_SCHOOL,
     ]
   );
 
@@ -487,9 +502,15 @@ const serializeRequirements = async (client, studentId) => {
   });
   const requirementStatusesWithReview = requirementStatuses.map((status) => {
     const reviewState = reviewStateByTypeId.get(Number(status.id));
+    const requirementStatus = reviewState?.status || (status.completed ? 'PENDING' : null);
     return {
       ...status,
-      requirement_status: reviewState?.status || (status.completed ? 'PENDING' : null),
+      requirement_status: requirementStatus,
+      can_upload: status.input_type === 'file' && canStudentUploadRequirementFile(
+        submission.rows[0]?.status,
+        requirementStatus,
+        status.completed
+      ),
       requirement_feedback: reviewState?.feedback || null,
       requirement_updated_at: reviewState?.updated_at || null,
       review_history: reviewHistoryByTypeId.get(Number(status.id)) || [],

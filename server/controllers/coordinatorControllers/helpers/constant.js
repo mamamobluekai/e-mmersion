@@ -12,6 +12,7 @@ const requiredInfoFields = [
 // Every student on work immersion is Grade 12; the value is stored rather than
 // asked for, because coordinator and admin views list and group by it.
 const DEFAULT_GRADE_LEVEL = 'Grade 12';
+const DEFAULT_STUDENT_SCHOOL = 'Marinduque National High School';
 
 const requiredDocumentCodes = [
   'guardian_consent',
@@ -33,6 +34,7 @@ module.exports = {
   requiredInfoFields,
   requiredDocumentCodes,
   DEFAULT_GRADE_LEVEL,
+  DEFAULT_STUDENT_SCHOOL,
   emailRegex,
   phoneRegex,
 };

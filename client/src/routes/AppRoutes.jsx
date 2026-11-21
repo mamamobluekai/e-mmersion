@@ -24,7 +24,7 @@ import ForgotPassword from '../pages/ForgotPassword/ForgotPassword';
 // persists it server-side and mirrors it into the stored user, which is what
 // makes the prompt appear exactly once per account - a later sign-in reads
 // terms_accepted: true from the login response and goes straight to the
-// dashboard (or to password setup for a student still activating their account).
+// dashboard (or to password setup for a student or supervisor still activating).
 // Cancelling signs the user out, since they cannot use the system until they
 // agree, and it keeps the gate meaningful instead of dismissible.
 function TermsGate({ children }) {
@@ -35,7 +35,7 @@ function TermsGate({ children }) {
 
   if (!user) return children;
   if (user.terms_accepted) {
-    return user.role === 'student' && user.must_change_password
+    return ['student', 'supervisor'].includes(user.role) && user.must_change_password
       ? <Navigate to="/set-password" replace />
       : children;
   }

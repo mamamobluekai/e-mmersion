@@ -2,6 +2,7 @@
 // its associated data from the live tables. All work is done in a single
 // transaction so the live data and archive snapshot stay consistent.
 const pool = require('../db');
+const { nowInManilaDateOnly } = require('../utils/manilaDate');
 
 function safeJSON(value) {
   return value == null ? null : JSON.stringify(value);
@@ -46,7 +47,7 @@ async function loadUsersForPeriod(periodId, role, client) {
        ON tb.immersion_period_id = $1
       AND (
             (u.role = 'teacher' AND tb.teacher_id = t.id) OR
-            (u.role = 'supervisor' AND tb.supervisor_id = sup.id) OR
+            (u.role = 'supervisor' AND tb.supervisor_id = u.id) OR
             (u.role = 'coordinator' AND tb.coordinator_id = c.id)
           )
      LEFT JOIN teacher_batch_students tbs2 ON tbs2.teacher_batch_id = tb.id
@@ -74,7 +75,7 @@ async function loadBatchesForPeriod(periodId, client) {
      FROM teacher_batches tb
      LEFT JOIN teachers t ON t.id = tb.teacher_id
      LEFT JOIN coordinators c ON c.id = tb.coordinator_id
-     LEFT JOIN supervisors sup ON sup.id = tb.supervisor_id
+     LEFT JOIN supervisors sup ON sup.user_id = tb.supervisor_id
      WHERE tb.immersion_period_id = $1`,
     [periodId]
   );
@@ -179,12 +180,20 @@ async function archivePeriod(periodId, archivedBy) {
     const studentPks = students.map((s) => s.student_pk).filter(Boolean);
     const batches = await loadBatchesForPeriod(periodId, client);
     const batchIds = batches.map((b) => b.id);
+    const managed = await client.query(`
+      SELECT status, confirmed_schedule->>'end' AS end_date
+      FROM deployment_requests WHERE workflow_version = 2 AND immersion_period_id = $1`, [periodId]);
+    const today = nowInManilaDateOnly();
+    if (managed.rows.some((row) => ['pending', 'approved', 'changes_requested'].includes(row.status) &&
+        (!row.end_date || row.end_date >= today))) {
+      throw Object.assign(new Error('Resolve open partner deployments before archiving this period.'), { status: 409 });
+    }
+    // Partner deployments can share staff and supervisor affiliations across cohorts.
+    const keepStaff = managed.rowCount > 0;
 
     const allUserIds = [
       ...studentUserIds,
-      ...teachers.map((t) => t.id),
-      ...supervisors.map((s) => s.id),
-      ...coordinators.map((c) => c.id),
+      ...(keepStaff ? [] : [...teachers, ...supervisors, ...coordinators].map((user) => user.id)),
     ];
 
     const archiveRes = await client.query(
@@ -316,19 +325,32 @@ async function archivePeriod(periodId, archivedBy) {
     }
 
     const deploymentsRes = await client.query(
-      `SELECT dr.id, dr.batch_label, dr.strand, dr.num_students, dr.notes, dr.direction,
-              dr.status, dr.responded_at, dr.created_at,
+      `SELECT dr.id, dr.coordinator_id, dr.supervisor_id, dr.batch_label, dr.strand, dr.num_students, dr.notes, dr.direction,
+              dr.status, dr.responded_at, dr.created_at, dr.teacher_batch_id, dr.workflow_version,
+              CASE WHEN dr.workflow_version = 2 THEN jsonb_build_object(
+                'partner_id', dr.partner_institution_id, 'teacher_id', dr.teacher_id, 'batch_id', dr.teacher_batch_id,
+                'proposal', dr.proposal, 'confirmed_schedule', dr.confirmed_schedule, 'school_clearance', dr.school_clearance,
+                'pending_amendment', dr.schedule_amendment,
+                'history', COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id)
+                  FROM partner_deployment_events e WHERE e.deployment_request_id = dr.id), '[]'::jsonb)
+              ) END AS partner_deployment,
               cu.email AS coordinator_email, cu.role AS coordinator_role,
               su.email AS supervisor_email
        FROM deployment_requests dr
        JOIN users cu ON cu.id = dr.coordinator_id
        JOIN users su ON su.id = dr.supervisor_id
-       WHERE cu.immersion_period_id = $1`,
+       WHERE dr.immersion_period_id = $1 OR (dr.workflow_version = 1 AND cu.immersion_period_id = $1)`,
       [periodId]
     );
 
     for (const dr of deploymentsRes.rows) {
-      const studentsRes = await client.query(
+      const studentsRes = dr.workflow_version === 2 ? await client.query(
+        `SELECT s.id AS student_id, u.email, s.first_name, s.last_name,
+                tbs.deployment_started_on, tbs.deployment_ended_on
+         FROM teacher_batch_students tbs JOIN students s ON s.id = tbs.student_id
+         JOIN users u ON u.id = s.user_id WHERE tbs.teacher_batch_id = $1`,
+        [dr.teacher_batch_id]
+      ) : await client.query(
         `SELECT drs.student_id, u.email, s.first_name, s.last_name
          FROM deployment_request_students drs
          LEFT JOIN users u ON u.id = drs.student_id
@@ -355,12 +377,12 @@ async function archivePeriod(periodId, archivedBy) {
         `INSERT INTO archive_deployment_requests
           (archive_period_id, original_request_id, batch_label, strand, num_students,
            notes, direction, status, coordinator_name, supervisor_name,
-           student_names, responded_at, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13)`,
+           student_names, responded_at, created_at, partner_deployment)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)`,
         [
           archiveId, dr.id, dr.batch_label, dr.strand, dr.num_students,
           dr.notes, dr.direction, dr.status, cName, sName,
-          safeJSON(studentsRes.rows), dr.responded_at, dr.created_at,
+          safeJSON(studentsRes.rows), dr.responded_at, dr.created_at, dr.partner_deployment,
         ]
       );
     }
@@ -427,8 +449,8 @@ async function archivePeriod(periodId, archivedBy) {
     }
     await client.query(
       `DELETE FROM deployment_requests
-       WHERE coordinator_id = ANY($1::int[]) OR supervisor_id = ANY($1::int[])`,
-      [allUserIds]
+       WHERE id = ANY($2::int[]) OR coordinator_id = ANY($1::int[]) OR supervisor_id = ANY($1::int[])`,
+      [allUserIds, deploymentsRes.rows.map((row) => row.id)]
     );
 
     await client.query(
@@ -455,13 +477,13 @@ async function archivePeriod(periodId, archivedBy) {
     const teacherPks = teachers.map((t) => t.teacher_pk).filter(Boolean);
     const supervisorPks = supervisors.map((s) => s.supervisor_pk).filter(Boolean);
     const coordinatorPks = coordinators.map((c) => c.coordinator_pk).filter(Boolean);
-    if (teacherPks.length) {
+    if (!keepStaff && teacherPks.length) {
       await client.query(`DELETE FROM teachers WHERE id = ANY($1::int[])`, [teacherPks]);
     }
-    if (supervisorPks.length) {
+    if (!keepStaff && supervisorPks.length) {
       await client.query(`DELETE FROM supervisors WHERE id = ANY($1::int[])`, [supervisorPks]);
     }
-    if (coordinatorPks.length) {
+    if (!keepStaff && coordinatorPks.length) {
       await client.query(`DELETE FROM coordinators WHERE id = ANY($1::int[])`, [coordinatorPks]);
     }
 
@@ -472,10 +494,10 @@ async function archivePeriod(periodId, archivedBy) {
       [batchIds]
     );
 
-    await client.query(
-      `DELETE FROM immersion_periods WHERE id = $1`,
-      [periodId]
-    );
+    if (keepStaff) {
+      await client.query('UPDATE users SET immersion_period_id = NULL WHERE immersion_period_id = $1', [periodId]);
+    }
+    await client.query("UPDATE immersion_periods SET is_active = false, status = 'completed', updated_at = now() WHERE id = $1", [periodId]);
 
     await client.query('COMMIT');
     return { archiveId, period };

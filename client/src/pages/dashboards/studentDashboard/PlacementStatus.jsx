@@ -51,7 +51,7 @@ function PersonCard({ roleLabel, person, fallback, accent, onClick }) {
   );
 }
 
-function PlacementStatus() {
+function PlacementStatus({ days = [] }) {
   const [submission, setSubmission] = useState(null);
   const [placement, setPlacement] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -67,7 +67,7 @@ function PlacementStatus() {
       try {
         const [statusResult, placementResult] = await Promise.all([
           getMySubmissionStatus(),
-          getMyPlacementInfo().catch(() => ({ placement: null })),
+          getMyPlacementInfo(),
         ]);
         if (!cancelled) {
           setSubmission(statusResult.submission || {});
@@ -98,6 +98,7 @@ function PlacementStatus() {
   // The list shows classmates only — the signed-in student is excluded.
   const classmates = (placement?.classmates || []).filter((c) => !c.is_me);
   const otherCount = classmates.length;
+  const placementDays = days.filter((day) => day.teacher_batch_id === placement?.batch_id);
 
   return (
     <div className={styles.page}>
@@ -125,6 +126,22 @@ function PlacementStatus() {
 
       {placement && (
         <>
+          <div className={styles.section}>
+            <div className={styles.sectionTitle}>Partner workplace and schedule</div>
+            <div className={styles.infoRow}>
+              <span className={styles.infoLabel}>Partner company</span>
+              <span className={styles.infoValue}>{placement.company_name || 'Awaiting company details'}</span>
+              {placement.company_address && <span className={styles.infoValue}>{placement.company_address}</span>}
+            </div>
+            <div className={styles.infoRow}>
+              <span className={styles.infoLabel}>Deployment schedule</span>
+              <span className={styles.infoValue}>
+                {placementDays.length
+                  ? `${formatLongDate(placementDays[0].date)} – ${formatLongDate(placementDays.at(-1).date)} · ${placementDays.length} workdays`
+                  : 'Awaiting schedule'}
+              </span>
+            </div>
+          </div>
           <div className={styles.section}>
             <div className={styles.sectionTitle}>
               My Deployment Team

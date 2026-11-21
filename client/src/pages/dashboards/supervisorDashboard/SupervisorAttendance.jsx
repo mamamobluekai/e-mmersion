@@ -104,7 +104,7 @@ function SupervisorAttendance() {
       const res = await getSupervisorBatches();
       const list = res.batches || [];
       setBatches(list);
-      if (list.length > 0) setSelectedId(list[0].request_id);
+      if (list.length > 0) setSelectedId(`${list[0].source}:${list[0].request_id}`);
       else setSelectedId(null);
     } catch (err) {
       setError(err.message);
@@ -122,7 +122,8 @@ function SupervisorAttendance() {
     setLoadingAtt(true);
     setError('');
     try {
-      const res = await getSupervisorBatchAttendance(selectedId);
+      const [source, id] = selectedId.split(':');
+      const res = await getSupervisorBatchAttendance(id, { source });
       const data = res || { students: [], days: [], dates: [], batch_label: null };
       setAttendance(data);
       setSelectedDay(data.days?.[0] ?? 1);
@@ -183,6 +184,16 @@ function SupervisorAttendance() {
       </div>
 
       {error && <Feedback type="error" message={error} />}
+      {batches.length > 1 && <div className={styles.dayPicker}>
+        <label htmlFor="attendance-batch">Batch</label>
+        <select id="attendance-batch" className={styles.daySelect} value={selectedId || ''}
+          onChange={(event) => setSelectedId(event.target.value)}>
+          {batches.map((batch) => {
+            const key = `${batch.source}:${batch.request_id}`;
+            return <option key={key} value={key}>{batch.batch_label}</option>;
+          })}
+        </select>
+      </div>}
 
       {loadingBatches ? (
         <p className={styles.loading}>Loading batches...</p>

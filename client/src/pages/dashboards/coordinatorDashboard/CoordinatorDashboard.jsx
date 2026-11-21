@@ -8,11 +8,12 @@ import RequirementsReview from './RequirementsReview';
 import TeacherBatches from './TeacherBatches';
 import DeployStudents from './DeployStudents';
 import Supervisors from './Supervisors';
-import DeploymentRequests from './DeploymentRequests';
+import PartnerDeployments from '../PartnerDeployments';
 import UserProfileSettings from '../UserProfileSettings';
 import Announcements from '../Announcements/Announcements';
 import CoordinatorOverview from './CoordinatorOverview';
 import About from '../About';
+import SpecialStudents from './SpecialStudents';
 
 function CoordinatorDashboard({ user, onLogout }) {
   return (
@@ -24,13 +25,15 @@ function CoordinatorDashboard({ user, onLogout }) {
         <Route index element={<CoordinatorOverview />} />
         <Route path="students" element={<StudentApprovals />} />
         <Route path="student-list" element={<StudentList />} />
+        <Route path="special-students" element={<SpecialStudents />} />
         <Route path="upload-students" element={<Navigate to="/dashboard/coordinator/students" replace />} />
          <Route path="requirements" element={<RequirementsReview />} />
          <Route path="announcements" element={<Announcements user={user} />} />
          <Route path="batches" element={<TeacherBatches />} />
          <Route path="batches/deploy/:batchId" element={<DeployStudents />} />
-         <Route path="supervisors" element={<Supervisors />} />
-         <Route path="deployment" element={<DeploymentRequests />} />
+         <Route path="partner-institutions" element={<Supervisors />} />
+         <Route path="supervisors" element={<Navigate to="/dashboard/coordinator/partner-institutions" replace />} />
+         <Route path="deployment" element={<PartnerDeployments />} />
 
          <Route path="profile" element={<UserProfileSettings />} />
          <Route path="about" element={<About user={user} />} />

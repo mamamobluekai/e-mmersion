@@ -254,6 +254,8 @@ function BatchCard({ batch }) {
 
 function DeploymentCard({ deployment }) {
   const status = String(deployment.status || '').toLowerCase();
+  const archivedPlacement = deployment.partner_deployment;
+  const schedule = archivedPlacement?.confirmed_schedule;
 
   return (
     <div className={styles.deploymentCard}>
@@ -270,9 +272,24 @@ function DeploymentCard({ deployment }) {
         <span>Direction: {deployment.direction}</span>
         <span>Coordinator: {deployment.coordinator_name || '—'}</span>
         <span>Supervisor: {deployment.supervisor_name || '—'}</span>
-        <span>Students: {deployment.num_students}</span>
+        <span>{schedule ? `Confirmed seats: ${schedule.capacity}` : `Students: ${deployment.num_students}`}</span>
         <span>Created: {formatDateTime(deployment.created_at)}</span>
       </div>
+
+      {schedule && <p className={styles.notes}>
+        Confirmed workdays from {formatDate(schedule.start)} to {formatDate(schedule.end)}
+        {archivedPlacement.school_clearance && ` · School clearance ${archivedPlacement.school_clearance.reference}`}
+      </p>}
+      {archivedPlacement?.history?.length > 0 && (
+        <Collapsible label="Deployment history" count={archivedPlacement.history.length}>
+          <ul>
+            {archivedPlacement.history.map((entry) => <li key={entry.id}>
+              {formatDateTime(entry.created_at)} · {entry.action.replaceAll('_', ' ')}
+              {entry.reason && ` · ${entry.reason}`}
+            </li>)}
+          </ul>
+        </Collapsible>
+      )}
 
       {deployment.student_names?.length > 0 && (
         <Collapsible label="Student list" count={deployment.student_names.length}>

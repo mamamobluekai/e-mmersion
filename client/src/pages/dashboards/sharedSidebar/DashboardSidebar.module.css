@@ -773,3 +773,80 @@
     background: rgba(0, 0, 0, 0.5) !important;
   }
 }
+.navGroup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 14px 12px 5px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: .64rem;
+  font-weight: 750;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+
+.navGroup::before,
+.navGroup::after {
+  height: 1px;
+  flex: 1;
+  min-width: 8px;
+  background: rgba(255, 255, 255, 0.3);
+  content: '';
+}
+
+.navDisabled {
+  opacity: .66;
+  cursor: default;
+  pointer-events: none;
+}
+
+.navItem[data-trail] {
+  position: relative;
+  margin-inline-start: 22px;
+}
+
+.navItem[data-trail]::before {
+  position: absolute;
+  z-index: 1;
+  inset-inline-start: -11px;
+  inset-block: -4px;
+  width: 1px;
+  background: currentColor;
+  opacity: .35;
+  content: '';
+  pointer-events: none;
+}
+
+.navItem[data-trail='start']::before { inset-block-start: 50%; }
+.navItem[data-trail='end']::before { inset-block-end: 50%; }
+
+.navItem[data-trail] > .navLink::after {
+  position: absolute;
+  z-index: 1;
+  inset-inline-start: -14px;
+  inset-block-start: calc(50% - 3px);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+  pointer-events: none;
+}
+
+.navItem[data-trail] .navLink { gap: 8px; }
+.navItem[data-trail] .linkIcon { display: none; }
+.navItem[data-trail] .badge { flex-shrink: 0; }
+
+.navChildren {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 2px 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.navChildren .navLink {
+  min-height: 44px;
+  padding-inline: 10px;
+  font-size: 0.82rem;
+}

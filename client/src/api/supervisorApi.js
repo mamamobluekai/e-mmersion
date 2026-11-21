@@ -31,10 +31,11 @@ export async function getSupervisorBatches() {
 }
 
 // Attendance of one batch's students, grouped by immersion day.
-export async function getSupervisorBatchAttendance(requestId, { from, to } = {}) {
+export async function getSupervisorBatchAttendance(requestId, { from, to, source } = {}) {
   const params = new URLSearchParams();
   if (from) params.set('from', from);
   if (to) params.set('to', to);
+  if (source) params.set('source', source);
   const qs = params.toString();
   return apiFetch(`/batches/${requestId}/attendance${qs ? `?${qs}` : ''}`);
 }

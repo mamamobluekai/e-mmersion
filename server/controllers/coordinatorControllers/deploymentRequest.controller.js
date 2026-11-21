@@ -44,7 +44,10 @@ const getSupervisorsListForCoordinator = async (req, res) => {
        FROM users u
        JOIN supervisors s ON s.user_id = u.id
        WHERE u.role = 'supervisor'
-         AND ($1::text IS NULL OR u.status = $1)
+         AND (
+           ($1::text IS NULL AND lower(u.status) IN ('approved', 'active'))
+           OR ($1::text IS NOT NULL AND u.status = $1)
+         )
        ORDER BY u.created_at DESC`,
       [status || null]
     );
@@ -226,7 +229,7 @@ const getMyDeploymentRequests = async (req, res) => {
        JOIN users cu ON cu.id = dr.coordinator_id
        JOIN coordinators c ON c.user_id = cu.id
        LEFT JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-       WHERE dr.coordinator_id = $1
+       WHERE dr.coordinator_id = $1 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'
        GROUP BY dr.id, sv.first_name, sv.last_name, sv.company_name, c.first_name, c.last_name
        ORDER BY dr.created_at DESC`,
       [coordinatorId]
@@ -263,7 +266,7 @@ const getSupervisorDeploymentRequests = async (req, res) => {
        JOIN users u ON u.id = dr.coordinator_id
        JOIN coordinators c ON c.user_id = u.id
        LEFT JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-       WHERE dr.supervisor_id = $1
+       WHERE dr.supervisor_id = $1 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'
        GROUP BY dr.id, c.first_name, c.last_name
        ORDER BY dr.created_at DESC`,
       [supervisorId]
@@ -315,7 +318,8 @@ const getDeploymentRequestStudents = async (req, res) => {
     const requesterId = req.user.id;
 
     const ownership = await pool.query(
-      `SELECT id FROM deployment_requests WHERE id = $1 AND (coordinator_id = $2 OR supervisor_id = $2)`,
+      `SELECT id FROM deployment_requests WHERE id = $1 AND (coordinator_id = $2 OR supervisor_id = $2)
+       AND COALESCE(to_jsonb(deployment_requests)->>'workflow_version', '1') = '1'`,
       [requestId, requesterId]
     );
     if (ownership.rows.length === 0) {
@@ -354,7 +358,8 @@ const approveDeploymentRequest = async (req, res) => {
     const { requestId } = req.params;
 
     const ownership = await client.query(
-      `SELECT id, status, coordinator_id, batch_label FROM deployment_requests WHERE id = $1 AND supervisor_id = $2`,
+      `SELECT dr.id, dr.status, dr.coordinator_id, dr.batch_label FROM deployment_requests dr
+       WHERE dr.id = $1 AND dr.supervisor_id = $2 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'`,
       [requestId, supervisorId]
     );
     if (ownership.rows.length === 0) {
@@ -402,7 +407,8 @@ const rejectDeploymentRequest = async (req, res) => {
     const { requestId } = req.params;
 
     const ownership = await client.query(
-      `SELECT id, status, coordinator_id, batch_label FROM deployment_requests WHERE id = $1 AND supervisor_id = $2`,
+      `SELECT dr.id, dr.status, dr.coordinator_id, dr.batch_label FROM deployment_requests dr
+       WHERE dr.id = $1 AND dr.supervisor_id = $2 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'`,
       [requestId, supervisorId]
     );
     if (ownership.rows.length === 0) {
@@ -450,7 +456,8 @@ const deleteDeploymentRequest = async (req, res) => {
     const { requestId } = req.params;
 
     const ownership = await client.query(
-      `SELECT id FROM deployment_requests WHERE id = $1 AND coordinator_id = $2`,
+      `SELECT dr.id FROM deployment_requests dr
+       WHERE dr.id = $1 AND dr.coordinator_id = $2 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'`,
       [requestId, coordinatorId]
     );
     if (ownership.rows.length === 0) {
@@ -490,7 +497,8 @@ const fulfillSupervisorRequest = async (req, res) => {
 
     const requestCheck = await client.query(
       `SELECT id, status, num_students, direction, supervisor_id
-       FROM deployment_requests WHERE id = $1 AND coordinator_id = $2`,
+       FROM deployment_requests dr WHERE id = $1 AND coordinator_id = $2
+       AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'`,
       [requestId, coordinatorUserId]
     );
     if (requestCheck.rows.length === 0) {
@@ -538,6 +546,13 @@ const fulfillSupervisorRequest = async (req, res) => {
 
     const studentProfileIds = studentsCheck.rows.map((r) => r.student_profile_id);
 
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM students WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [studentProfileIds]);
+    const lockedRequest = await client.query('SELECT status FROM deployment_requests WHERE id = $1 FOR UPDATE', [requestId]);
+    if (!lockedRequest.rowCount || lockedRequest.rows[0].status === 'fulfilled') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This request has already changed.' });
+    }
     const alreadyPlaced = await client.query(
       `SELECT DISTINCT tbs.student_id, tb.batch_label
        FROM teacher_batch_students tbs
@@ -548,6 +563,7 @@ const fulfillSupervisorRequest = async (req, res) => {
     );
     if (alreadyPlaced.rows.length > 0) {
       const conflict = alreadyPlaced.rows[0];
+      await client.query('ROLLBACK');
       return res.status(409).json({
         error: conflict.batch_label
           ? `One or more students are already assigned to batch "${conflict.batch_label}". A student can only be assigned to one batch.`
@@ -562,6 +578,7 @@ const fulfillSupervisorRequest = async (req, res) => {
     );
     if (supervisorConflict.rows.length > 0) {
       const conflict = supervisorConflict.rows[0];
+      await client.query('ROLLBACK');
       return res.status(409).json({
         error: conflict.batch_label
           ? `This supervisor is already assigned to batch "${conflict.batch_label}". A supervisor can only be assigned to one batch.`
@@ -573,15 +590,15 @@ const fulfillSupervisorRequest = async (req, res) => {
     const teacherRow = await client.query('SELECT id FROM teachers WHERE user_id = $1', [teacher_id]);
     const teachersId = teacherRow.rows[0]?.id;
     if (!teachersId) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invalid teacher_id.' });
     }
 
     const max = Number(max_students) || uniqueStudentIds.length;
     if (!Number.isInteger(max) || max <= 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'max_students must be a positive integer.' });
     }
-
-    await client.query('BEGIN');
 
     const batchResult = await client.query(
       `INSERT INTO teacher_batches (coordinator_id, teacher_id, batch_label, max_students, supervisor_id)

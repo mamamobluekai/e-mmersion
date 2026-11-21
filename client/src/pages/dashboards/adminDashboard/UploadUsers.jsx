@@ -34,7 +34,7 @@ export default function UploadUsers() {
           <div>
             <h3>Add User Manually</h3>
             <p>
-              Create a teacher, supervisor, or coordinator account one at a time
+              Create a teacher or coordinator account one at a time
               by entering their details.
             </p>
           </div>
@@ -57,7 +57,7 @@ export default function UploadUsers() {
           <div>
             <h3>Upload Users from Excel</h3>
             <p>
-              Import teachers, supervisors, and coordinators in bulk from an
+              Import teachers and coordinators in bulk from an
               Excel workbook.
             </p>
           </div>

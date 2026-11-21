@@ -9,7 +9,7 @@ const {
   getBatchTeacherUserId,
 } = require('../../services/notification.service');
 
-// Find the student's currently assigned batch (teacher_batch_students stores user id).
+// Find the currently assigned batch using the student's profile ID.
 //
 // A student can be linked to more than one teacher batch. This previously picked
 // whichever row was inserted most recently (`ORDER BY assigned_at DESC LIMIT 1`),
@@ -23,17 +23,23 @@ const {
 // back to the most recent assignment when no schedule is active.
 async function getActiveBatch(userId) {
   const r = await pool.query(
-    `SELECT tbs.teacher_batch_id, tb.teacher_id,
+    `SELECT tbs.teacher_batch_id, tb.teacher_id, to_jsonb(tbs)->>'deployment_started_on' AS deployment_started_on,
+            to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed,
             EXISTS (
               SELECT 1 FROM work_immersion_schedules wis
               WHERE wis.teacher_batch_id = tbs.teacher_batch_id
                 AND $2::date BETWEEN wis.start_date AND wis.end_date
+                AND (to_jsonb(tbs)->>'deployment_started_on' IS NULL OR
+                  $2::date >= (to_jsonb(tbs)->>'deployment_started_on')::date)
             ) AS has_active_schedule
      FROM teacher_batch_students tbs
-     LEFT JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
+     JOIN students s ON s.id = tbs.student_id
      JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-     WHERE (s.user_id = $1 OR tbs.student_id = $1)
-     ORDER BY has_active_schedule DESC, tbs.assigned_at DESC
+     WHERE s.user_id = $1 AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
+         $2::date < (to_jsonb(tbs)->>'deployment_ended_on')::date AND
+         $2::date >= (to_jsonb(tbs)->>'deployment_started_on')::date)
+       AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
+     ORDER BY has_active_schedule DESC, tbs.assigned_at DESC, tbs.id DESC
      LIMIT 1`,
     [userId, todayInTimezone('Asia/Manila')]
   );
@@ -144,8 +150,11 @@ exports.checkIn = async (req, res) => {
     if (!batch) return res.status(400).json({ message: 'You are not assigned to a batch yet.' });
 
     const attendanceDate = todayInTimezone();
+    if (batch.deployment_started_on && attendanceDate < batch.deployment_started_on) {
+      return res.status(409).json({ message: 'Your attendance opens on your first assigned workday.' });
+    }
     const state = await resolveAttendanceState(batch.teacher_batch_id);
-    if (!state.manual_open) {
+    if (batch.partner_managed || !state.manual_open) {
       await assertDateInSchedule(batch.teacher_batch_id, attendanceDate);
     }
     await assertTypeOpen(batch.teacher_batch_id, 'time_in');
@@ -248,8 +257,11 @@ exports.checkOut = async (req, res) => {
     if (!batch) return res.status(400).json({ message: 'You are not assigned to a batch yet.' });
 
     const attendanceDate = todayInTimezone();
+    if (batch.deployment_started_on && attendanceDate < batch.deployment_started_on) {
+      return res.status(409).json({ message: 'Your attendance opens on your first assigned workday.' });
+    }
     const state = await resolveAttendanceState(batch.teacher_batch_id);
-    if (!state.manual_open) {
+    if (batch.partner_managed || !state.manual_open) {
       await assertDateInSchedule(batch.teacher_batch_id, attendanceDate);
     }
     await assertTypeOpen(batch.teacher_batch_id, 'time_out');
@@ -357,7 +369,8 @@ exports.getStudentAttendanceAccess = async (req, res) => {
     // returned `date` to be off by one day, which in turn caused submitted
     // appeals to be saved with the wrong date. Manila is the system-wide TZ.
     const today = todayInTimezone('Asia/Manila');
-    const schedule = await getBatchScheduleForDate(batch.teacher_batch_id, today);
+    const schedule = batch.deployment_started_on && today < batch.deployment_started_on
+      ? null : await getBatchScheduleForDate(batch.teacher_batch_id, today);
 
     const rec = await pool.query(
       `SELECT id, student_id, status, check_in_time, check_out_time, appeal_time_in_id, appeal_time_out_id

@@ -383,7 +383,12 @@ async function getMyEvaluation(req, res) {
        LEFT JOIN supervisors sv ON sv.user_id = se.evaluator_id
        JOIN students s ON s.id = se.student_id
        WHERE se.student_id = $1
-       ORDER BY se.created_at DESC
+         AND (se.overall_score IS NOT NULL OR se.overall_percentage IS NOT NULL)
+         AND (se.batch_id IS NULL OR EXISTS (
+           SELECT 1 FROM teacher_batch_students tbs
+           WHERE tbs.student_id = se.student_id AND tbs.teacher_batch_id = se.batch_id
+         ))
+       ORDER BY se.created_at DESC, se.id DESC
        LIMIT 1`,
       [studentId]
     );

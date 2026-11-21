@@ -29,6 +29,7 @@ import { useToast } from '../../components/admin/toastContext';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/themeContextValue';
 import { getPasswordFormProblem } from '../../utils/passwordPolicy';
+import { StudentSettingsBackButton } from './studentDashboard/StudentSettings';
 import styles from './UserProfileSettings.module.css';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -75,7 +76,7 @@ const roleLabels = {
   admin: 'Administrator',
 };
 
-export default function UserProfileSettings() {
+export default function UserProfileSettings({ section = null }) {
   const { showToast } = useToast();
   const { user, updateUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -109,7 +110,7 @@ export default function UserProfileSettings() {
   });
 
   const fileInputRef = useRef(null);
-  const [activeSection, setActiveSection] = useState('profile');
+  const [activeSection, setActiveSection] = useState(section || 'profile');
 
   // Which section, if any, is open as a modal. Only the Profile Info / Account
   // Security buttons set this, and the stylesheet hides those buttons on desktop
@@ -376,16 +377,27 @@ export default function UserProfileSettings() {
   // read-only, while password and app preferences remain editable below.
   const canEditProfile = user?.role === 'admin';
   const profileLocked = !canEditProfile;
+  const sectionTitle = {
+    profile: 'Profile Information',
+    security: 'Account Security',
+    additional: 'Additional Settings',
+  }[section];
 
   // The section cards, rendered either inline in the page (desktop) or inside
   // the phone-only modal. Defined once and mounted in a single place at a time, so
   // there is never a duplicate copy of these forms in the DOM - the shared input
   // ids and the single fileInputRef stay valid.
   const contentGrid = (
-      <div className={styles.contentGrid}>
+      <div
+        className={`${styles.contentGrid} ${section ? styles.singleSectionGrid : ''}`}
+        data-active-section={section || undefined}
+      >
 
         {/* PROFILE INFORMATION */}
-        <section className={`${styles.card} ${activeSection === 'profile' ? styles.cardActiveMobile : ''}`}>
+        <section
+          data-section="profile"
+          className={`${styles.card} ${activeSection === 'profile' ? styles.cardActiveMobile : ''}`}
+        >
 
           <div className={styles.cardHeader}>
             <div className={styles.cardIcon}>
@@ -553,7 +565,10 @@ export default function UserProfileSettings() {
         </section>
 
         {/* SECURITY */}
-        <section className={`${styles.card} ${activeSection === 'security' ? styles.cardActiveMobile : ''}`}>
+        <section
+          data-section="security"
+          className={`${styles.card} ${activeSection === 'security' ? styles.cardActiveMobile : ''}`}
+        >
 
           <div className={styles.cardHeader}>
             <div className={styles.cardIcon}>
@@ -663,7 +678,10 @@ export default function UserProfileSettings() {
         </section>
 
         {/* ADDITIONAL SETTINGS */}
-        <section className={`${styles.card} ${activeSection === 'additional' ? styles.cardActiveMobile : ''}`}>
+        <section
+          data-section="additional"
+          className={`${styles.card} ${activeSection === 'additional' ? styles.cardActiveMobile : ''}`}
+        >
 
           <div className={styles.cardHeader}>
             <div className={styles.cardIcon}>
@@ -808,10 +826,20 @@ export default function UserProfileSettings() {
   return (
     <div className={styles.page}>
 
-     
+      {section && (
+        <header className={styles.singleSectionHeader}>
+          <h1>{sectionTitle}</h1>
+        </header>
+      )}
 
       {/* PROFILE HERO */}
-      <section className={styles.profileHero}>
+      <section
+        className={`${styles.profileHero} ${
+          section === 'security' || section === 'additional'
+            ? styles.profileHeroSecurityHidden
+            : ''
+        }`}
+      >
 
         <div className={styles.heroBackground} />
 
@@ -882,7 +910,7 @@ export default function UserProfileSettings() {
       {/* MOBILE SECTION SWITCHER
           Hidden by the stylesheet on desktop, so on a phone each button opens
           its section as a modal. */}
-      <div className={styles.sectionSwitcher}>
+      {!section && <div className={styles.sectionSwitcher}>
         <button
           type="button"
           className={`${styles.switcherButton} ${activeSection === 'profile' ? styles.switcherButtonActive : ''}`}
@@ -907,19 +935,19 @@ export default function UserProfileSettings() {
           <Settings size={16} />
           Additional Settings
         </button>
-      </div>
+      </div>}
 
       {/* CONTENT GRID */}
       {/* Hidden while a section is open in a modal, so the page behind the
           overlay does not show a second copy of the same form. */}
-      {!modalSection && contentGrid}
+      {(section || !modalSection) && contentGrid}
 
       {/* =========================================
           PHONE SECTION MODAL
           Portalled to <body> so it is not clipped by .page or trapped behind the
           dashboard sidebar. Only mounts on phones, from the two switcher buttons.
       ========================================= */}
-      {modalSection
+      {!section && modalSection
         && createPortal(
           <div
             className={styles.sectionModalOverlay}
@@ -967,6 +995,7 @@ export default function UserProfileSettings() {
           document.body
         )}
 
+      {section && <StudentSettingsBackButton />}
     </div>
   );
 }

@@ -1,6 +1,14 @@
 const pool = require('../db');
 
 const MS_PER_DAY = 86400000;
+const HOURS_PER_IMMERSION_DAY = 8;
+
+class ConfirmedDeploymentDates extends Set {
+  constructor(dates, exclusions) {
+    super(exclusions);
+    this.workdays = dates;
+  }
+}
 
 /**
  * The single source of truth for "which calendar days count as work immersion
@@ -63,7 +71,7 @@ function isWeekend(date) {
 function durationToDays(durationType, durationValue) {
   const value = Number(durationValue);
   if (!Number.isFinite(value) || value <= 0) return 0;
-  return durationType === 'hours' ? Math.ceil(value / 8) : Math.floor(value);
+  return durationType === 'hours' ? Math.ceil(value / HOURS_PER_IMMERSION_DAY) : Math.floor(value);
 }
 
 /**
@@ -84,6 +92,9 @@ function buildImmersionDays(startDate, durationType, durationValue, opts = {}) {
   if (!start || totalDays <= 0) return [];
 
   const blocked = opts.blockedDates instanceof Set ? opts.blockedDates : new Set(opts.blockedDates || []);
+  if (blocked instanceof ConfirmedDeploymentDates) {
+    return blocked.workdays.map((date, index) => ({ number: index + 1, date }));
+  }
   const maxLookahead = opts.maxLookaheadDays || totalDays * 10 + 60;
 
   const days = [];
@@ -277,7 +288,17 @@ async function loadExcludedDates(teacherBatchId, supervisorId) {
   // The union is what the day builder must skip. Returning these as two
   // separate sets caused every call site to pass only the blocked dates, so
   // holidays were silently counted as immersion days.
-  const blocked = new Set([...blockedOnly, ...holidays]);
+  const globalExclusions = [...blockedOnly, ...holidays];
+  let blocked = new Set(globalExclusions);
+  if (teacherBatchId != null) {
+    const { rows: [deployment] } = await pool.query(`
+      SELECT dr.status, to_jsonb(dr)->'confirmed_schedule'->'dates' AS dates
+      FROM deployment_requests dr
+      WHERE dr.teacher_batch_id = $1 AND to_jsonb(dr)->>'workflow_version' = '2'`, [teacherBatchId]);
+    if (deployment) {
+      blocked = new ConfirmedDeploymentDates(deployment.status === 'cancelled' ? [] : deployment.dates ?? [], globalExclusions);
+    }
+  }
 
   return { blocked, blockedOnly, blockedRows, holidays, holidayRows };
 }
@@ -391,4 +412,5 @@ module.exports = {
   fromDateOnly,
   addDays,
   MS_PER_DAY,
+  HOURS_PER_IMMERSION_DAY,
 };

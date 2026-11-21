@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   School,
-  BriefcaseBusiness,
   ShieldCheck,
   Plus,
   AlertCircle,
@@ -30,23 +29,6 @@ const ROLES = [
     ],
   },
   {
-    key: 'supervisor',
-    label: 'Supervisor',
-    icon: BriefcaseBusiness,
-    description:
-      'Add partner company supervisors manually, including the host company they represent.',
-    fields: [
-      { key: 'firstName', label: 'First Name', type: 'text', required: true },
-      { key: 'lastName', label: 'Last Name', type: 'text', required: true },
-      { key: 'email', label: 'Email', type: 'email', required: true },
-      { key: 'employeeId', label: 'Employee ID', type: 'text', required: true },
-      { key: 'companyName', label: 'Company Name', type: 'text', required: true },
-      { key: 'position', label: 'Position', type: 'text', required: true },
-      { key: 'department', label: 'Department', type: 'text', required: false },
-      { key: 'phone', label: 'Phone Number', type: 'tel', required: false },
-    ],
-  },
-  {
     key: 'coordinator',
     label: 'Coordinator',
     icon: ShieldCheck,
@@ -69,7 +51,6 @@ const EMPTY_FORM = {
   lastName: '',
   email: '',
   employeeId: '',
-  companyName: '',
   department: '',
   position: '',
   phone: '',
@@ -108,7 +89,6 @@ export default function ManualUser() {
         email: formData.email.trim(),
         role: selectedRole,
         employeeId: formData.employeeId ? formData.employeeId.trim() : undefined,
-        companyName: formData.companyName ? formData.companyName.trim() : undefined,
         department: formData.department ? formData.department.trim() : undefined,
         position: formData.position ? formData.position.trim() : undefined,
         phone: formData.phone ? formData.phone.trim() : undefined,
@@ -137,7 +117,7 @@ export default function ManualUser() {
           <p className={styles.eyebrow}>Create User Account</p>
           <h1>Manually Add User</h1>
           <p>
-            Create a teacher, supervisor, or coordinator account one at a time.
+            Create a teacher or coordinator account one at a time.
             Accounts are created as pending and stay inactive until approved.
             Approving one emails the user a link to set their own password.
           </p>

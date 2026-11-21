@@ -204,6 +204,36 @@ const getAllStudents = async (req, res) => {
   }
 };
 
+const getSpecialNeedsStudents = async (req, res) => {
+  try {
+    const coordinatorResult = await pool.query(
+      'SELECT strand FROM coordinators WHERE user_id = $1',
+      [req.user.id]
+    );
+    if (!coordinatorResult.rows.length) {
+      return res.status(403).json({ error: 'Coordinator profile not found.' });
+    }
+
+    const strand = coordinatorResult.rows[0].strand || null;
+    const result = await pool.query(
+      `SELECT s.id, s.student_number, s.first_name, s.middle_name, s.last_name, s.suffix,
+              s.section, s.track_strand AS strand, s.has_special_needs
+         FROM students s
+         JOIN users u ON u.id = s.user_id
+        WHERE u.role = 'student'
+          AND s.has_special_needs IS TRUE
+          AND s.archived_at IS NULL
+          AND ($1::text IS NULL OR s.track_strand = $1)
+        ORDER BY s.last_name, s.first_name, s.student_number`,
+      [strand]
+    );
+    res.json({ students: result.rows });
+  } catch (err) {
+    console.error('Get special needs students error:', err);
+    res.status(500).json({ error: 'Could not load students who requested support.' });
+  }
+};
+
 // Mirrors the admin approval flow but without handing out a temp password.
 // Approval issues a one-time link instead; the student opens it and chooses
 // their own password + confirmation on /set-password?token=..., which the page
@@ -895,4 +925,5 @@ bulkRestoreStudents,
   bulkPermanentDeleteStudents,
   updateStudentEmail,
   getAllStudents,
+  getSpecialNeedsStudents,
 };

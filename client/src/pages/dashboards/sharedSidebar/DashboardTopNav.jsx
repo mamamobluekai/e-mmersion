@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LogOut,
   Menu,
+  Settings,
   UserRound,
 } from 'lucide-react';
 import styles from './DashboardTopNav.module.css';
@@ -37,7 +38,12 @@ function DashboardTopNav({
       ? user.role.charAt(0).toUpperCase() + user.role.slice(1)
       : '';
 
-  const profilePath = `/dashboard/${user?.role?.toLowerCase()}/profile`;
+  const isStudent = user?.role?.toLowerCase() === 'student';
+  const profilePath = isStudent
+    ? '/dashboard/student/settings/profile'
+    : `/dashboard/${user?.role?.toLowerCase()}/profile`;
+  const settingsPath = '/dashboard/student/settings';
+  const settingsActive = isStudent && location.pathname.startsWith(settingsPath);
 
   useEffect(() => {
     setProfileOpen(false);
@@ -95,6 +101,19 @@ function DashboardTopNav({
 
          {/* NOTIFICATIONS */}
          <NotificationBell />
+
+         {isStudent && (
+           <button
+             type="button"
+             className={`${styles.notificationButton} ${settingsActive ? styles.settingsButtonActive : ''}`}
+             onClick={() => navigate(settingsPath)}
+             aria-label="Settings"
+             title="Settings"
+             aria-current={settingsActive ? 'page' : undefined}
+           >
+             <Settings size={19} strokeWidth={1.8} />
+           </button>
+         )}
 
          {/* GROUP CHAT */}
          <div className={hideProfileOnMobile ? styles.hideOnMobile : undefined}>

@@ -4,9 +4,11 @@ const evaluation = require('../controllers/evaluationControllers/evaluation.cont
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 
+const { requirePostImmersion } = require('../middleware/studentJourneyAccess');
+
 router.use(authenticate);
 
-router.get('/criteria', evaluation.getCriteria);
+router.get('/criteria', requirePostImmersion, evaluation.getCriteria);
 
 router.put('/criteria', authorize('supervisor', 'coordinator', 'admin'), evaluation.saveCriteria);
 
@@ -18,7 +20,7 @@ router.get('/batch/:batchId', authorize('supervisor', 'coordinator', 'teacher', 
 
 router.get('/my-students', authorize('supervisor'), evaluation.listMyStudents);
 
-router.get('/me', authorize('student'), evaluation.getMyEvaluation);
+router.get('/me', authorize('student'), requirePostImmersion, evaluation.getMyEvaluation);
 
 router.get('/teacher/my-batch', authorize('teacher'), evaluation.getTeacherBatchEvaluations);
 

@@ -1170,6 +1170,7 @@ async function getImmersionPeriods() {
        WHERE immersion_period_id IS NOT NULL
        GROUP BY immersion_period_id
      ) tb ON ip.id = tb.immersion_period_id
+     WHERE NOT EXISTS (SELECT 1 FROM archive_periods ap WHERE ap.immersion_period_id = ip.id)
      ORDER BY ip.start_date DESC`
   );
   return result.rows;

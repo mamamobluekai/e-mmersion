@@ -133,9 +133,14 @@ const submitAppeal = async (req, res) => {
                   )
               ) AS covers_date
        FROM teacher_batch_students tbs
-       JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
+       JOIN students s ON s.id = tbs.student_id
        JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-       WHERE s.user_id = $1 OR tbs.student_id = $1
+       WHERE s.user_id = $1
+         AND (to_jsonb(tbs)->>'deployment_started_on' IS NULL OR
+           $2::date >= (to_jsonb(tbs)->>'deployment_started_on')::date)
+         AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
+           $2::date < (to_jsonb(tbs)->>'deployment_ended_on')::date)
+         AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
        ORDER BY covers_date DESC, has_schedule DESC, tbs.assigned_at DESC
        LIMIT 1`,
       [userId, preferredDate]

@@ -199,10 +199,10 @@ export default function SupervisorCalendar({ compact = false }) {
       // Keep the current selection when it survives the refresh, otherwise fall
       // back to the first batch so the calendar always has something to show.
       setSelectedBatchId((prev) => {
-        if (prev && list.some((b) => String(b.request_id) === String(prev))) {
+        if (prev && list.some((b) => `${b.source}:${b.request_id}` === prev)) {
           return prev;
         }
-        return list.length ? String(list[0].request_id) : '';
+        return list.length ? `${list[0].source}:${list[0].request_id}` : '';
       });
     } catch (err) {
       setError(err.message || 'Unable to load your batches.');
@@ -221,7 +221,8 @@ export default function SupervisorCalendar({ compact = false }) {
     setError('');
 
     try {
-      const result = await getSupervisorBatchAttendance(batchId);
+      const [source, id] = batchId.split(':');
+      const result = await getSupervisorBatchAttendance(id, { source });
       setAttendance(result);
     } catch (err) {
       setAttendance(null);
@@ -348,6 +349,14 @@ export default function SupervisorCalendar({ compact = false }) {
       </div>
 
       {/* ---------- STATES ---------- */}
+      {batches.length > 1 && <label>
+        Batch <select aria-label="Calendar batch" value={selectedBatchId} onChange={(event) => setSelectedBatchId(event.target.value)}>
+          {batches.map((batch) => {
+            const key = `${batch.source}:${batch.request_id}`;
+            return <option key={key} value={key}>{batch.batch_label}</option>;
+          })}
+        </select>
+      </label>}
 
       {loading && (
         <div className={styles.loadingState} role="status">

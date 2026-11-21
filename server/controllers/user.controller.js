@@ -611,7 +611,7 @@ const getMe = async (req, res) => {
         ...user,
         terms_accepted: Boolean(user.terms_accepted),
         skip_splash_screen: Boolean(user.skip_splash_screen),
-        must_change_password: user.role === 'student' && user.status === 'pending_activation',
+        must_change_password: ['student', 'supervisor'].includes(user.role) && user.status === 'pending_activation',
         ...roleData,
       },
     });
@@ -621,10 +621,10 @@ const getMe = async (req, res) => {
   }
 };
 
-const setStudentActivationPassword = async (req, res) => {
+const setActivationPassword = async (req, res) => {
   try {
-    if (req.user.role !== 'student') {
-      return res.status(403).json({ error: 'Only students can complete student activation.' });
+    if (!['student', 'supervisor'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'This account cannot complete temporary-password activation.' });
     }
 
     const { password, confirmPassword } = req.body;
@@ -637,16 +637,16 @@ const setStudentActivationPassword = async (req, res) => {
     const result = await pool.query(
       `UPDATE users
        SET password = $1,
-           status = 'active',
+           status = CASE WHEN $3 = 'student' THEN 'active' ELSE 'approved' END,
            temporary_password_expires_at = NULL,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $2
-         AND role = 'student'
+         AND role = $3
          AND status = 'pending_activation'
          AND terms_accepted = TRUE
          AND temporary_password_expires_at > CURRENT_TIMESTAMP
        RETURNING id, email, role, status, terms_accepted, skip_splash_screen`,
-      [await hashPassword(password), req.user.id],
+      [await hashPassword(password), req.user.id, req.user.role],
     );
 
     if (result.rows.length === 0) {
@@ -656,7 +656,7 @@ const setStudentActivationPassword = async (req, res) => {
     }
 
     res.json({
-      message: 'Password set successfully. Your student account is active.',
+      message: 'Password set successfully. Your account is active.',
       user: {
         ...result.rows[0],
         terms_accepted: Boolean(result.rows[0].terms_accepted),
@@ -665,7 +665,7 @@ const setStudentActivationPassword = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('Student activation password error:', err);
+    console.error('Temporary password activation error:', err);
     res.status(500).json({ error: 'Server error while activating your account.' });
   }
 };
@@ -813,7 +813,8 @@ module.exports = {
   logout,
   getMe,
   setPassword,
-  setStudentActivationPassword,
+  setActivationPassword,
+  setStudentActivationPassword: setActivationPassword,
   checkImmersionPeriodAccess,
 };
 

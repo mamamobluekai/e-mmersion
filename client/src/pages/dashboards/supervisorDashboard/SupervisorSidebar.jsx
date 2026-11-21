@@ -20,10 +20,11 @@ const links = [
     label: 'Dashboard',
     icon: ChartNoAxesColumn,
     end: true,
+    group: 'Pre-Immersion',
   },
   {
-    to: '/dashboard/supervisor/create-deployment-request',
-    label: 'Request Students',
+    to: '/dashboard/supervisor/deployment-requests',
+    label: 'Deployment Requests',
     icon: Upload,
   },
   {
@@ -32,14 +33,15 @@ const links = [
     icon: Layers,
   },
   {
-    to: '/dashboard/supervisor/attendance',
-    label: 'Student Attendance',
-    icon: CalendarDays,
-  },
-  {
     to: '/dashboard/supervisor/attendance-schedule',
     label: 'Attendance Schedule',
     icon: CalendarDays,
+  },
+  {
+    to: '/dashboard/supervisor/attendance',
+    label: 'Student Attendance',
+    icon: CalendarDays,
+    group: 'Immersion Proper',
   },
   {
     to: '/dashboard/supervisor/reports-concerns',
@@ -50,6 +52,7 @@ const links = [
     to: '/dashboard/supervisor/evaluate',
     label: 'Evaluate Student',
     icon: ClipboardPenLine,
+    group: 'Post-Immersion',
   },
   // 'Student Criteria' was retired: criteria are now edited from the
   // "Grading Criteria" modal on the Evaluate Student page.

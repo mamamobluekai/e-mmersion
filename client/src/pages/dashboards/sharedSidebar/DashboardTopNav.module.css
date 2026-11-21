@@ -157,6 +157,16 @@
   color: #7f0d2b;
 }
 
+.settingsButtonActive {
+  background: #f8f4f5;
+  color: #7f0d2b;
+}
+
+.notificationButton:focus-visible {
+  outline: 3px solid rgba(157, 35, 57, 0.24);
+  outline-offset: 2px;
+}
+
 .notificationDot {
   position: absolute;
 
@@ -527,6 +537,11 @@ html[data-theme='dark'] .notificationButton {
 }
 
 html[data-theme='dark'] .notificationButton:hover {
+  background: var(--wim-bg-hover);
+  color: var(--wim-brand);
+}
+
+html[data-theme='dark'] .settingsButtonActive {
   background: var(--wim-bg-hover);
   color: var(--wim-brand);
 }

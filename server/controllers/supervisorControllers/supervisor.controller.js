@@ -1,6 +1,7 @@
 // Supervisor-facing views for assigned batches, students, and attendance.
 const pool = require('../../db');
 const { createNotification } = require('../../services/notification.service');
+const { getStudentSchedules } = require('../teacherControllers/immersionSchedule.controller');
 
 // node-postgres returns DATE columns as JS Dates anchored to UTC midnight.
 // Serializing those directly would let the client land on a neighbouring
@@ -75,10 +76,12 @@ async function getSupervisorBatches(supervisorUserId) {
      JOIN coordinators c ON c.user_id = dr.coordinator_id
      LEFT JOIN users cu ON cu.id = c.user_id
      WHERE dr.supervisor_id = $1 AND dr.direction = 'coordinator_to_supervisor' AND dr.status = 'approved'
+       AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'
      ORDER BY dr.created_at DESC`, [supervisorUserId]
   );
   const teacher = await pool.query(
     `SELECT tb.id AS request_id, tb.batch_label, NULL AS strand,
+            dr.id AS partner_request_id,
             c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
             c.employee_id AS coordinator_employee_id, c.department AS coordinator_department,
             c.designation AS coordinator_designation, c.school AS coordinator_school,
@@ -93,7 +96,10 @@ async function getSupervisorBatches(supervisorUserId) {
      LEFT JOIN users cu ON cu.id = c.user_id
      LEFT JOIN teachers t ON t.id = tb.teacher_id
      LEFT JOIN users tu ON tu.id = t.user_id
-     WHERE tb.supervisor_id = $1 ORDER BY tb.created_at DESC`, [supervisorUserId]
+     LEFT JOIN deployment_requests dr ON (to_jsonb(dr)->>'teacher_batch_id')::int = tb.id
+       AND to_jsonb(dr)->>'workflow_version' = '2'
+     WHERE tb.supervisor_id = $1 AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
+     ORDER BY tb.created_at DESC`, [supervisorUserId]
   );
   return [...deployment.rows, ...teacher.rows];
 }
@@ -130,7 +136,7 @@ async function getDeploymentStudents(requestId, supervisorUserId) {
 
 async function getTeacherBatchStudents(requestId, supervisorUserId) {
   const result = await pool.query(
-    `SELECT ${studentFields}
+    `SELECT ${studentFields}, to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed
      FROM teacher_batch_students tbs JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
      JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id JOIN users u ON u.id = s.user_id
      JOIN student_requirement_submissions srs ON srs.user_id = u.id
@@ -141,10 +147,19 @@ async function getTeacherBatchStudents(requestId, supervisorUserId) {
        ORDER BY c.created_at DESC
        LIMIT 1
      ) cert ON true
-     WHERE tbs.teacher_batch_id = $1 AND tb.supervisor_id = $2 ORDER BY s.last_name, s.first_name`,
+     WHERE tbs.teacher_batch_id = $1 AND tb.supervisor_id = $2
+       AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
+         (to_jsonb(tbs)->>'deployment_ended_on')::date > (to_jsonb(tbs)->>'deployment_started_on')::date)
+     ORDER BY s.last_name, s.first_name`,
     [requestId, supervisorUserId]
   );
-  return result.rows;
+  return result.rows.map((student) => {
+    if (!student.partner_managed) return student;
+    const { student_id, user_id, first_name, last_name, student_number, grade_level, section, track_strand,
+      photo_url, requirements_status, certificate_number, certificate_url } = student;
+    return { student_id, user_id, first_name, last_name, student_number, grade_level, section, track_strand,
+      strand: track_strand, photo_url, requirements_status, certificate_number, certificate_url, partner_managed: true };
+  });
 }
 
 async function getAssignedStudentForReport(supervisorUserId, studentId, batchId, batchSource) {
@@ -175,20 +190,27 @@ async function getAssignedStudentForReport(supervisorUserId, studentId, batchId,
 
 // Reuses the supervisor's existing schedule resolution so the progress bars
 // line up with the same immersion days the attendance report already uses.
-async function resolveImmersionDaysForStudent(supervisorUserId, studentProfileId) {
+async function resolveImmersionDaysForStudent(supervisorUserId, studentProfileId, batchId = null) {
   const userIdRes = await pool.query('SELECT user_id FROM students WHERE id = $1', [studentProfileId]);
   const userId = userIdRes.rows[0]?.user_id;
   if (!userId) return [];
 
   const tbsRes = await pool.query(
-    `SELECT tb.id, tb.batch_label
+    `SELECT tb.id, tb.batch_label, to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed
      FROM teacher_batches tb
      JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-     WHERE tb.supervisor_id = $1 AND tbs.student_id = $2
+     WHERE tb.supervisor_id = $1 AND tbs.student_id = $2 AND ($3::int IS NULL OR tb.id = $3)
+     ORDER BY (to_jsonb(tbs)->>'deployment_ended_on' IS NULL) DESC, tbs.assigned_at DESC, tb.id DESC
      LIMIT 1`,
-    [supervisorUserId, studentProfileId]
+    [supervisorUserId, studentProfileId, batchId]
   );
   const batch = tbsRes.rows[0];
+  if (batch?.partner_managed) {
+    const schedule = (await getStudentSchedules(studentProfileId)).find((row) => row.teacher_batch_id === batch.id);
+    return schedule ? schedule.attendance_dates.split(',').filter(Boolean).map((date, index) => ({
+      date, number: (schedule.first_day_number || 1) + index, is_makeup: false,
+    })) : [];
+  }
 
   let schedule = null;
   if (batch) {
@@ -286,10 +308,14 @@ const getStudentProgress = async (req, res) => {
 
     // Ownership: teacher-batch membership, or a deployment request for this supervisor.
     const ownerRes = await pool.query(
-      `SELECT tb.id AS batch_id, tb.batch_label, 'teacher' AS source
+      `SELECT tb.id AS batch_id, tb.batch_label, 'teacher' AS source,
+              to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed
        FROM teacher_batches tb
        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
        WHERE tb.supervisor_id = $1 AND tbs.student_id = $2
+         AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
+           (to_jsonb(tbs)->>'deployment_ended_on')::date > (to_jsonb(tbs)->>'deployment_started_on')::date)
+       ORDER BY (to_jsonb(tbs)->>'deployment_ended_on' IS NULL) DESC, tbs.assigned_at DESC
        LIMIT 1`,
       [supervisorUserId, studentProfileId]
     );
@@ -327,7 +353,7 @@ const getStudentProgress = async (req, res) => {
     // Form requirements (Personal Information, Guardian & Emergency) are filled
     // in on the Requirements page rather than uploaded, so they are left out of
     // this upload list: there is no file for the supervisor to check.
-    const reqRes = await pool.query(
+    const reqRes = batch.partner_managed ? { rows: [] } : await pool.query(
       `SELECT dt.id, dt.code, dt.name, dt.section, dt.sort_order,
               sd.id AS document_id, sd.status AS document_status, sd.original_name,
               sd.uploaded_date, sd.verified_date, sd.remarks
@@ -355,7 +381,7 @@ const getStudentProgress = async (req, res) => {
     const requirementsCompleted = requirements.filter((r) => r.completed).length;
 
     // ---- 2. ATTENDANCE per immersion day ----
-    const immersionDays = await resolveImmersionDaysForStudent(supervisorUserId, studentProfileId);
+    const immersionDays = await resolveImmersionDaysForStudent(supervisorUserId, studentProfileId, teacherBatchId);
     const dateList = immersionDays.map((d) => d.date);
 
     const attRes = dateList.length
@@ -493,7 +519,7 @@ const getSupervisorBatchStudents = async (req, res) => {
 
       const summaries = new Map();
       for (const s of students) {
-        const days = await resolveImmersionDaysForStudent(req.user.id, s.student_id);
+        const days = await resolveImmersionDaysForStudent(req.user.id, s.student_id, batch.source === 'teacher' ? batch.request_id : null);
         const totalDays = days.length;
         const present = attByStudent.get(s.student_id) || 0;
         const docsDone = docDaysByStudent.get(s.student_id) || 0;
@@ -513,8 +539,9 @@ const getSupervisorBatchStudents = async (req, res) => {
       const enrichedStudents = students.map((s) => {
         const docs = docsByStudent.get(s.student_id) || { total: 0, verified: 0 };
         const attendanceDays = attByStudent.get(s.student_id) || 0;
-        const completed =
-          s.requirements_status === 'Approved' && docs.total > 0 && docs.verified === docs.total && attendanceDays >= 10;
+        const completed = s.partner_managed
+          ? Number(summaries.get(s.student_id)?.attendance_total) > 0 && summaries.get(s.student_id)?.attendance_rate === 100
+          : s.requirements_status === 'Approved' && docs.total > 0 && docs.verified === docs.total && attendanceDays >= 10;
         return {
           ...s,
           attendance_days: attendanceDays,
@@ -567,8 +594,12 @@ const getBatchAttendance = async (req, res) => {
   try {
     const supervisorUserId = req.user.id;
     const { requestId } = req.params;
-    const batchResult = await pool.query(`SELECT dr.id, dr.batch_label, 'deployment' AS source FROM deployment_requests dr WHERE dr.id = $1 AND dr.supervisor_id = $2
-      UNION ALL SELECT tb.id, tb.batch_label, 'teacher' AS source FROM teacher_batches tb WHERE tb.id = $1 AND tb.supervisor_id = $2 LIMIT 1`, [requestId, supervisorUserId]);
+    const source = ['teacher', 'deployment'].includes(req.query.source) ? req.query.source : null;
+    const batchResult = await pool.query(`SELECT dr.id, dr.batch_label, 'deployment' AS source FROM deployment_requests dr
+      WHERE dr.id = $1 AND dr.supervisor_id = $2 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'
+        AND ($3::text IS NULL OR $3 = 'deployment')
+      UNION ALL SELECT tb.id, tb.batch_label, 'teacher' AS source FROM teacher_batches tb
+      WHERE tb.id = $1 AND tb.supervisor_id = $2 AND ($3::text IS NULL OR $3 = 'teacher') LIMIT 1`, [requestId, supervisorUserId, source]);
     if (!batchResult.rows.length) return res.status(404).json({ error: 'Batch not found.' });
     const batch = batchResult.rows[0];
     const usersResult = batch.source === 'teacher'

@@ -21,6 +21,7 @@ const FIELD_LABELS = {
   last_name: 'Last Name',
   suffix: 'Suffix',
   gender: 'Gender',
+  has_special_needs: 'Do you have a disability or special needs?',
   birthdate: 'Birthdate',
   age: 'Age',
   contact_number: 'Contact Number',
@@ -45,9 +46,12 @@ const FIELD_LABELS = {
 
 // `requiredInfoFields` is the single list of profile fields the student must
 // fill in; the two sections below are the split the Requirements page shows.
-const PERSONAL_FIELDS = requiredInfoFields.filter(
-  (field) => !field.startsWith('guardian_') && !field.startsWith('emergency_')
-);
+const PERSONAL_FIELDS = [
+  ...requiredInfoFields.filter(
+    (field) => !field.startsWith('guardian_') && !field.startsWith('emergency_')
+  ),
+  'has_special_needs',
+];
 
 const GUARDIAN_FIELDS = requiredInfoFields.filter(
   (field) => field.startsWith('guardian_') || field.startsWith('emergency_')

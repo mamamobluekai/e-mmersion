@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   getSupervisorBatches,
   getSupervisorBatchStatus,
@@ -166,6 +167,7 @@ function SupervisorSchedule() {
 
   useEffect(() => {
     if (!selectedId) return;
+    if (batches.find((batch) => Number(batch.request_id) === Number(selectedId))?.partner_request_id) return;
     let cancelled = false;
     async function load() {
       setLoading(true);
@@ -199,7 +201,7 @@ function SupervisorSchedule() {
     }
     load();
     return () => { cancelled = true; };
-  }, [selectedId]);
+  }, [selectedId, batches]);
 
   // Edit unlocks the fields and swaps the button to Save.
   const startEditWindows = () => {
@@ -407,6 +409,14 @@ function SupervisorSchedule() {
       </div>
 
       {error && <Feedback type="error" message={error} onClose={() => setError('')} />}
+      {batches.length > 1 && <label>
+        Batch <select value={selectedId ?? ''} onChange={(event) => {
+          setError('');
+          setSelectedId(Number(event.target.value));
+        }}>
+          {batches.map((batch) => <option key={batch.request_id} value={batch.request_id}>{batch.batch_label}</option>)}
+        </select>
+      </label>}
 
       {notice && (
         <div className={styles.toast} role="status">
@@ -432,6 +442,13 @@ function SupervisorSchedule() {
         </div>
       ) : batches.length === 0 ? (
         <div className={styles.empty}>No teacher batches linked to you yet.</div>
+      ) : selectedBatch?.partner_request_id ? (
+        <section className={styles.card}>
+          <div className={styles.cardHeader}><h2>{selectedBatch.batch_label}</h2></div>
+          <Link to={`/dashboard/supervisor/deployment-requests?request=${selectedBatch.partner_request_id}`}>
+            View confirmed schedule and propose changes
+          </Link>
+        </section>
       ) : loading ? (
         <div className={styles.loadingPanel}>
           <span className={styles.spinner} />

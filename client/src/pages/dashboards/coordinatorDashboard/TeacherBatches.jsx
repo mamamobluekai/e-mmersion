@@ -675,6 +675,10 @@ function TeacherBatches() {
                   {/* Once students are deployed the deploy action lives in the
                       modal ("+ Add student") — hiding it here keeps a single,
                       unambiguous entry point. */}
+                  {b.partner_request_id ? <button className={styles.btnGhost} type="button"
+                    onClick={() => navigate(`/dashboard/coordinator/deployment?request=${b.partner_request_id}`)}>
+                    Manage deployment
+                  </button> : <>
                   {(b.students || []).length === 0 && (
                     <button
                       className={styles.btnGhost}
@@ -743,6 +747,7 @@ function TeacherBatches() {
                       <Trash2 size={16} />
                     </button>
                   )}
+                  </>}
                 </div>
               </div>
             );
@@ -1085,7 +1090,7 @@ function TeacherBatches() {
               </button>
               {/* Once students are in, adding happens here too — the deploy
                   entry point stays singular and unambiguous. */}
-              {(viewing.students || []).length === 0 && (
+              {!viewing.partner_request_id && (viewing.students || []).length === 0 && (
                 <button
                   className={styles.btn}
                   type="button"
