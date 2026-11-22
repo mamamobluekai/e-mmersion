@@ -1,6 +1,10 @@
 const { isValidManilaDate } = require('../utils/manilaDate');
 const { addDays, fromDateOnly, toDateOnly } = require('../utils/immersionDays');
 
+const REQUIRED_IMMERSION_HOURS = 80;
+const CREDITABLE_HOURS_PER_DAY = 8;
+const REQUIRED_IMMERSION_DAYS = REQUIRED_IMMERSION_HOURS / CREDITABLE_HOURS_PER_DAY;
+
 function requireThat(condition, message, status = 400) {
   if (!condition) throw Object.assign(new Error(message), { status });
 }
@@ -50,26 +54,25 @@ function acceptedStrands(value, known, total, quotas = {}) {
   return { strands: strands?.map((key) => catalog.get(key)) ?? null, caps };
 }
 
-function proposedDates(start, end, period, today) {
+function proposedDates(start, period, today) {
   requireThat(isValidManilaDate(start) && start >= dateAfter(today, 7),
     'Choose a start date at least seven calendar days from today in the Philippines.');
   requireThat(start >= period.start_date && start <= period.end_date,
-    'The start date must be within the selected school immersion period.');
-  requireThat(!end || (isValidManilaDate(end) && end > start && end <= period.end_date),
-    'The end date must be after the start and within the selected school immersion period.');
+    'The start date must be within an active school immersion period.');
 }
 
-function buildConfirmedDates({ start, end, blocked, extraBlocked, period, previous, today }) {
-  requireThat(isValidManilaDate(start) && isValidManilaDate(end) && end > start &&
-    start >= period.start_date && end <= period.end_date,
-  'Choose a schedule within the school immersion period, with an end after the start.');
-  requireThat(end <= dateAfter(start, 370), 'Choose a schedule covering at most 370 days.');
-  if (!previous) proposedDates(start, end, period, today);
-  else if (previous.start > today && start !== previous.start) proposedDates(start, end, period, today);
+function buildFixedDurationDates({ start, blocked, extraBlocked = [], period, previous, today, requireNotice = true }) {
+  requireThat(isValidManilaDate(start) && start >= period.start_date && start <= period.end_date,
+    'Choose a start date within an active school immersion period.');
+  if (!previous && requireNotice) proposedDates(start, period, today);
+  else if (requireNotice && previous && previous.start > today && start !== previous.start) {
+    proposedDates(start, period, today);
+  }
   requireThat(!previous || previous.start > today || start === previous.start,
     'The start date is fixed once the placement begins.');
   requireThat(Array.isArray(extraBlocked) && extraBlocked.every((date) =>
-    isValidManilaDate(date) && date >= start && date <= end), 'Enter valid excluded dates inside the schedule.');
+    isValidManilaDate(date) && date >= start && date <= period.end_date),
+  'Enter valid excluded dates inside the school immersion period.');
 
   const excluded = new Set([...blocked, ...extraBlocked]);
   const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -77,32 +80,34 @@ function buildConfirmedDates({ start, end, blocked, extraBlocked, period, previo
   requireThat(schoolDays.size <= 5 && [...schoolDays].every((day) =>
     weekdays.some((weekday) => weekday.toLowerCase() === day)),
   'The school period must list up to five valid working days per week.');
+
   const dates = [];
-  for (let date = start; date <= end; date = dateAfter(date, 1)) {
+  const lastDateToCheck = dateAfter(start, 370);
+  for (let date = start; date <= period.end_date && date <= lastDateToCheck; date = dateAfter(date, 1)) {
     if (previous && date <= today) {
       if (previous.dates.includes(date)) dates.push(date);
-      continue;
+    } else {
+      const day = fromDateOnly(date).getDay();
+      if (schoolDays.has(weekdays[day].toLowerCase()) && !excluded.has(date)) dates.push(date);
     }
-    const day = fromDateOnly(date).getDay();
-    if (schoolDays.has(weekdays[day].toLowerCase()) && !excluded.has(date)) dates.push(date);
+    if (dates.length === REQUIRED_IMMERSION_DAYS) break;
   }
-  requireThat(dates[0] === start && dates.at(-1) === end,
-    'Use actual workdays as the start and end dates.');
+  requireThat(dates.length === REQUIRED_IMMERSION_DAYS,
+    'The selected start date does not leave enough workdays in the active period to complete 80 hours.');
+  requireThat(dates[0] === start, 'The selected start date must be an available workday.');
   requireThat(!previous || previous.dates.filter((date) => date <= today).every((date) => dates.includes(date)),
     'Past workdays and today’s workday must be preserved.');
   return dates;
 }
 
-function attendanceWindows(input) {
-  const keys = ['time_in_open', 'time_in_close', 'time_out_open', 'time_out_close'];
-  const windows = Object.fromEntries(keys.map((key) => [key, input?.[key]]));
-  requireThat(keys.every((key) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(windows[key])),
-    'Enter valid attendance times.');
-  requireThat(windows.time_in_open < windows.time_in_close &&
-    windows.time_in_close < windows.time_out_open && windows.time_out_open < windows.time_out_close,
-  'Attendance windows must be in chronological order.');
-  return windows;
+function proposalStudents(input, seats) {
+  requireThat(Array.isArray(input), 'Select a valid list of students.');
+  const ids = input.map(positiveId);
+  requireThat(new Set(ids).size === ids.length, 'A student can appear only once on the proposal.');
+  requireThat(ids.length <= seats, 'Adjust the proposed student assignments to fit the capacity.', 409);
+  return ids.sort((first, second) => first - second);
 }
 
 module.exports = { requireThat, positiveId, note, dateAfter, capacity, strandKey, acceptedStrands,
-  proposedDates, buildConfirmedDates, attendanceWindows };
+  REQUIRED_IMMERSION_HOURS, CREDITABLE_HOURS_PER_DAY, REQUIRED_IMMERSION_DAYS,
+  proposedDates, buildFixedDurationDates, proposalStudents };

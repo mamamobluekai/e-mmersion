@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { CheckCircle, ChevronDown, ChevronUp, Filter, X } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import { getTeacherReportsConcerns, confirmReportConcern } from '../../../api/teacherApi';
 import styles from './TeacherReportsConcerns.module.css';
 
@@ -51,20 +51,20 @@ function getSupervisorName(report) {
     .join(' ') || '—';
 }
 
-function getBatchLabel(report) {
-  return report.batch_label || 'Deployment Batch';
+function getInstitutionLabel(report) {
+  return report.batch_label || 'Partner Institution';
 }
 
 function getConcernType(report) {
   return report.category || 'Uncategorized';
 }
 
-function groupByBatch(reports) {
+function groupByInstitution(reports) {
   const groups = {};
   reports.forEach((report) => {
-    const batchLabel = getBatchLabel(report);
-    if (!groups[batchLabel]) groups[batchLabel] = [];
-    groups[batchLabel].push(report);
+    const institutionLabel = getInstitutionLabel(report);
+    if (!groups[institutionLabel]) groups[institutionLabel] = [];
+    groups[institutionLabel].push(report);
   });
   return groups;
 }
@@ -82,7 +82,7 @@ function sortByPriority(reports) {
 
 function TeacherReportsConcerns() {
   const { token } = useAuth();
-  const { batchId } = useTeacherBatch();
+  const { institutionId } = usePartnerInstitution();
   const [reports, setReports] = useState([]);
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -122,29 +122,29 @@ function TeacherReportsConcerns() {
     }
   };
 
-  // The batch is chosen in the sidebar; switching it refilters this page.
+  // The partner institution is chosen in the sidebar; switching it refilters this page.
   useEffect(() => {
     setCollapsedGroups([]);
     setDetailReport(null);
-  }, [batchId]);
+  }, [institutionId]);
 
   const priorityOptions = ['urgent', 'high', 'normal', 'low'];
 
-  const batchReports = useMemo(
+  const institutionReports = useMemo(
     () =>
       reports.filter(
-        (report) => !batchId || Number(report.teacher_batch_id) === Number(batchId)
+        (report) => !institutionId || Number(report.teacher_batch_id) === Number(institutionId)
       ),
-    [reports, batchId]
+    [reports, institutionId]
   );
 
   const filteredReports = sortByPriority(
     priorityFilter === 'all'
-      ? batchReports
-      : batchReports.filter((report) => getPriorityLevel(report.priority) === priorityFilter)
+      ? institutionReports
+      : institutionReports.filter((report) => getPriorityLevel(report.priority) === priorityFilter)
   );
 
-  const groupedReports = groupByBatch(filteredReports);
+  const groupedReports = groupByInstitution(filteredReports);
 
   const toggleGroup = (label) => {
     setCollapsedGroups((prev) => (
@@ -173,7 +173,7 @@ function TeacherReportsConcerns() {
         <div>
           <h1>Reports and Concerns</h1>
           <p className={styles.pageDescription}>
-            Reports and concerns submitted by supervisors for students in your batches.
+            Reports and concerns submitted by supervisors for students in your partner institutions.
           </p>
         </div>
       </header>
@@ -198,37 +198,37 @@ function TeacherReportsConcerns() {
         </div>
       </div>
 
-      {!batchId && !loading && (
-        <p className={styles.empty}>Select a batch in the sidebar to view its concerns.</p>
+      {!institutionId && !loading && (
+        <p className={styles.empty}>Select a partner institution in the sidebar to view its concerns.</p>
       )}
 
       {loading && <p className={styles.info}>Loading reports and concerns…</p>}
 
-      {!loading && batchId && Object.keys(groupedReports).length === 0 && (
+      {!loading && institutionId && Object.keys(groupedReports).length === 0 && (
         <p className={styles.empty}>No reports or concerns match these filters.</p>
       )}
 
-      {!loading && batchId && Object.entries(groupedReports).map(([batchLabelKey, batchGroupReports]) => {
-        const isCollapsed = collapsedGroups.includes(batchLabelKey);
+      {!loading && institutionId && Object.entries(groupedReports).map(([institutionLabelKey, institutionGroupReports]) => {
+        const isCollapsed = collapsedGroups.includes(institutionLabelKey);
 
         return (
-          <div key={batchLabelKey} className={styles.batchGroup}>
+          <div key={institutionLabelKey} className={styles.batchGroup}>
             <div
               className={styles.batchHeader}
-              onClick={() => toggleGroup(batchLabelKey)}
+              onClick={() => toggleGroup(institutionLabelKey)}
               role="button"
               tabIndex={0}
               aria-expanded={!isCollapsed}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  toggleGroup(batchLabelKey);
+                  toggleGroup(institutionLabelKey);
                 }
               }}
             >
-              <span className={styles.batchLabel}>{batchLabelKey}</span>
+              <span className={styles.batchLabel}>{institutionLabelKey}</span>
               <span className={styles.batchCount}>
-                {batchGroupReports.length} concern{batchGroupReports.length !== 1 ? 's' : ''}
+                {institutionGroupReports.length} concern{institutionGroupReports.length !== 1 ? 's' : ''}
               </span>
               {isCollapsed ? (
                 <ChevronDown size={16} className={styles.batchToggle} />
@@ -239,7 +239,7 @@ function TeacherReportsConcerns() {
 
             {!isCollapsed && (
               <div className={styles.batchContent}>
-                {batchGroupReports.map((report) => {
+                {institutionGroupReports.map((report) => {
                   const priorityLevel = getPriorityLevel(report.priority);
                   const itemClass = priorityLevel === 'urgent'
                     ? styles.itemUrgent
@@ -342,8 +342,8 @@ function TeacherReportsConcerns() {
 
               <div className={styles.drawerGrid}>
                 <div className={styles.detailItem}>
-                  <span className={styles.detailLabel}>Batch</span>
-                  {getBatchLabel(detailReport)}
+                  <span className={styles.detailLabel}>Partner Institution</span>
+                  {getInstitutionLabel(detailReport)}
                 </div>
                 <div className={styles.detailItem}>
                   <span className={styles.detailLabel}>Concern type</span>

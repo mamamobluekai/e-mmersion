@@ -217,15 +217,7 @@ export async function permanentDeleteDocumentType(id) {
 }
 
 /* ---------------- Teachers / Supervisors ---------------- */
-export async function getTeachers(status) {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-  return apiFetch(`/teachers${qs}`);
-}
 
-export async function getSupervisors(status) {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-  return apiFetch(`/supervisors${qs}`);
-}
 
 /* ---------------- Partner institutions / workplace supervisors ---------------- */
 export async function getPartnerInstitutions() {
@@ -273,102 +265,5 @@ export async function resendPartnerSupervisorActivation(institutionId, superviso
   return apiFetch(
     `/partner-institutions/${institutionId}/supervisors/${supervisorId}/resend-activation`,
     jsonBody({}),
-  );
-}
-
-/* ---------------- Teacher batches ---------------- */
-export async function getBatches() {
-  return apiFetch('/batches/assigned');
-}
-
-// Loads a single batch (with its students) so the deploy page works when the
-// URL is opened or refreshed directly, without the list from the parent page.
-export async function getTeacherBatch(batchId) {
-  return apiFetch(`/teacher-batches/${batchId}`);
-}
-
-export async function getCompletedStudents() {
-  return apiFetch('/students/completed');
-}
-
-export async function createTeacherBatch({ teacher_id, batch_label, max_students, supervisor_id }) {
-  return apiFetch('/teacher-batches', jsonBody({ teacher_id, batch_label, max_students, supervisor_id }));
-}
-
-export async function updateTeacherBatch(batchId, { batch_label, max_students, supervisor_id, teacher_id }) {
-  return apiFetch(`/teacher-batches/${batchId}`, jsonBody({ batch_label, max_students, supervisor_id, teacher_id }, 'PUT'));
-}
-
-export async function deleteTeacherBatch(batchId) {
-  return apiFetch(`/teacher-batches/${batchId}`, { method: 'DELETE' });
-}
-
-// A completed batch is archived rather than removed, so its immersion record
-// survives and it can be restored from the archive modal.
-export async function archiveTeacherBatch(batchId) {
-  return apiFetch(`/teacher-batches/${batchId}/archive`, jsonBody({}));
-}
-
-export async function restoreTeacherBatch(batchId) {
-  return apiFetch(`/teacher-batches/${batchId}/restore`, jsonBody({}));
-}
-
-export async function getArchivedBatches() {
-  return apiFetch('/batches/archived');
-}
-
-export async function assignStudentsToBatch(batchId, student_ids) {
-  return apiFetch(`/teacher-batches/${batchId}/assign`, jsonBody({ student_ids }));
-}
-
-export async function getBatchStudents(batchId) {
-  return apiFetch(`/teacher-batches/${batchId}/students`);
-}
-
-/* ---------------- Deployment requests ---------------- */
-export async function getCoordinators() {
-  return apiFetch('/coordinators');
-}
-
-export async function getSupervisorDeploymentRequests() {
-  return apiFetch('/deployment-requests/supervisor');
-}
-
-// The supervisor only asks for N students — the batch LABEL is supplied by the
-// coordinator when they fulfil the request.
-export async function createSupervisorRequest({ coordinator_id, strand, num_students, notes }) {
-  return apiFetch('/supervisor-requests', jsonBody({ coordinator_id, strand, num_students, notes }));
-}
-
-export async function getMyDeploymentRequests() {
-  return apiFetch('/deployment-requests/me');
-}
-
-export async function createDeploymentRequest({ supervisor_id, batch_label, strand, notes, student_ids }) {
-  return apiFetch('/deployment-requests', jsonBody({ supervisor_id, batch_label, strand, notes, student_ids }));
-}
-
-export async function deleteDeploymentRequest(requestId) {
-  return apiFetch(`/deployment-requests/${requestId}`, { method: 'DELETE' });
-}
-
-export async function getDeploymentRequestStudents(requestId) {
-  return apiFetch(`/deployment-requests/${requestId}/students`);
-}
-
-export async function approveDeploymentRequest(requestId) {
-  return apiFetch(`/deployment-requests/${requestId}/approve`, { method: 'PUT' });
-}
-
-export async function rejectDeploymentRequest(requestId) {
-  return apiFetch(`/deployment-requests/${requestId}/reject`, { method: 'PUT' });
-}
-
-// The coordinator labels the batch, picks the students and attaches the
-// supervisor to the created teacher batch.
-export async function fulfillSupervisorRequest(requestId, { batch_label, student_ids, teacher_id, max_students }) {
-  return apiFetch(
-    `/deployment-requests/${requestId}/fulfill`,
-    jsonBody({ batch_label, student_ids, teacher_id, max_students })
   );
 }

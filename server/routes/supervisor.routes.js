@@ -5,7 +5,6 @@ const supervisor = require('../controllers/supervisorControllers/supervisor.cont
 const supervisorDashboard = require('../controllers/supervisorControllers/dashboard.controller');
 const immersionExclusions = require('../controllers/supervisorControllers/immersionExclusions.controller');
 const partnerDeployment = require('../controllers/coordinatorControllers/partnerDeployment.controller');
-const { requireLegacyBatch } = require('../middleware/requireLegacyBatch');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 
@@ -15,9 +14,14 @@ router.get('/dashboard', authorize('supervisor'), supervisorDashboard.getSupervi
 router.get('/partner-deployments', authorize('supervisor'), partnerDeployment.list);
 router.get('/partner-deployments/:id', authorize('supervisor'), partnerDeployment.detail);
 router.put('/partner-deployments/:id/review', authorize('supervisor'), partnerDeployment.review);
-router.put('/partner-deployments/:id/schedule', authorize('supervisor'), partnerDeployment.setSchedule);
+router.put('/partner-deployments/:id/amendment', authorize('supervisor'), partnerDeployment.proposeAmendment);
+router.put('/partner-deployments/:id/amendment-decision', authorize('supervisor'), partnerDeployment.decideAmendment);
 
-// Supervisor: their deployment batches and the students assigned to each.
+// Supervisor: their partner institutions and the students assigned to each.
+router.get('/partner-institutions', authorize('supervisor'), supervisor.getSupervisorPartnerInstitutions);
+router.get('/partner-institutions/:institutionId/students', authorize('supervisor'), supervisor.getSupervisorPartnerInstitutionStudents);
+
+// Legacy batch endpoints
 router.get('/batches', authorize('supervisor'), supervisor.getSupervisorBatchStudents);
 router.get('/batches/:requestId/attendance', authorize('supervisor'), supervisor.getBatchAttendance);
 
@@ -28,25 +32,10 @@ router.get(
   authorize('supervisor'),
   supervisor.getStudentProgress
 );
-// ----- Blocked immersion dates & Philippine holidays -----
-// A supervisor can block a date for a batch (e.g. a school event) so it is not
-// counted as an immersion day, even on a Mon-Fri. Holidays are excluded
-// everywhere by the shared day builder in server/utils/immersionDays.js.
 router.get(
   '/batches/:batchId/blocked-dates',
   authorize('supervisor'),
   immersionExclusions.getBlockedDates
-);
-router.post(
-  '/batches/:batchId/blocked-dates',
-  authorize('supervisor'),
-  requireLegacyBatch,
-  immersionExclusions.addBlockedDate
-);
-router.delete(
-  '/blocked-dates/:id',
-  authorize('supervisor'),
-  immersionExclusions.removeBlockedDate
 );
 router.get('/holidays', authorize('supervisor'), immersionExclusions.getHolidays);
 router.post('/holidays', authorize('supervisor'), immersionExclusions.addHoliday);

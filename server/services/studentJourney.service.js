@@ -142,7 +142,7 @@ async function getStudentJourney(userId, preImmersion) {
   if (!requirements.complete || !studentId) return summarizeJourney(requirements, [], policy);
 
   const [schedules, attendance, documentation, appeals, school, evaluation, certificate] = await Promise.all([
-    getStudentSchedules(studentId),
+    getStudentSchedules(studentId, { includeHistoricalDays: true }),
     pool.query('SELECT teacher_batch_id, date, status, check_in_time, check_out_time FROM student_attendance WHERE student_id = $1', [studentId]),
     pool.query('SELECT teacher_batch_id, date, status FROM student_daily_documentation WHERE student_id = $1', [studentId]),
     pool.query('SELECT teacher_batch_id, appeal_date AS date, status FROM attendance_appeals WHERE student_id = $1', [studentId]),

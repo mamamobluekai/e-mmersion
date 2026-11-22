@@ -3,6 +3,7 @@ const cloudinary = require('../../db/cloudinary');
 const streamifier = require('streamifier');
 const pool = require('../../db');
 const { createNotification } = require('../../services/notification.service');
+const { getDeploymentAttendance } = require('../../services/deploymentAttendance');
 
 async function uploadPdfToCloudinary(buffer, publicId) {
   return new Promise((resolve, reject) => {
@@ -317,17 +318,11 @@ const getEligibleStudents = async (req, res) => {
 
     const baseQuery = `
       WITH supervisor_batches AS (
-        SELECT drs.student_id
-        FROM deployment_requests dr
-        JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-        WHERE dr.supervisor_id = $1
-          AND dr.direction = 'coordinator_to_supervisor'
-          AND dr.status = 'approved'
-        UNION ALL
         SELECT tbs.student_id
         FROM teacher_batches tb
         JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-        WHERE tb.supervisor_id = $1
+        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+        WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
       )
       SELECT u.id AS user_id,
              s.id AS student_id,
@@ -352,33 +347,7 @@ const getEligibleStudents = async (req, res) => {
         LIMIT 1
       ) cert ON true
       WHERE u.role = 'student'
-        AND s.user_id IN (SELECT student_id FROM supervisor_batches)`;
-
-    if (!showAll) {
-      const result = await pool.query(
-        `${baseQuery}
-         AND srs.status = 'Approved'
-         AND (
-           SELECT COUNT(*) FROM student_documents sd WHERE sd.student_id = s.id
-         ) > 0
-         AND (
-           SELECT COUNT(*) FROM student_documents sd WHERE sd.student_id = s.id AND sd.status = 'Verified'
-         ) = (
-           SELECT COUNT(*) FROM student_documents sd WHERE sd.student_id = s.id
-         )
-         AND (
-           SELECT COUNT(DISTINCT sa.date)::int
-           FROM student_attendance sa
-           WHERE sa.student_id = s.id
-             AND sa.check_in_time IS NOT NULL
-             AND sa.check_out_time IS NOT NULL
-         ) >= 10
-       ORDER BY s.last_name ASC, s.first_name ASC`,
-        [req.user.id]
-      );
-      res.json({ eligible: result.rows });
-      return;
-    }
+        AND s.id IN (SELECT student_id FROM supervisor_batches)`;
 
     const rows = await pool.query(
       `${baseQuery}
@@ -388,28 +357,24 @@ const getEligibleStudents = async (req, res) => {
 
     const enriched = await Promise.all(
       rows.rows.map(async (s) => {
-        const attendanceResult = await pool.query(
-          `SELECT COUNT(DISTINCT date)::int AS days
-           FROM student_attendance
-           WHERE student_id = $1 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
-          [s.student_id]
-        );
+        const placement = await getDeploymentAttendance(pool, s.student_id, req.user.id);
         const docsResult = await pool.query(
           `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='Verified')::int AS verified
            FROM student_documents
            WHERE student_id = $1`,
           [s.student_id]
         );
-        const attendanceDays = attendanceResult.rows[0]?.days || 0;
+        const attendanceDays = placement?.attendance_days || 0;
         const totalDocs = docsResult.rows[0]?.total || 0;
         const verifiedDocs = docsResult.rows[0]?.verified || 0;
         const completed =
-          s.requirements_status === 'Approved' && totalDocs > 0 && verifiedDocs === totalDocs && attendanceDays >= 10;
+          s.requirements_status === 'Approved' && totalDocs > 0 && verifiedDocs === totalDocs &&
+          Boolean(placement && attendanceDays >= placement.required_attendance_days);
         return { ...s, attendance_days: attendanceDays, total_documents: totalDocs, verified_documents: verifiedDocs, completed };
       })
     );
 
-    res.json({ eligible: enriched });
+    res.json({ eligible: showAll ? enriched : enriched.filter(({ completed }) => completed) });
   } catch (err) {
     console.error('getEligibleStudents error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -437,18 +402,18 @@ const generateCertificate = async (req, res) => {
         [studentId]
       );
     } catch (err) {
-      client.release();
       return res.status(404).json({ error: 'Student not found.' });
     }
     if (!studentResult.rows.length) {
-      client.release();
       return res.status(404).json({ error: 'Student not found.' });
     }
     const student = studentResult.rows[0];
 
     // The batch the student is in decides the design; the supervisor's own
     // default is only used when that batch has none.
-    const teacherBatchId = await getStudentBatchId(client, student.student_id);
+    const placement = await getDeploymentAttendance(client, student.student_id, req.user.role === 'admin' ? null : supervisorUserId);
+    if (!placement) return res.status(403).json({ error: 'The student is not assigned to an authorized deployment.' });
+    const teacherBatchId = placement.batch_id;
     const template = await resolveTemplate(client, supervisorUserId, teacherBatchId);
 
     const existing = await client.query(
@@ -467,13 +432,7 @@ const generateCertificate = async (req, res) => {
       });
     }
 
-    const attendanceResult = await client.query(
-      `SELECT COUNT(DISTINCT date)::int AS days
-       FROM student_attendance
-       WHERE student_id = $1 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
-      [student.student_id]
-    );
-    const attendanceDays = attendanceResult.rows[0]?.days || 0;
+    const attendanceDays = placement.attendance_days;
 
     const docsResult = await client.query(
       `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='Verified')::int AS verified
@@ -483,7 +442,7 @@ const generateCertificate = async (req, res) => {
     );
     const documentationGraded = docsResult.rows[0]?.verified === docsResult.rows[0]?.total && docsResult.rows[0].total > 0;
 
-    if (student.requirements_status !== 'Approved' || !documentationGraded || attendanceDays < 10) {
+    if (student.requirements_status !== 'Approved' || !documentationGraded || attendanceDays < placement.required_attendance_days) {
       return res.status(400).json({ error: 'Student has not completed all milestones yet.' });
     }
 

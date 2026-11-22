@@ -1,4 +1,5 @@
 const pool = require('../../db/');
+const { nowInManilaDateOnly } = require('../../utils/manilaDate');
 const {
   getOrCreateStudent,
   getOrCreateSubmission,
@@ -59,12 +60,11 @@ const getProgress = async (req, res) => {
 // GET /api/student/placement/me
 // Returns the student's work immersion batch details: the batch label, the
 // assigned teacher, supervisor, coordinator, and the fellow students who share
-// the same batch. Powers the Placement Status page so a student can see who is
-// on their team right after the coordinator assigns them to a batch.
+// the finalized agreement. The placement response is scoped to this student.
 const getMyPlacementInfo = async (req, res) => {
   try {
     const studentRow = await pool.query(
-      'SELECT id, first_name, last_name FROM students WHERE user_id = $1',
+      'SELECT id FROM students WHERE user_id = $1',
       [req.user.id]
     );
     if (!studentRow.rows.length) {
@@ -75,13 +75,14 @@ const getMyPlacementInfo = async (req, res) => {
     const batchResult = await pool.query(
       `SELECT tb.id AS batch_id,
               tb.batch_label,
-              tb.max_students,
-              tb.created_at,
-              t.first_name AS teacher_first_name,
-              t.last_name AS teacher_last_name,
-              t.employee_id AS teacher_employee_id,
-              t.department AS teacher_department,
-              tu.email AS teacher_email,
+              tbs.deployment_started_on,
+              dr.id AS deployment_id,
+              dr.confirmed_schedule->>'start' AS start_date,
+              dr.confirmed_schedule->>'end' AS end_date,
+              dr.confirmed_schedule->'dates' AS attendance_dates,
+              dr.confirmed_schedule->'windows' AS attendance_windows,
+              COALESCE(NULLIF(dr.confirmed_schedule->>'notes', ''), dr.proposal->>'notes') AS instructions,
+              COALESCE(team.members, '[]'::jsonb) AS teachers,
               sv.first_name AS supervisor_first_name,
               sv.last_name AS supervisor_last_name,
               COALESCE(pi.name, sv.company_name) AS company_name,
@@ -92,19 +93,23 @@ const getMyPlacementInfo = async (req, res) => {
               cu.email AS coordinator_email
        FROM teacher_batch_students tbs
        JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-       LEFT JOIN partner_institutions pi ON pi.id = (to_jsonb(tb)->>'partner_institution_id')::int
-       LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND to_jsonb(dr)->>'workflow_version' = '2'
-       LEFT JOIN teachers t ON t.id = tb.teacher_id
-       LEFT JOIN users tu ON tu.id = t.user_id
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+       JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
+       LEFT JOIN LATERAL (
+         SELECT jsonb_agg(jsonb_build_object('id', t.id, 'first_name', t.first_name, 'last_name', t.last_name,
+           'department', t.department, 'email', tu.email) ORDER BY t.id) AS members
+         FROM partner_deployment_teachers link JOIN teachers t ON t.id = link.teacher_id
+         JOIN users tu ON tu.id = t.user_id WHERE link.deployment_request_id = dr.id
+       ) team ON true
        LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
        LEFT JOIN users su ON su.id = tb.supervisor_id
        LEFT JOIN coordinators c ON c.id = tb.coordinator_id
        LEFT JOIN users cu ON cu.id = c.user_id
-       WHERE tbs.student_id = $1 AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
-         (now() AT TIME ZONE 'Asia/Manila')::date < (to_jsonb(tbs)->>'deployment_ended_on')::date)
-         AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
-       ORDER BY tbs.assigned_at DESC NULLS LAST, tb.created_at DESC
-       LIMIT 1`,
+       WHERE tbs.student_id = $1 AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
+       ORDER BY CASE WHEN (now() AT TIME ZONE 'Asia/Manila')::date BETWEEN
+         (dr.confirmed_schedule->>'start')::date AND (dr.confirmed_schedule->>'end')::date THEN 0
+         WHEN (dr.confirmed_schedule->>'start')::date > (now() AT TIME ZONE 'Asia/Manila')::date THEN 1 ELSE 2 END,
+         tbs.assigned_at DESC NULLS LAST, dr.id DESC`,
       [studentId]
     );
 
@@ -112,46 +117,20 @@ const getMyPlacementInfo = async (req, res) => {
       return res.json({ placement: null });
     }
 
-    const batch = batchResult.rows[0];
-
-    const classmatesResult = await pool.query(
-      `SELECT s.id AS student_id,
-              s.first_name,
-              s.last_name,
-              s.student_number,
-              s.grade_level,
-              s.track_strand,
-              u.email
-       FROM teacher_batch_students tbs
-       JOIN students s ON s.id = tbs.student_id
-       LEFT JOIN users u ON u.id = s.user_id
-       WHERE tbs.teacher_batch_id = $1 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
-       ORDER BY s.last_name ASC, s.first_name ASC`,
-      [batch.batch_id]
-    );
-
-    const classmates = classmatesResult.rows.map((row) => ({
-      ...row,
-      is_me: Number(row.student_id) === Number(studentId),
-    }));
-
-    res.json({
-      placement: {
+    const today = nowInManilaDateOnly();
+    const placements = batchResult.rows.map((batch) => ({
         batch_id: batch.batch_id,
         batch_label: batch.batch_label,
+        deployment_id: batch.deployment_id,
         company_name: batch.company_name,
         company_address: batch.company_address,
-        max_students: batch.max_students,
-        created_at: batch.created_at,
-        teacher: batch.teacher_first_name || batch.teacher_last_name
-          ? {
-              first_name: batch.teacher_first_name,
-              last_name: batch.teacher_last_name,
-              employee_id: batch.teacher_employee_id,
-              department: batch.teacher_department,
-              email: batch.teacher_email,
-            }
-          : null,
+        start_date: batch.start_date,
+        end_date: batch.end_date,
+        status: today < batch.start_date ? 'Approved' : today > batch.end_date ? 'Completed' : 'Ongoing',
+        attendance_dates: batch.attendance_dates?.filter((date) => !batch.deployment_started_on || date >= batch.deployment_started_on) || [],
+        attendance_windows: batch.attendance_windows,
+        instructions: batch.instructions,
+        teachers: batch.teachers,
         supervisor: batch.supervisor_first_name || batch.supervisor_last_name
           ? {
               first_name: batch.supervisor_first_name,
@@ -166,9 +145,8 @@ const getMyPlacementInfo = async (req, res) => {
               email: batch.coordinator_email,
             }
           : null,
-        classmates,
-      },
-    });
+    }));
+    res.json({ placement: placements[0], placements });
   } catch (err) {
     console.error('getMyPlacementInfo error:', err);
     res.status(500).json({ error: 'Server error.' });

@@ -1,5 +1,6 @@
 const pool = require('../db');
 const { getIO } = require('../sockets');
+const { resolveBatchAccess } = require('../utils/batchAccess');
 
 async function ensureChatTables() {
   const ddl = `
@@ -73,103 +74,29 @@ async function getAccessibleBatches(req, res) {
     const userId = req.user.id;
     const role = String(req.user.role || '').toLowerCase();
 
-    let batches = [];
-    if (role === 'teacher') {
-      const result = await pool.query(
-        `SELECT tb.id, tb.batch_label, tb.coordinator_id, tb.teacher_id, tb.supervisor_id,
-                c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
-                t.first_name AS teacher_first_name, t.last_name AS teacher_last_name,
-                sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
-         FROM teacher_batches tb
-         JOIN teachers t ON t.id = tb.teacher_id
-         JOIN coordinators c ON c.id = tb.coordinator_id
-         LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-         WHERE t.user_id = $1
-         ORDER BY tb.created_at DESC`,
-        [userId]
-      );
-      batches = result.rows.map((r) => ({
-        id: r.id,
-        batch_label: r.batch_label,
-        coordinator: `${r.coordinator_first_name || ''} ${r.coordinator_last_name || ''}`.trim() || 'Coordinator',
-        teacher: `${r.teacher_first_name || ''} ${r.teacher_last_name || ''}`.trim() || 'Teacher',
-        supervisor: r.supervisor_first_name
-          ? `${r.supervisor_first_name || ''} ${r.supervisor_last_name || ''}`.trim()
-          : null,
-      }));
-    } else if (role === 'student') {
-      const result = await pool.query(
-        `SELECT tb.id, tb.batch_label, tb.coordinator_id, tb.teacher_id, tb.supervisor_id,
-                c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
-                t.first_name AS teacher_first_name, t.last_name AS teacher_last_name,
-                sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
-         FROM teacher_batch_students tbs
-         JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-         JOIN students s ON s.id = tbs.student_id
-         JOIN users su ON su.id = s.user_id
-         JOIN coordinators c ON c.id = tb.coordinator_id
-         JOIN teachers t ON t.id = tb.teacher_id
-         LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-         WHERE su.id = $1 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL
-         ORDER BY tb.created_at DESC`,
-        [userId]
-      );
-      batches = result.rows.map((r) => ({
-        id: r.id,
-        batch_label: r.batch_label,
-        coordinator: `${r.coordinator_first_name || ''} ${r.coordinator_last_name || ''}`.trim() || 'Coordinator',
-        teacher: `${r.teacher_first_name || ''} ${r.teacher_last_name || ''}`.trim() || 'Teacher',
-        supervisor: r.supervisor_first_name
-          ? `${r.supervisor_first_name || ''} ${r.supervisor_last_name || ''}`.trim()
-          : null,
-      }));
-    } else if (role === 'coordinator') {
-      const result = await pool.query(
-        `SELECT tb.id, tb.batch_label, tb.coordinator_id, tb.teacher_id, tb.supervisor_id,
-                c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
-                t.first_name AS teacher_first_name, t.last_name AS teacher_last_name,
-                sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
-         FROM teacher_batches tb
-         JOIN coordinators c ON c.id = tb.coordinator_id
-         JOIN teachers t ON t.id = tb.teacher_id
-         LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-         WHERE c.user_id = $1
-         ORDER BY tb.created_at DESC`,
-        [userId]
-      );
-      batches = result.rows.map((r) => ({
-        id: r.id,
-        batch_label: r.batch_label,
-        coordinator: `${r.coordinator_first_name || ''} ${r.coordinator_last_name || ''}`.trim() || 'Coordinator',
-        teacher: `${r.teacher_first_name || ''} ${r.teacher_last_name || ''}`.trim() || 'Teacher',
-        supervisor: r.supervisor_first_name
-          ? `${r.supervisor_first_name || ''} ${r.supervisor_last_name || ''}`.trim()
-          : null,
-      }));
-    } else if (role === 'supervisor') {
-      const result = await pool.query(
-        `SELECT tb.id, tb.batch_label, tb.coordinator_id, tb.teacher_id, tb.supervisor_id,
-                c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
-                t.first_name AS teacher_first_name, t.last_name AS teacher_last_name,
-                sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
-         FROM teacher_batches tb
-         JOIN coordinators c ON c.id = tb.coordinator_id
-         JOIN teachers t ON t.id = tb.teacher_id
-         JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-         WHERE sv.user_id = $1
-         ORDER BY tb.created_at DESC`,
-        [userId]
-      );
-      batches = result.rows.map((r) => ({
-        id: r.id,
-        batch_label: r.batch_label,
-        coordinator: `${r.coordinator_first_name || ''} ${r.coordinator_last_name || ''}`.trim() || 'Coordinator',
-        teacher: `${r.teacher_first_name || ''} ${r.teacher_last_name || ''}`.trim() || 'Teacher',
-        supervisor: `${r.supervisor_first_name || ''} ${r.supervisor_last_name || ''}`.trim() || 'Supervisor',
-      }));
-    }
+    const { rows } = await pool.query(
+      `SELECT tb.id, tb.batch_label,
+              concat_ws(' ', c.first_name, c.last_name) AS coordinator,
+              concat_ws(' ', t.first_name, t.last_name) AS teacher,
+              concat_ws(' ', sv.first_name, sv.last_name) AS supervisor
+       FROM teacher_batches tb
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+       JOIN coordinators c ON c.id = tb.coordinator_id
+       LEFT JOIN teachers t ON t.id = tb.teacher_id
+       LEFT JOIN supervisors sv ON sv.user_id = tb.supervisor_id
+       WHERE tb.archived_at IS NULL AND (
+         ($2 = 'supervisor' AND tb.supervisor_id = $1) OR ($2 = 'coordinator' AND c.user_id = $1)
+         OR ($2 = 'teacher' AND (t.user_id = $1 OR EXISTS (
+           SELECT 1 FROM partner_deployment_teachers link JOIN teachers assigned ON assigned.id = link.teacher_id
+           WHERE link.deployment_request_id = dr.id AND assigned.user_id = $1
+         )))
+         OR ($2 = 'student' AND EXISTS (
+           SELECT 1 FROM teacher_batch_students tbs JOIN students s ON s.id = tbs.student_id
+           WHERE tbs.teacher_batch_id = tb.id AND s.user_id = $1 AND tbs.deployment_ended_on IS NULL
+         ))
+       ) ORDER BY tb.created_at DESC`, [userId, role]);
 
-    res.json({ batches });
+    res.json({ batches: rows.map((row) => ({ ...row, teacher: row.teacher || null })) });
   } catch (err) {
     console.error('getAccessibleBatches error:', err);
     res.status(500).json({ error: 'Server error fetching batches.' });
@@ -177,42 +104,17 @@ async function getAccessibleBatches(req, res) {
 }
 
 async function ensureBatchAccess(batchId, userId, role) {
-  if (role === 'teacher') {
-    const check = await pool.query(
-      `SELECT tb.id FROM teacher_batches tb
-       JOIN teachers t ON t.id = tb.teacher_id
-       WHERE tb.id = $1 AND t.user_id = $2`,
-      [batchId, userId]
-    );
-    return check.rows.length > 0;
-    } else if (role === 'student') {
-      const check = await pool.query(
-        `SELECT tb.id FROM teacher_batches tb
-         JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-         JOIN students s ON s.id = tbs.student_id
-         JOIN users su ON su.id = s.user_id
-         WHERE tb.id = $1 AND su.id = $2 AND to_jsonb(tbs)->>'deployment_ended_on' IS NULL`,
-        [batchId, userId]
-      );
-      return check.rows.length > 0;
-  } else if (role === 'coordinator') {
-    const check = await pool.query(
-      `SELECT tb.id FROM teacher_batches tb
-       JOIN coordinators c ON c.id = tb.coordinator_id
-       WHERE tb.id = $1 AND c.user_id = $2`,
-      [batchId, userId]
-    );
-    return check.rows.length > 0;
-  } else if (role === 'supervisor') {
-    const check = await pool.query(
-      `SELECT tb.id FROM teacher_batches tb
-       JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-       WHERE tb.id = $1 AND sv.user_id = $2`,
-      [batchId, userId]
-    );
-    return check.rows.length > 0;
+  if (role !== 'student') {
+    const { batch, isTeacher, isCoordinator, isSupervisor } = await resolveBatchAccess({ id: userId, role }, batchId);
+    return Boolean(batch?.deployment_request_id && !batch.archived_at && (isTeacher || isCoordinator || isSupervisor));
   }
-  return false;
+  const { rowCount } = await pool.query(
+    `SELECT 1 FROM teacher_batch_students tbs
+     JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id AND tb.archived_at IS NULL
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+     JOIN students s ON s.id = tbs.student_id
+     WHERE tb.id = $1 AND s.user_id = $2 AND tbs.deployment_ended_on IS NULL`, [batchId, userId]);
+  return Boolean(rowCount);
 }
 
 async function getBatchMembers(req, res) {

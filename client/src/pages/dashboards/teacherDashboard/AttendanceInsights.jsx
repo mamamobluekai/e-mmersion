@@ -13,7 +13,7 @@ import { TrendingUp } from 'lucide-react';
 import { byDate, formatShortDate } from '../../../utils/attendanceAnalytics';
 import styles from './AttendanceInsights.module.css';
 
-// Daily attendance trend for the batch selected in the sidebar. All figures come
+// Daily attendance trend for the partner institution selected in the sidebar. All figures come
 // from the already-loaded attendance report, so nothing extra is fetched.
 function AttendanceInsights({ report }) {
   const { dates = [], records = [], rows = [], loading } = report || {};
@@ -34,7 +34,7 @@ function AttendanceInsights({ report }) {
         <div className={styles.empty}>
           <TrendingUp size={30} strokeWidth={1.5} />
           <h3>No attendance data yet</h3>
-          <p>Charts appear once a work immersion schedule and student records exist for this batch.</p>
+          <p>Charts appear once a work immersion schedule and student records exist for this partner institution.</p>
         </div>
       </div>
     );

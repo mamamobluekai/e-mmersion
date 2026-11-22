@@ -1,13 +1,4 @@
 const pool = require('../../db');
-const { buildImmersionDateList, loadExcludedDates } = require('../../utils/immersionDays');
-
-// Immersion day generation is owned by server/utils/immersionDays.js, so the
-// dashboard skips Philippine holidays and supervisor-blocked dates exactly like
-// every other view instead of counting weekends alone.
-async function scheduleDates(startDate, durationType, durationValue, batchId = null, supervisorId = null) {
-  const { blocked } = await loadExcludedDates(batchId, supervisorId);
-  return buildImmersionDateList(startDate, durationType, durationValue, { blockedDates: blocked });
-}
 
 const getSupervisorDashboard = async (req, res) => {
   try {
@@ -15,35 +6,19 @@ const getSupervisorDashboard = async (req, res) => {
 
     const batchesResult = await pool.query(
       `WITH supervisor_batches AS (
-        SELECT dr.id AS request_id, dr.batch_label, dr.strand,
-               c.first_name AS coordinator_first_name,
-               c.last_name AS coordinator_last_name,
-               'deployment' AS source
-        FROM deployment_requests dr
-        JOIN coordinators c ON c.user_id = dr.coordinator_id
-        WHERE dr.supervisor_id = $1
-          AND dr.direction = 'coordinator_to_supervisor'
-          AND dr.status = 'approved'
-        UNION ALL
         SELECT tb.id AS request_id, tb.batch_label, NULL AS strand,
                c.first_name AS coordinator_first_name,
                c.last_name AS coordinator_last_name,
                'teacher' AS source
         FROM teacher_batches tb
         JOIN coordinators c ON c.id = tb.coordinator_id
-        WHERE tb.supervisor_id = $1
+        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+        WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL
       ), assigned AS (
-        SELECT sb.request_id, sb.source, s.id AS student_id
-        FROM supervisor_batches sb
-        JOIN deployment_request_students drs
-          ON sb.source = 'deployment' AND drs.deployment_request_id = sb.request_id
-        JOIN students s ON s.user_id = drs.student_id
-        UNION ALL
-        SELECT sb.request_id, sb.source, s.id AS student_id
+        SELECT sb.request_id, sb.source, tbs.student_id
         FROM supervisor_batches sb
         JOIN teacher_batch_students tbs
-          ON sb.source = 'teacher' AND tbs.teacher_batch_id = sb.request_id
-        JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
+          ON tbs.teacher_batch_id = sb.request_id AND tbs.deployment_ended_on IS NULL
       )
       SELECT sb.*,
              COUNT(DISTINCT a.student_id)::int AS student_count
@@ -57,101 +32,63 @@ const getSupervisorDashboard = async (req, res) => {
 
     const [scheduleResult, assignedResult] = await Promise.all([
       pool.query(
-        `SELECT tb.id AS request_id, 'teacher' AS source,
-                wis.start_date, wis.duration_type, wis.duration_value
+        `SELECT tb.id AS request_id, 'teacher' AS source, dr.confirmed_schedule->'dates' AS dates
          FROM teacher_batches tb
-         JOIN work_immersion_schedules wis ON wis.teacher_batch_id = tb.id
-         WHERE tb.supervisor_id = $1
-         ORDER BY wis.start_date ASC`,
+         JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+         WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL`,
         [supervisorId]
       ),
       pool.query(
         `WITH assigned AS (
-          SELECT dr.id AS request_id, 'deployment' AS source, s.id AS student_id
-          FROM deployment_requests dr
-          JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-          JOIN students s ON s.user_id = drs.student_id
-          WHERE dr.supervisor_id = $1 AND dr.direction = 'coordinator_to_supervisor' AND dr.status = 'approved'
-          UNION
-          SELECT tb.id AS request_id, 'teacher' AS source, s.id AS student_id
+          SELECT tb.id AS request_id, 'teacher' AS source, tbs.student_id
           FROM teacher_batches tb
           JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-          JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
-          WHERE tb.supervisor_id = $1
+          JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+          WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
         )
         SELECT * FROM assigned ORDER BY source, request_id, student_id`,
         [supervisorId]
       ),
     ]);
 
-    const scheduleByBatch = new Map();
-    for (const schedule of scheduleResult.rows) {
-      const dates = await scheduleDates(
-        schedule.start_date,
-        schedule.duration_type,
-        schedule.duration_value,
-        schedule.request_id,
-        supervisorId
-      );
-      scheduleByBatch.set(`${schedule.source}:${schedule.request_id}`, dates);
-    }
-
-    const perBatchDates = await Promise.all(
-      scheduleResult.rows.map((schedule) =>
-        scheduleDates(
-          schedule.start_date,
-          schedule.duration_type,
-          schedule.duration_value,
-          schedule.request_id,
-          supervisorId
-        )
-      )
-    );
-    const scheduledDates = [...new Set(perBatchDates.flat())].sort();
+    const scheduleByBatch = new Map(scheduleResult.rows.map(({ request_id, dates }) => [request_id, dates || []]));
+    const scheduledDates = [...new Set([...scheduleByBatch.values()].flat())].sort();
     const assignedRows = assignedResult.rows;
     let attendanceRows = [];
 
     if (assignedRows.length && scheduledDates.length) {
       const studentIds = [...new Set(assignedRows.map((row) => row.student_id))];
       const attendanceResult = await pool.query(
-        `SELECT student_id, date, status, check_in_time, check_out_time,
+        `SELECT teacher_batch_id, student_id, date, status, check_in_time, check_out_time,
                 appeal_time_in_id, appeal_time_out_id
          FROM student_attendance
          WHERE student_id = ANY($1::int[])
-           AND date = ANY($2::date[])`,
-        [studentIds, scheduledDates]
+           AND date = ANY($2::date[]) AND teacher_batch_id = ANY($3::int[])`,
+        [studentIds, scheduledDates, [...scheduleByBatch.keys()]]
       );
       const attendanceByStudentDate = new Map(attendanceResult.rows.map((row) => [
-        `${row.student_id}:${row.date}`,
+        `${row.teacher_batch_id}:${row.student_id}:${row.date}`,
         row,
       ]));
 
       attendanceRows = assignedRows.flatMap((assigned) => {
-        const dates = scheduleByBatch.get(`${assigned.source}:${assigned.request_id}`) || scheduledDates;
+        const dates = scheduleByBatch.get(assigned.request_id) || [];
         return dates.map((date) => ({
           request_id: assigned.request_id,
           source: assigned.source,
           student_id: assigned.student_id,
           date,
-          ...(attendanceByStudentDate.get(`${assigned.student_id}:${date}`) || { status: 'absent' }),
+          ...(attendanceByStudentDate.get(`${assigned.request_id}:${assigned.student_id}:${date}`) || { status: 'absent' }),
         }));
       });
     }
 
     const assignedStudentIds = `(
-      SELECT DISTINCT s.id
-      FROM deployment_requests dr
-      JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-      JOIN students s ON s.user_id = drs.student_id
-      WHERE dr.supervisor_id = $1
-        AND dr.direction = 'coordinator_to_supervisor'
-        AND dr.status = 'approved'
-      UNION
-      SELECT DISTINCT s.id
+      SELECT DISTINCT tbs.student_id
       FROM teacher_batches tb
       JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-      JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
-      WHERE tb.supervisor_id = $1
+      JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+      WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
     )`;
 
     const [evaluationResult, certificationResult, requestsResult] = await Promise.all([
@@ -195,7 +132,7 @@ const getSupervisorDashboard = async (req, res) => {
       pool.query(
         `SELECT status, COUNT(*)::int AS count
          FROM deployment_requests
-         WHERE supervisor_id = $1
+         WHERE supervisor_id = $1 AND workflow_version = 2 AND original_proposal IS NOT NULL
          GROUP BY status`,
         [supervisorId]
       ),

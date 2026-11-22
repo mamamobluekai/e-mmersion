@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Users, Search, X } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
-import { getTeacherBatchStudents } from '../../../api/teacherApi';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
+import { getPartnerInstitutionStudents } from '../../../api/teacherApi';
 import StudentDetailModal from '../../../components/shared/StudentDetailModal';
 import {
   getStudentName,
@@ -12,11 +12,11 @@ import {
 } from '../../../components/shared/studentFields';
 import styles from './TeacherStudents.module.css';
 
-// Teacher's read-only student list for the batch selected in the sidebar.
+// Teacher's read-only student list for the partner institution selected in the sidebar.
 // Clicking a row opens the shared student information modal.
 function TeacherStudents() {
   const { token } = useAuth();
-  const { batchId, batchLabel, loading: batchesLoading } = useTeacherBatch();
+  const { institution, institutionId, institutionName, loading: institutionsLoading } = usePartnerInstitution();
   const [students, setStudents] = useState([]);
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
@@ -24,7 +24,7 @@ function TeacherStudents() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!batchId) {
+    if (!institutionId) {
       setStudents([]);
       setLoading(false);
       return undefined;
@@ -35,7 +35,7 @@ function TeacherStudents() {
     setStudents([]);
     async function init() {
       try {
-        const s = await getTeacherBatchStudents(batchId, token);
+        const s = await getPartnerInstitutionStudents(institutionId, token);
         if (!cancelled) setStudents(s?.students || []);
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to load students.');
@@ -45,14 +45,14 @@ function TeacherStudents() {
     }
     init();
     return () => { cancelled = true; };
-  }, [batchId, token]);
+  }, [institutionId, token]);
 
   const closeStudent = useCallback(() => setSelected(null), []);
 
-  // Switching batch starts from a clean search.
+  // Switching institution starts from a clean search.
   useEffect(() => {
     setQuery('');
-  }, [batchId]);
+  }, [institutionId]);
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -71,7 +71,7 @@ function TeacherStudents() {
     );
   }, [students, query]);
 
-  const showTable = !loading && !batchesLoading && Boolean(batchId);
+  const showTable = !loading && !institutionsLoading && Boolean(institutionId);
 
   return (
     <div className={styles.page}>
@@ -80,10 +80,8 @@ function TeacherStudents() {
       <div className={styles.pageHeader}>
         <div>
           <h1>My Students</h1>
-          <p>
-            Students assigned to the batch selected in the sidebar. Click any row to view the
-            student's full information.
-          </p>
+          <p>View the students assigned to your selected partner institution.</p>
+          {institution?.deployment_start && <p>Approved dates {institution.deployment_start} to {institution.deployment_end}</p>}
         </div>
       </div>
 
@@ -117,18 +115,18 @@ function TeacherStudents() {
           </div>
         </div>
 
-        {(loading || batchesLoading) && (
+        {(loading || institutionsLoading) && (
           <div className={styles.loading}>
             <span className={styles.spinner} />
             Loading students...
           </div>
         )}
 
-        {!batchesLoading && !batchId && (
+        {!institutionsLoading && !institutionId && (
           <div className={styles.empty}>
             <Users size={34} strokeWidth={1.5} />
-            <h3>No batch assigned</h3>
-            <p>You are not assigned to a batch yet.</p>
+            <h3>No partner institution assigned</h3>
+            <p>You are not assigned to a partner institution yet.</p>
           </div>
         )}
 
@@ -138,7 +136,7 @@ function TeacherStudents() {
             <h3>{students.length === 0 ? 'No students yet' : 'No matching students'}</h3>
             <p>
               {students.length === 0
-                ? 'No students are assigned to this batch.'
+                ? 'No students are assigned to this partner institution.'
                 : 'Try a different name, student ID, email, strand or contact number.'}
             </p>
           </div>
@@ -206,7 +204,7 @@ function TeacherStudents() {
       {selected && (
         <StudentDetailModal
           student={selected}
-          batch={{ batch_label: batchLabel }}
+          batch={{ batch_label: institutionName }}
           onClose={closeStudent}
         />
       )}

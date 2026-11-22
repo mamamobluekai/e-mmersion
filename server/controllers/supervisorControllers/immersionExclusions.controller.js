@@ -122,88 +122,6 @@ const getBlockedDates = async (req, res) => {
  * POST /api/supervisor/batches/:batchId/blocked-dates
  * body: { date, reason?, supervisor_id? }  (omit supervisor_id for batch-wide)
  */
-const addBlockedDate = async (req, res) => {
-  try {
-    await ensureBlockedDateTables();
-    const batchId = Number(req.params.batchId);
-    if (!Number.isInteger(batchId)) return res.status(400).json({ error: 'Invalid batch id.' });
-
-    const gate = await assertCanManage(req.user, batchId);
-    if (gate.error) return res.status(gate.status).json({ error: gate.error });
-
-    const date = toDateOnly(req.body?.date);
-    if (!date || !DATE_RE.test(date)) {
-      return res.status(400).json({ error: 'A valid date (YYYY-MM-DD) is required.' });
-    }
-
-    const rawSupervisor = req.body?.supervisor_id;
-    const supervisorId = rawSupervisor == null || rawSupervisor === 'batch' ? null : Number(rawSupervisor);
-    if (supervisorId !== null && !Number.isInteger(supervisorId)) {
-      return res.status(400).json({ error: 'Invalid supervisor id.' });
-    }
-
-    const reason = req.body?.reason ? String(req.body.reason).slice(0, 200) : null;
-
-    // Uniqueness is enforced by PARTIAL unique indexes (one per NULL-ness of
-    // supervisor_id), which ON CONFLICT cannot target by name, so check
-    // explicitly. IS NOT DISTINCT FROM is essential here: a plain '=' never
-    // matches NULL, which is the common batch-wide case.
-    const existing = await pool.query(
-      `SELECT id FROM work_immersion_blocked_dates
-        WHERE teacher_batch_id = $1 AND blocked_date = $2
-          AND supervisor_id IS NOT DISTINCT FROM $3`,
-      [batchId, date, supervisorId]
-    );
-    if (existing.rows.length) {
-      return res.status(409).json({ error: 'That date is already blocked.' });
-    }
-
-    const insert = await pool.query(
-      `INSERT INTO work_immersion_blocked_dates
-         (teacher_batch_id, supervisor_id, blocked_date, reason, created_by)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id`,
-      [batchId, supervisorId, date, reason, req.user.id]
-    );
-
-    return res.status(201).json({
-      message: 'Date blocked.',
-      blocked_date: {
-        id: insert.rows[0]?.id ?? null,        date,
-        reason,
-        supervisor_id: supervisorId,
-        scope: supervisorId == null ? 'batch' : 'supervisor',
-      },
-    });
-  } catch (err) {
-    console.error('addBlockedDate error:', err);
-    return res.status(500).json({ error: 'Failed to block the date.' });
-  }
-};
-
-/** DELETE /api/supervisor/blocked-dates/:id */
-const removeBlockedDate = async (req, res) => {
-  try {
-    await ensureBlockedDateTables();
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid blocked date id.' });
-
-    const find = await pool.query('SELECT * FROM work_immersion_blocked_dates WHERE id = $1', [id]);
-    const row = find.rows[0];
-    if (!row) return res.status(404).json({ error: 'Blocked date not found.' });
-
-    const gate = await assertCanManage(req.user, row.teacher_batch_id);
-    if (gate.error) return res.status(gate.status).json({ error: gate.error });
-
-    await pool.query('DELETE FROM work_immersion_blocked_dates WHERE id = $1', [id]);
-    return res.json({ message: 'Date unblocked.', id });
-  } catch (err) {
-    console.error('removeBlockedDate error:', err);
-    return res.status(500).json({ error: 'Failed to unblock the date.' });
-  }
-};
-
-/** GET /api/supervisor/holidays */
 const getHolidays = async (req, res) => {
   try {
     await ensureBlockedDateTables();
@@ -274,8 +192,6 @@ const removeHoliday = async (req, res) => {
 
 module.exports = {
   getBlockedDates,
-  addBlockedDate,
-  removeBlockedDate,
   getHolidays,
   addHoliday,
   removeHoliday,

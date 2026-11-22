@@ -25,7 +25,16 @@ export async function getSupervisorDashboard() {
   return apiFetch('/dashboard');
 }
 
-// The supervisor's deployment "batches" and the students in each.
+// Partner Institutions
+export async function getSupervisorPartnerInstitutions() {
+  return apiFetch('/partner-institutions');
+}
+
+export async function getSupervisorPartnerInstitutionStudents(institutionId) {
+  return apiFetch(`/partner-institutions/${institutionId}/students`);
+}
+
+// Legacy batches
 export async function getSupervisorBatches() {
   return apiFetch('/batches');
 }
@@ -63,26 +72,7 @@ export async function deleteSupervisorReportConcern(reportId) {
   return apiFetch(`/reports-concerns/${reportId}`, { method: 'DELETE' });
 }
 
-// ----- Blocked immersion dates & Philippine holidays -----
-// A blocked date is skipped when counting immersion days, even on a Mon-Fri.
-// Philippine holidays are skipped automatically on every schedule read.
-
-export async function getSupervisorBlockedDates(batchId, supervisorId) {
-  const qs = supervisorId != null ? `?supervisor_id=${encodeURIComponent(supervisorId)}` : '';
-  return apiFetch(`/batches/${batchId}/blocked-dates${qs}`);
-}
-
-export async function addSupervisorBlockedDate(batchId, payload) {
-  return apiFetch(`/batches/${batchId}/blocked-dates`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-}
-
-export async function removeSupervisorBlockedDate(blockedId) {
-  return apiFetch(`/blocked-dates/${blockedId}`, { method: 'DELETE' });
-}
+// Philippine holidays for future deployment proposals.
 
 export async function getSupervisorHolidays() {
   return apiFetch('/holidays');
@@ -100,10 +90,7 @@ export async function removeSupervisorHoliday(id) {
   return apiFetch(`/holidays/${id}`, { method: 'DELETE' });
 }
 
-// ----- Attendance scheduling & records (shared batch endpoints) -----
-// The supervisor owns attendance scheduling for the teacher batches linked
-// to them. These hit the shared /attendance/teacher/batch/:id endpoints,
-// which now authorize teacher, supervisor, and coordinator.
+// Shared attendance controls and records for finalized deployments.
 
 async function attendanceFetch(path, options = {}) {
   const token = getToken();
@@ -119,26 +106,6 @@ async function attendanceFetch(path, options = {}) {
     throw new Error(data.error || data.message || 'Request failed.');
   }
   return data;
-}
-
-function jsonBody(payload) {
-  return {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  };
-}
-
-export async function getSupervisorBatchStatus(batchId) {
-  return attendanceFetch(`/teacher/batch/${batchId}/status`);
-}
-
-export async function getSupervisorBatchConfig(batchId) {
-  return attendanceFetch(`/teacher/batch/${batchId}/config`);
-}
-
-export async function updateSupervisorBatchConfig(batchId, config) {
-  return attendanceFetch(`/teacher/batch/${batchId}/config`, jsonBody(config));
 }
 
 export async function openSupervisorBatchAttendance(batchId) {
@@ -157,14 +124,6 @@ export async function reviewSupervisorAttendanceAppeal(appealId, { status, comme
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status, comment: comment || null }),
   });
-}
-
-export async function getSupervisorBatchSchedules(batchId) {
-  return attendanceFetch(`/teacher/batch/${batchId}/schedules`);
-}
-
-export async function upsertSupervisorBatchSchedule(batchId, payload) {
-  return attendanceFetch(`/teacher/batch/${batchId}/schedules`, jsonBody(payload));
 }
 
 export async function getSupervisorBatchRecords(batchId, date) {

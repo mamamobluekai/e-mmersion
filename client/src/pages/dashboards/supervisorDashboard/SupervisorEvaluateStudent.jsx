@@ -113,6 +113,7 @@ function SupervisorEvaluateStudent() {
   const [saving, setSaving] = useState(false);
 
   const [activeStudentId, setActiveStudentId] = useState(null);
+  const [activeBatchId, setActiveBatchId] = useState(null);
   const [evalModalOpen, setEvalModalOpen] = useState(false);
   const [criteriaModalOpen, setCriteriaModalOpen] = useState(false);
   const [ratings, setRatings] = useState({});
@@ -120,8 +121,8 @@ function SupervisorEvaluateStudent() {
   const [existingEvaluation, setExistingEvaluation] = useState(null);
 
   const activeStudent = useMemo(
-    () => students.find((s) => s.student_id === activeStudentId) || null,
-    [students, activeStudentId]
+    () => students.find((s) => s.student_id === activeStudentId && s.batch_id === activeBatchId) || null,
+    [students, activeStudentId, activeBatchId]
   );
 
   useEffect(() => {
@@ -156,7 +157,7 @@ function SupervisorEvaluateStudent() {
     let cancelled = false;
     async function loadEvaluation() {
       try {
-        const data = await getStudentEvaluation(activeStudentId);
+        const data = await getStudentEvaluation(activeStudentId, activeBatchId);
         if (!cancelled && data.evaluation) {
           setExistingEvaluation(data.evaluation);
           setComments(data.evaluation.comments || '');
@@ -184,7 +185,7 @@ function SupervisorEvaluateStudent() {
     }
     loadEvaluation();
     return () => { cancelled = true; };
-  }, [activeStudentId]);
+  }, [activeStudentId, activeBatchId]);
 
   function handleRatingChange(categoryId, indicatorIndex, value) {
     setRatings((prev) => {
@@ -370,7 +371,7 @@ function SupervisorEvaluateStudent() {
       setMessage(existingEvaluation ? 'Evaluation updated successfully.' : 'Evaluation submitted successfully.');
       setExistingEvaluation(data.evaluation);
       const updatedStudents = students.map((s) =>
-        s.student_id === Number(activeStudentId)
+        s.student_id === Number(activeStudentId) && s.batch_id === activeBatchId
           ? { ...s, evaluation: { ...data.evaluation, overall_score: data.evaluation.overall_score } }
           : s
       );
@@ -382,8 +383,9 @@ function SupervisorEvaluateStudent() {
     }
   }
 
-  function openEvaluation(studentId) {
-    setActiveStudentId(studentId);
+  function openEvaluation(student) {
+    setActiveStudentId(student.student_id);
+    setActiveBatchId(student.batch_id);
     setEvalModalOpen(true);
     setError('');
     setMessage('');
@@ -403,7 +405,7 @@ function SupervisorEvaluateStudent() {
       <div className={styles.pageHeader}>
       <div className={styles.pageHeaderText}>
           <h1>Evaluate Student</h1>
-          <p>Select a student and rate their performance after their 10-day work immersion.</p>
+          <p>Evaluate students after they complete their required workdays.</p>
         </div>
         <div className={styles.pageHeaderActions}>
           <button
@@ -493,10 +495,10 @@ function SupervisorEvaluateStudent() {
                         : null);
                     return (
                       <tr
-                        key={s.student_id}
-                        className={s.student_id === activeStudentId ? styles.rowActive : ''}
-                        onClick={() => (s.attendance_days >= 10 ? openEvaluation(s.student_id) : undefined)}
-                        title={(s.attendance_days || 0) >= 10 ? `Evaluate ${s.first_name} ${s.last_name}` : 'Student must complete 10 days of work immersion before evaluation.'}
+                        key={s.batch_id + ":" + s.student_id}
+                        className={s.student_id === activeStudentId && s.batch_id === activeBatchId ? styles.rowActive : ''}
+                        onClick={() => (s.attendance_days >= s.required_attendance_days ? openEvaluation(s) : undefined)}
+                        title={(s.attendance_days || 0) >= s.required_attendance_days ? `Evaluate ${s.first_name} ${s.last_name}` : 'Student must complete the required workdays before evaluation.'}
                       >
                         <td>{s.student_number}</td>
                         <td>
@@ -567,7 +569,7 @@ function SupervisorEvaluateStudent() {
             ) : (
               <div className={styles.studentGrid}>
                 {students.map((s) => (
-                  <div key={s.student_id} className={styles.studentCard}>
+                  <div key={s.batch_id + ":" + s.student_id} className={styles.studentCard}>
                     <div className={styles.studentCardHeader}>
                       <div>
                         <div className={styles.studentCardName}>
@@ -595,9 +597,9 @@ function SupervisorEvaluateStudent() {
                     <button
                       type="button"
                       className={styles.btn}
-                      onClick={() => openEvaluation(s.student_id)}
-                      disabled={(s.attendance_days || 0) < 10}
-                      title={(s.attendance_days || 0) < 10 ? 'Student must complete 10 days of work immersion before evaluation.' : `Evaluate ${s.first_name} ${s.last_name}`}
+                      onClick={() => openEvaluation(s)}
+                      disabled={(s.attendance_days || 0) < s.required_attendance_days}
+                      title={(s.attendance_days || 0) < s.required_attendance_days ? 'Student must complete the required workdays before evaluation.' : `Evaluate ${s.first_name} ${s.last_name}`}
                     >
                       {s.evaluation ? 'Re-evaluate' : 'Evaluate'}
                     </button>
@@ -634,9 +636,9 @@ function SupervisorEvaluateStudent() {
                   {activeStudent.grade_level || '-'} · {activeStudent.track_strand || '-'} ·{' '}
                   {activeStudent.email}
                 </p>
-                {(activeStudent.attendance_days || 0) < 10 && (
+                {(activeStudent.attendance_days || 0) < activeStudent.required_attendance_days && (
                   <p style={{ color: '#b45309', marginTop: 6, fontSize: 13 }}>
-                    This student has not yet completed the required 10-day work immersion (current: {activeStudent.attendance_days || 0} days).
+                    This student has completed {activeStudent.attendance_days || 0} of {activeStudent.required_attendance_days} required workdays.
                   </p>
                 )}
               </div>

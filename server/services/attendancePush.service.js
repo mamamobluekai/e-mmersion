@@ -123,9 +123,11 @@ async function processAttendanceReminders(now = new Date()) {
      FROM attendance_push_subscriptions aps
      JOIN users u ON u.id = aps.user_id AND u.role = 'student' AND u.status IN ('approved', 'active')
      JOIN students s ON s.user_id = u.id
-     JOIN teacher_batch_students tbs
-       ON tbs.student_id = s.id OR tbs.student_id = s.user_id
-     JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
+     JOIN teacher_batch_students tbs ON tbs.student_id = s.id
+       AND (tbs.deployment_started_on IS NULL OR tbs.deployment_started_on <= $1::date)
+       AND (tbs.deployment_ended_on IS NULL OR tbs.deployment_ended_on > $1::date)
+     JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id AND tb.archived_at IS NULL
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
      JOIN attendance_config ac ON ac.teacher_batch_id = tb.id
      LEFT JOIN student_attendance sa
        ON sa.student_id = s.id AND sa.teacher_batch_id = tb.id AND sa.date = $1::date`,

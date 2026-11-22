@@ -3,9 +3,8 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import DashboardLayout from '../sharedSidebar/DashboardLayout';
 import DashboardTopNav from '../sharedSidebar/DashboardTopNav';
 import SupervisorSidebar from './SupervisorSidebar';
-import CreateDeploymentRequest from './CreateDeploymentRequest';
 import PartnerDeployments from '../PartnerDeployments';
-import SupervisorStudents from './SupervisorStudents';
+import SupervisorPartnerInstitutions from './SupervisorPartnerInstitutions';
 import SupervisorAttendance from './SupervisorAttendance';
 import SupervisorReportsConcerns from './SupervisorReportsConcerns';
 import SupervisorSchedule from './SupervisorSchedule';
@@ -13,7 +12,7 @@ import SupervisorEvaluateStudent from './SupervisorEvaluateStudent';
 import SupervisorEvaluation from './SupervisorEvaluation';
 import SupervisorCertifications from './SupervisorCertifications';
 import SupervisorGradeAppeals from './SupervisorGradeAppeals';
-import BatchChat from '../../../components/social/BatchChat';
+import PartnerChat from '../../../components/social/PartnerChat';
 import Announcements from '../Announcements/Announcements';
 import UserProfileSettings from '../UserProfileSettings';
 
@@ -41,11 +40,11 @@ function SupervisorDashboard({ user, onLogout }) {
 
         <Route
           path="create-deployment-request"
-          element={<CreateDeploymentRequest />}
+          element={<Navigate to="/dashboard/supervisor/deployment-requests" replace />}
         />
         <Route path="deployment-requests" element={<PartnerDeployments role="supervisor" />} />
 
-        <Route path="students" element={<SupervisorStudents />} />
+        <Route path="partner-institutions" element={<SupervisorPartnerInstitutions />} />
 
         <Route path="attendance" element={<SupervisorAttendance />} />
 

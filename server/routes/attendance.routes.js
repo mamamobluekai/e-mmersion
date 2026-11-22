@@ -12,10 +12,9 @@ const { requireImmersion } = require('../middleware/studentJourneyAccess');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 const { writeLimiter } = require('../middleware/rateLimiters');
-const { requireLegacyBatch } = require('../middleware/requireLegacyBatch');
 
-// Batch-scoped attendance endpoints are shared by the SUPERVISOR (who owns
-// attendance scheduling), the TEACHER assigned to the batch, and the
+// Batch-scoped attendance endpoints are shared by the SUPERVISOR, the
+// TEACHERS assigned to the batch, and the
 // COORDINATOR who created it. Fine-grained per-batch ownership is enforced
 // inside the controllers via utils/batchAccess.
 const BATCH_ROLES = ['teacher', 'supervisor', 'coordinator'];
@@ -25,7 +24,6 @@ router.post('/teacher/batch/:batchId/open', authenticate, authorize(...BATCH_ROL
 router.post('/teacher/batch/:batchId/close', authenticate, authorize(...BATCH_ROLES), attendanceSettings.closeBatchAttendance);
 router.get('/teacher/batch/:batchId/status', authenticate, authorize(...BATCH_ROLES), attendanceSettings.getBatchAttendanceStatus);
 router.get('/teacher/batch/:batchId/config', authenticate, authorize(...BATCH_ROLES), attendanceSettings.getBatchConfig);
-router.put('/teacher/batch/:batchId/config', authenticate, authorize(...BATCH_ROLES), requireLegacyBatch, attendanceSettings.updateBatchConfig);
 
 // ----- Records, stats, appeals -----
 router.get('/teacher/batch/:batchId/records', authenticate, authorize(...BATCH_ROLES), attendanceManagement.getBatchRecords);
@@ -36,7 +34,6 @@ router.post('/teacher/appeals/:appealId/review', authenticate, authorize('teache
 
 // ----- Work immersion schedules -----
 router.get('/teacher/batch/:batchId/schedules', authenticate, authorize(...BATCH_ROLES), immersionSchedule.getBatchSchedules);
-router.put('/teacher/batch/:batchId/schedules', authenticate, authorize(...BATCH_ROLES), requireLegacyBatch, immersionSchedule.upsertBatchSchedule);
 
 // ----- Student: view own schedule -----
 router.get('/student/schedule', authenticate, authorize('student'), requireImmersion, immersionSchedule.getMySchedule);

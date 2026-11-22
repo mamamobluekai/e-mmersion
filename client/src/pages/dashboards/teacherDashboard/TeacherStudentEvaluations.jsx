@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Trophy, X } from 'lucide-react';
 import { getTeacherBatchEvaluations } from '../../../api/teacherApi';
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import styles from './TeacherStudentEvaluations.module.css';
 
 function percentageOf(ev) {
@@ -20,16 +20,16 @@ function gradeFor(percentage) {
   return 'N/A';
 }
 
-// Student grades for the batch selected in the sidebar, with a ranking of the
-// batch by evaluation score.
+// Student grades for the partner institution selected in the sidebar, with a ranking of the
+// institution by evaluation score.
 function TeacherStudentEvaluations() {
-  const { batchId} = useTeacherBatch();
+  const { institutionId } = usePartnerInstitution();
   const [groups, setGroups] = useState([]);
   const [criteria, setCriteria] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showOverall, setShowOverall] = useState(false);
-  const [showBatchRank, setShowBatchRank] = useState(false);
+  const [showInstitutionRank, setShowInstitutionRank] = useState(false);
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
@@ -53,10 +53,10 @@ function TeacherStudentEvaluations() {
     return () => { cancelled = true; };
   }, []);
 
-  // Only the selected batch is shown; the sidebar switcher controls it.
+  // Only the selected institution is shown; the sidebar switcher controls it.
   const group = useMemo(
-    () => groups.find((g) => Number(g.batch_id) === Number(batchId)) || null,
-    [groups, batchId]
+    () => groups.find((g) => Number(g.batch_id) === Number(institutionId)) || null,
+    [groups, institutionId]
   );
 
   const ranked = useMemo(() => {
@@ -84,7 +84,7 @@ function TeacherStudentEvaluations() {
       .map((row, index) => ({ ...row, rank: row.evaluated ? index + 1 : null }));
   }, [group]);
 
-  // Overall ranking across EVERY batch the teacher handles.
+  // Overall ranking across EVERY institution the teacher handles.
   const overallRanked = useMemo(() => {
     const rows = groups.flatMap((g) =>
       (g.students || []).map((s) => {
@@ -138,18 +138,18 @@ function TeacherStudentEvaluations() {
         <div>
           <h2>Student Grades</h2>
           <p className={styles.pageDescription}>
-            Evaluation grades of your students in the batch selected in the sidebar.
+            Evaluation grades of your students in the partner institution selected in the sidebar.
           </p>
         </div>
         <div className={styles.headerActions}>
           <button
             type="button"
             className={styles.rankBtn}
-            onClick={() => setShowBatchRank(true)}
-            title="View the ranking of the selected batch"
+            onClick={() => setShowInstitutionRank(true)}
+            title="View the ranking of the selected partner institution"
           >
             <BarChart3 size={16} strokeWidth={2} aria-hidden="true" />
-            Batch Ranking
+            Partner Institution Ranking
             {ranked.some((s) => s.evaluated) && (
               <span className={styles.rankBtnCount}>{ranked.filter((s) => s.evaluated).length}</span>
             )}
@@ -159,7 +159,7 @@ function TeacherStudentEvaluations() {
             type="button"
             className={styles.rankBtn}
             onClick={() => setShowOverall(true)}
-            title="View the top ranking across all batches"
+            title="View the top ranking across all partner institutions"
           >
             <Trophy size={16} strokeWidth={2} aria-hidden="true" />
             Top Ranking
@@ -261,7 +261,7 @@ function TeacherStudentEvaluations() {
         </div>
       )}
 
-      {/* Overall ranking across all batches */}
+      {/* Overall ranking across all institutions */}
       {showOverall && (
         <div
           className={styles.drawerOverlay}
@@ -278,7 +278,7 @@ function TeacherStudentEvaluations() {
           >
             <div className={styles.rankModalHeader}>
               <div>
-                <span className={styles.rankModalEyebrow}>All Batches</span>
+                <span className={styles.rankModalEyebrow}>All Partner Institutions</span>
                 <h3 id="overall-rank-title">Top Ranking</h3>
                 <p>Your students ranked from the highest score to the lowest.</p>
               </div>
@@ -335,10 +335,10 @@ function TeacherStudentEvaluations() {
 
       {loading ? (
         <p className={styles.loading}>Loading...</p>
-      ) : !batchId ? (
-        <p className={styles.empty}>Select a batch in the sidebar to view grades.</p>
+      ) : !institutionId ? (
+        <p className={styles.empty}>Select a partner institution in the sidebar to view grades.</p>
       ) : !group ? (
-        <p className={styles.empty}>No data for the selected batch.</p>
+        <p className={styles.empty}>No data for the selected partner institution.</p>
       ) : (
         <div className={styles.section}>
           <h3 className={styles.sectionTitle}>{group.batch_label}</h3>
@@ -347,7 +347,7 @@ function TeacherStudentEvaluations() {
           </p>
 
           {group.students.length === 0 ? (
-            <p className={styles.empty}>No students in this batch.</p>
+            <p className={styles.empty}>No students in this partner institution.</p>
           ) : (
             <div className={styles.tableWrap}>
               <table className={styles.table}>
@@ -396,34 +396,34 @@ function TeacherStudentEvaluations() {
         </div>
       )}
 
-      {/* Batch ranking drawer */}
-      {showBatchRank && (
+      {/* Partner institution ranking drawer */}
+      {showInstitutionRank && (
         <div
           className={styles.drawerOverlay}
           role="presentation"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setShowBatchRank(false);
+            if (e.target === e.currentTarget) setShowInstitutionRank(false);
           }}
         >
           <aside
             className={styles.drawer}
             role="dialog"
             aria-modal="true"
-            aria-labelledby="batch-rank-title"
+            aria-labelledby="institution-rank-title"
           >
             <div className={styles.drawerHeader}>
               <div>
                 <span className={styles.rankModalEyebrow}>
-                  {group?.batch_label || 'Selected Batch'}
+                  {group?.batch_label || 'Selected Partner Institution'}
                 </span>
-                <h3 id="batch-rank-title">Batch Ranking</h3>
-                <p>Students in this batch ranked from highest to lowest.</p>
+                <h3 id="institution-rank-title">Partner Institution Ranking</h3>
+                <p>Students in this partner institution ranked from highest to lowest.</p>
               </div>
               <button
                 type="button"
                 className={styles.rankModalClose}
-                onClick={() => setShowBatchRank(false)}
-                aria-label="Close batch ranking"
+                onClick={() => setShowInstitutionRank(false)}
+                aria-label="Close partner institution ranking"
               >
                 <X size={18} />
               </button>
@@ -431,7 +431,7 @@ function TeacherStudentEvaluations() {
 
             <div className={styles.drawerBody}>
               {ranked.filter((s) => s.evaluated).length === 0 ? (
-                <p className={styles.empty}>No evaluated students in this batch yet.</p>
+                <p className={styles.empty}>No evaluated students in this partner institution yet.</p>
               ) : (
                 <ol className={styles.rankModalList}>
                   {ranked

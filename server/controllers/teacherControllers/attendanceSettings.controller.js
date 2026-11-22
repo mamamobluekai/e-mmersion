@@ -6,6 +6,7 @@ const pool = require('../../db/');
 const { getBatchScheduleForDate } = require('./immersionSchedule.controller');
 const { notifyUsers, getBatchStudentUserIds } = require('../../services/notification.service');
 const { assertBatchAccess } = require('../../utils/batchAccess');
+const { nowInManilaDateOnly } = require('../../utils/manilaDate');
 
 const TZ = 'Asia/Manila';
 
@@ -195,76 +196,6 @@ const getBatchConfig = async (req, res) => {
   }
 };
 
-// PUT /api/attendance/teacher/batch/:batchId/config
-const updateBatchConfig = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { batchId } = req.params;
-    // Attendance scheduling is owned by the SUPERVISOR, but the assigned
-    // teacher and the batch coordinator may also manage it.
-    const gate = await assertBatchAccess(req.user, batchId);
-    if (!gate.ok) return res.status(gate.denied.status).json({ error: gate.denied.error });
-
-    const { time_in_open, time_in_close, time_out_open, time_out_close, timezone } = req.body;
-
-    // When every window is supplied, reject a non-coherent schedule up front.
-    // Previously these were stored unchecked, and a late shift such as
-    // 19:30 -> 23:30 combined with the leftover 08:30/17:00 defaults saved
-    // fine but resolved to a permanently closed (or time-out only) day.
-    const provided = [time_in_open, time_in_close, time_out_open, time_out_close];
-    if (provided.every((v) => v !== undefined && v !== null && v !== '')) {
-      const problem = validateWindows({
-        time_in_open: String(time_in_open).slice(0, 5),
-        time_in_close: String(time_in_close).slice(0, 5),
-        time_out_open: String(time_out_open).slice(0, 5),
-        time_out_close: String(time_out_close).slice(0, 5),
-      });
-      if (problem) return res.status(400).json({ error: problem });
-    }
-
-    const fields = [];
-    const values = [];
-    let idx = 2;
-    const pushTime = (key, val) => {
-      if (val && /^\d{2}:\d{2}(:\d{2})?$/.test(String(val))) {
-        fields.push(`${key} = $${idx++}`);
-        values.push(String(val).slice(0, 5));
-      }
-    };
-    pushTime('time_in_open', time_in_open);
-    pushTime('time_in_close', time_in_close);
-    pushTime('time_out_open', time_out_open);
-    pushTime('time_out_close', time_out_close);
-    if (timezone && typeof timezone === 'string') {
-      fields.push(`timezone = $${idx++}`);
-      values.push(timezone);
-    }
-
-    if (fields.length === 0) {
-      const cur = await client.query('SELECT * FROM attendance_config WHERE teacher_batch_id = $1', [batchId]);
-      if (cur.rows.length === 0) {
-        const ins = await client.query('INSERT INTO attendance_config (teacher_batch_id) VALUES ($1) RETURNING *', [batchId]);
-        return res.json(ins.rows[0]);
-      }
-      return res.json(cur.rows[0]);
-    }
-
-    const upsert = await client.query(
-      `INSERT INTO attendance_config (teacher_batch_id, ${fields.map((f) => f.split(' = ')[0]).join(', ')})
-       VALUES ($1, ${fields.map((_, i) => `$${i + 2}`).join(', ')})
-       ON CONFLICT (teacher_batch_id) DO UPDATE SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP
-       RETURNING *`,
-      [batchId, ...values]
-    );
-    res.json(upsert.rows[0]);
-  } catch (err) {
-    console.error('updateBatchConfig error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
 // POST /api/attendance/teacher/batch/:batchId/open  (manual override ON)
 const openBatchAttendance = async (req, res) => {
   try {
@@ -272,8 +203,10 @@ const openBatchAttendance = async (req, res) => {
     const gate = await assertBatchAccess(req.user, batchId);
     if (!gate.ok) return res.status(gate.denied.status).json({ error: gate.denied.error });
 
-    // Manual override is intentionally allowed even when a date is not in the
-    // immersion schedule, so the teacher can open attendance on demand.
+    const batch = gate.access.batch;
+    if (batch.archived_at || !batch.confirmed_schedule?.dates?.includes(nowInManilaDateOnly())) {
+      return res.status(409).json({ error: 'Attendance can only open on an agreed workday.' });
+    }
     const r = await pool.query(
       `INSERT INTO attendance_config (teacher_batch_id, manual_open)
        VALUES ($1, TRUE)
@@ -284,7 +217,7 @@ const openBatchAttendance = async (req, res) => {
     const studentUserIds = await getBatchStudentUserIds(batchId);
     void notifyUsers(studentUserIds, {
       title: 'Attendance is open',
-      message: 'Your teacher has opened attendance. You may time in now.',
+      message: 'Attendance has opened for your agreed workday.',
       type: 'attendance',
       category: 'attendance',
       priority: 'high',
@@ -339,7 +272,6 @@ module.exports = {
   resolveAttendanceState,
   getBatchAttendanceStatus,
   getBatchConfig,
-  updateBatchConfig,
   openBatchAttendance,
   closeBatchAttendance,
 };

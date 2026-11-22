@@ -3,7 +3,7 @@ import { useTeacherAttendanceReport } from '../../../hooks/useTeacherAttendanceR
 import { getAttendanceLabel, hasAppeal, isFutureDate, formatShortDate } from '../../../utils/attendanceAnalytics';
 import styles from './AttendanceReportsRecords.module.css';
 
-// Attendance records grid for the batch selected in the sidebar: every enrolled
+// Attendance records grid for the partner institution selected in the sidebar: every enrolled
 // student against every scheduled work immersion date.
 //
 // variant="panel" renders the full card (section header, legend, refresh) and
@@ -19,7 +19,7 @@ function TeacherAttendanceRecords({ variant = 'panel', report: reportProp }) {
 
   const grid = (
     <>
-      {loading ? <p className={styles.state}>Loading attendance records...</p> : !dates.length ? <p className={styles.state}>No work immersion schedule has been configured for this batch.</p> : (
+      {loading ? <p className={styles.state}>Loading attendance records...</p> : !dates.length ? <p className={styles.state}>No work immersion schedule has been configured for this partner institution.</p> : (
         <div className={styles.tableWrap}>
           <table className={styles.table}>
             <thead><tr><th>Student</th><th>Student ID</th><th>Grade / Strand</th>{dates.map((date) => <th key={date}>{formatShortDate(date)}</th>)}</tr></thead>

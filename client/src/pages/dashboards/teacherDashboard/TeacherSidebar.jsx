@@ -1,5 +1,5 @@
 import DashboardSidebar from '../sharedSidebar/DashboardSidebar';
-import TeacherSidebarBatchSwitcher from './TeacherSidebarBatchSwitcher';
+import TeacherPartnerSwitcher from './TeacherPartnerSwitcher';
 import UserProfileSettings from '../UserProfileSettings';
 
 import {
@@ -13,6 +13,7 @@ import {
   User,
   FolderOpen,
   Info,
+  Building2,
 } from 'lucide-react';
 
 const links = [
@@ -92,7 +93,7 @@ function TeacherSidebar({ isOpen, onClose }) {
       links={links}
       isOpen={isOpen}
       onClose={onClose}
-      aboveNav={<TeacherSidebarBatchSwitcher />}
+      aboveNav={<TeacherPartnerSwitcher />}
     />
   );
 }

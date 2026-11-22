@@ -73,11 +73,6 @@ export async function getBatchConfig(batchId, token) {
   return res.data;
 }
 
-export async function updateBatchConfig(batchId, config, token) {
-  const res = await axios.put(`${API_BASE}/attendance/teacher/batch/${batchId}/config`, config, { headers: authHeaders(token) });
-  return res.data;
-}
-
 export async function getBatchRecords(batchId, date, token) {
   const res = await axios.get(`${API_BASE}/attendance/teacher/batch/${batchId}/records`, {
     headers: authHeaders(token),
@@ -109,11 +104,6 @@ export async function reviewAppeal(appealId, payload, token) {
 
 export async function getBatchSchedules(batchId, token) {
   const res = await axios.get(`${API_BASE}/attendance/teacher/batch/${batchId}/schedules`, { headers: authHeaders(token) });
-  return res.data;
-}
-
-export async function upsertBatchSchedule(batchId, payload, token) {
-  const res = await axios.put(`${API_BASE}/attendance/teacher/batch/${batchId}/schedules`, payload, { headers: authHeaders(token) });
   return res.data;
 }
 

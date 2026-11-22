@@ -14,7 +14,7 @@ import {
   getBatchDailyDocSummary,
 } from '../../../api/teacherApi';
 
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import styles from './TeacherOverview.module.css';
 
 // Teacher routes the overview metric cards link to.
@@ -28,20 +28,20 @@ const ROUTES = {
 };
 
 function TeacherDashboard({ user }) {
-  // A teacher can be assigned to MULTIPLE batches (a batch may also be
-  // shared with other supervisors/teachers). `useTeacherBatch` loads every
-  // batch assigned to this teacher from the backend and keeps the selected
-  // batch persisted, shared with the other teacher pages.
+  // A teacher can be assigned to MULTIPLE partner institutions (an institution may also be
+  // shared with other supervisors/teachers). `usePartnerInstitution` loads every
+  // institution assigned to this teacher from the backend and keeps the selected
+  // institution persisted, shared with the other teacher pages.
   const {
-    batches,
-    batch: selectedBatch,
-    batchId: selectedBatchId,
-    batchLabel,
-    selectBatch,
-    loading: batchesLoading,
-    error: batchesError,
-    reload: reloadBatches,
-  } = useTeacherBatch();
+    institutions,
+    institution: selectedInstitution,
+    institutionId: selectedInstitutionId,
+    institutionName,
+    selectInstitution,
+    loading: institutionsLoading,
+    error: institutionsError,
+    reload: reloadInstitutions,
+  } = usePartnerInstitution();
 
   const [students, setStudents] = useState([]);
   const [records, setRecords] = useState([]);
@@ -49,17 +49,17 @@ function TeacherDashboard({ user }) {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [noBatch, setNoBatch] = useState(false);
+  const [noInstitution, setNoInstitution] = useState(false);
 
   const token = localStorage.getItem('wim-token');
 
   const loadDashboard = useCallback(
     async ({ silent = false } = {}) => {
-      // Wait for the batch list before deciding there is no batch.
-      if (batchesLoading) return;
+      // Wait for the institution list before deciding there is no institution.
+      if (institutionsLoading) return;
 
-      if (!selectedBatchId) {
-        setNoBatch(true);
+      if (!selectedInstitutionId) {
+        setNoInstitution(true);
         setStudents([]);
         setRecords([]);
         setDocSummary([]);
@@ -73,7 +73,7 @@ function TeacherDashboard({ user }) {
         }
 
         setError('');
-        setNoBatch(false);
+        setNoInstitution(false);
 
         const today = new Date().toISOString().split('T')[0];
 
@@ -82,9 +82,9 @@ function TeacherDashboard({ user }) {
           recordsData,
           docSummaryData,
         ] = await Promise.all([
-          getTeacherBatchStudents(selectedBatchId, token),
-          getBatchRecords(selectedBatchId, today, token),
-          getBatchDailyDocSummary(selectedBatchId, token).catch(() => null),
+          getTeacherBatchStudents(selectedInstitutionId, token),
+          getBatchRecords(selectedInstitutionId, today, token),
+          getBatchDailyDocSummary(selectedInstitutionId, token).catch(() => null),
         ]);
 
         setStudents(
@@ -116,17 +116,17 @@ function TeacherDashboard({ user }) {
         setLoading(false);
       }
     },
-    [token, selectedBatchId, batchesLoading]
+    [token, selectedInstitutionId, institutionsLoading]
   );
 
-  // Reload whenever the selected batch changes (switching the batch button
-  // re-computes the attendance pie/percentages for that batch).
+  // Reload whenever the selected institution changes (switching the institution button
+  // re-computes the attendance pie/percentages for that institution).
   useEffect(() => {
-    // Clear the previous batch's numbers so a switch never flashes stale data.
+    // Clear the previous institution's numbers so a switch never flashes stale data.
     setStudents([]);
     setRecords([]);
     setDocSummary([]);
-  }, [selectedBatchId]);
+  }, [selectedInstitutionId]);
 
   useEffect(() => {
     loadDashboard();
@@ -138,7 +138,7 @@ function TeacherDashboard({ user }) {
   useEffect(() => {
     const refresh = () => {
       if (document.visibilityState === 'visible') {
-        reloadBatches();
+        reloadInstitutions();
         loadDashboard({ silent: true });
       }
     };
@@ -150,7 +150,7 @@ function TeacherDashboard({ user }) {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [loadDashboard, reloadBatches]);
+  }, [loadDashboard, reloadInstitutions]);
 
   const studentCount = students.length;
 
@@ -163,7 +163,7 @@ function TeacherDashboard({ user }) {
 
   const absentCount = Math.max(studentCount - presentCount, 0);
 
-  /* ---------------- Documentation (batch-scoped) ---------------- */
+  /* ---------------- Documentation (institution-scoped) ---------------- */
 
   const docTotal = docSummary.reduce(
     (sum, row) => sum + Number(row.total_docs || 0),
@@ -207,14 +207,13 @@ function TeacherDashboard({ user }) {
     user?.email ||
     'Teacher';
 
-  const batchName =
-    batchLabel ||
-    selectedBatch?.batch_label ||
-    selectedBatch?.name ||
-    selectedBatch?.batch_name ||
-    'My Work Immersion Batch';
+  const institutionNameDisplay =
+    institutionName ||
+    selectedInstitution?.name ||
+    selectedInstitution?.institution_name ||
+    'My Partner Institution';
 
-  if (loading || batchesLoading) {
+  if (loading || institutionsLoading) {
     return (
       <div className={styles.loadingPage}>
         <div className={styles.spinner} />
@@ -223,7 +222,7 @@ function TeacherDashboard({ user }) {
     );
   }
 
-  if (noBatch) {
+  if (noInstitution) {
     return (
       <div className={styles.page}>
         <section className={styles.pageHeader}>
@@ -248,7 +247,7 @@ function TeacherDashboard({ user }) {
 
         <div className={styles.emptyState}>
           <Users size={40} />
-          <p>No teacher batch assigned. Contact your coordinator.</p>
+          <p>No partner institution assigned. Contact your coordinator.</p>
         </div>
       </div>
     );
@@ -269,10 +268,10 @@ function TeacherDashboard({ user }) {
         </div>
       </section>
 
-      {(error || batchesError) && (
+      {(error || institutionsError) && (
         <div className={styles.errorAlert}>
           <AlertCircle size={18} />
-          <span>{error || batchesError}</span>
+          <span>{error || institutionsError}</span>
         </div>
       )}
 
@@ -287,36 +286,36 @@ function TeacherDashboard({ user }) {
             </div>
           </div>
 
-          {/* Batch switcher — a batch can be shared with other
+          {/* Institution switcher — an institution can be shared with other
               supervisors, so switching here re-fetches the selected
-              batch and recomputes the attendance pie below. */}
-          {batches.length > 0 && (
+              institution and recomputes the attendance pie below. */}
+          {institutions.length > 0 && (
             <div className={styles.batchSwitcher}>
-              {batches.map((b, index) => {
+              {institutions.map((inst, index) => {
                 const isActive =
-                  Number(b.id) === Number(selectedBatchId);
+                  Number(inst.id) === Number(selectedInstitutionId);
 
                 return (
                   <button
-                    key={b.id}
+                    key={inst.id}
                     type="button"
                     className={`${styles.batchChip} ${
                       isActive ? styles.batchChipActive : ''
                     }`}
-                    onClick={() => selectBatch(b.id)}
+                    onClick={() => selectInstitution(inst.id)}
                     aria-pressed={isActive}
-                    title={b.batch_label}
+                    title={inst.name}
                   >
-                    Batch {index + 1}
+                    {inst.name}
                   </button>
                 );
               })}
             </div>
           )}
 
-          {selectedBatch && (
+          {selectedInstitution && (
             <p className={styles.batchSwitcherLabel}>
-              Showing: {batchName}
+              Showing: {institutionNameDisplay}
             </p>
           )}
 
@@ -359,7 +358,7 @@ function TeacherDashboard({ user }) {
               <h2>Student Documentation</h2>
               <p>
                 Documentation graded
-                {batchName ? ` · ${batchName}` : ''}
+                {institutionNameDisplay ? ` · ${institutionNameDisplay}` : ''}
               </p>
             </div>
 
@@ -455,11 +454,11 @@ function TeacherDashboard({ user }) {
       <section className={styles.roleSection} aria-label="Teacher responsibilities">
         <div className={styles.roleCard}>
           <p className={styles.eyebrow}>STUDENT ATTENDANCE</p>
-          <p>Mark daily attendance, track present and absent students, and monitor batch participation.</p>
+          <p>Mark daily attendance, track present and absent students, and monitor institution participation.</p>
         </div>
         <div className={styles.roleCard}>
           <p className={styles.eyebrow}>STUDENT DOCUMENTATION</p>
-          <p>Review submitted documentation, grade entries, and track completion across your batch.</p>
+          <p>Review submitted documentation, grade entries, and track completion across your institution.</p>
         </div>
         <div className={styles.roleCard}>
           <p className={styles.eyebrow}>STUDENT EVALUATIONS</p>

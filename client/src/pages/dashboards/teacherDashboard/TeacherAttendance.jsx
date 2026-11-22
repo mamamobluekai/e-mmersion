@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { CalendarDays, ClipboardList, X } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import ImmersionScheduleCalendar from './ImmersionScheduleCalendar';
 import TeacherAttendanceRecords from './TeacherAttendanceRecords';
 import AttendanceInsights from './AttendanceInsights';
@@ -66,7 +66,7 @@ function normalizeTimeInput(value) {
 
 function TeacherAttendance() {
   const { token } = useAuth();
-  const { batchId: selectedBatchId, batchLabel } = useTeacherBatch();
+  const { institutionId: selectedInstitutionId, institutionName } = usePartnerInstitution();
 
   const [status, setStatus] = useState(null);
   const [config, setConfig] = useState(null);
@@ -77,11 +77,11 @@ function TeacherAttendance() {
   const [calendarGroup, setCalendarGroup] = useState(null);
   const [recordsOpen, setRecordsOpen] = useState(false);
 
-  // One report per batch, shared by the records modal and the insights charts.
+  // One report per partner institution, shared by the records modal and the insights charts.
   const report = useTeacherAttendanceReport();
 
   const loadAll = useCallback(async () => {
-    if (!selectedBatchId) {
+    if (!selectedInstitutionId) {
       setStatus(null);
       setConfig(null);
       setGroups([]);
@@ -95,9 +95,9 @@ function TeacherAttendance() {
     // Settle each request on its own: one failing endpoint must not blank out
     // the whole monitor, and the failure must say WHICH call broke.
     const calls = [
-      ['status', () => getTeacherBatchStatus(selectedBatchId, token)],
-      ['config', () => getBatchConfig(selectedBatchId, token)],
-      ['schedules', () => getBatchSchedules(selectedBatchId, token)],
+      ['status', () => getTeacherBatchStatus(selectedInstitutionId, token)],
+      ['config', () => getBatchConfig(selectedInstitutionId, token)],
+      ['schedules', () => getBatchSchedules(selectedInstitutionId, token)],
     ];
 
     const results = await Promise.allSettled(calls.map(([, run]) => run()));
@@ -143,7 +143,7 @@ function TeacherAttendance() {
     }
 
     setLoading(false);
-  }, [selectedBatchId, token]);
+  }, [selectedInstitutionId, token]);
 
   useEffect(() => {
     loadAll();
@@ -151,12 +151,12 @@ function TeacherAttendance() {
 
   // Live refresh
   useEffect(() => {
-    if (!selectedBatchId) return;
+    if (!selectedInstitutionId) return;
 
     const id = setInterval(async () => {
       try {
         const [s] = await Promise.all([
-          getTeacherBatchStatus(selectedBatchId, token),
+          getTeacherBatchStatus(selectedInstitutionId, token),
         ]);
 
         setStatus(s);
@@ -166,7 +166,7 @@ function TeacherAttendance() {
     }, 15000);
 
     return () => clearInterval(id);
-  }, [selectedBatchId, token]);
+  }, [selectedInstitutionId, token]);
 
   // The attendance records modal has its own dismiss/scroll-lock behaviour.
   useEffect(() => {
@@ -264,7 +264,7 @@ function TeacherAttendance() {
         </div>
       )}
 
-      {!loading && selectedBatchId && (
+      {!loading && selectedInstitutionId && (
         <>
           {/* Work Immersion Duration + supervisor-set attendance windows */}
           <div className={styles.panel}>
@@ -321,7 +321,7 @@ function TeacherAttendance() {
               return (
                 <div
                   key={
-                    group.supervisor_id || 'batch'
+                    group.supervisor_id || 'institution'
                   }
                   className={styles.supervisorGroup}
                 >
@@ -332,7 +332,7 @@ function TeacherAttendance() {
                       type="button"
                       className={styles.scheduleButton}
                       onClick={() => setCalendarGroup({
-                        title: group.supervisor_name || 'Batch Students',
+                        title: group.supervisor_name || 'Partner Institution Students',
                         dates: computedDates,
                       })}
                     >
@@ -369,9 +369,9 @@ function TeacherAttendance() {
         </>
       )}
 
-      {!loading && !selectedBatchId && (
+      {!loading && !selectedInstitutionId && (
         <p className={styles.info}>
-          You are not assigned to a batch yet.
+          You are not assigned to a partner institution yet.
         </p>
       )}
 
@@ -379,7 +379,7 @@ function TeacherAttendance() {
         <ImmersionScheduleCalendar
           dates={calendarGroup.dates}
           title={calendarGroup.title}
-          batchLabel={batchLabel}
+          batchLabel={institutionName}
           onClose={() => setCalendarGroup(null)}
         />
       )}
@@ -407,7 +407,7 @@ function TeacherAttendance() {
                   <span className={styles.calEyebrow}>Attendance Records</span>
                   <h2 id="attendance-records-title">Scheduled Immersion Attendance</h2>
                   <p>
-                    {batchLabel ? `${batchLabel} · ` : ''}
+                    {institutionName ? `${institutionName} · ` : ''}
                     Every enrolled student against each scheduled work immersion date.
                   </p>
                 </div>

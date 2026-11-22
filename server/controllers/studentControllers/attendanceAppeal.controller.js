@@ -119,7 +119,7 @@ const submitAppeal = async (req, res) => {
 
     const batchRes = await client.query(
       `SELECT tbs.teacher_batch_id,
-              tb.teacher_id,
+              tb.teacher_id, tb.supervisor_id,
               EXISTS (
                 SELECT 1 FROM work_immersion_schedules wis
                 WHERE wis.teacher_batch_id = tbs.teacher_batch_id
@@ -135,12 +135,13 @@ const submitAppeal = async (req, res) => {
        FROM teacher_batch_students tbs
        JOIN students s ON s.id = tbs.student_id
        JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
        WHERE s.user_id = $1
          AND (to_jsonb(tbs)->>'deployment_started_on' IS NULL OR
            $2::date >= (to_jsonb(tbs)->>'deployment_started_on')::date)
          AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
            $2::date < (to_jsonb(tbs)->>'deployment_ended_on')::date)
-         AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
+         AND tb.archived_at IS NULL
        ORDER BY covers_date DESC, has_schedule DESC, tbs.assigned_at DESC
        LIMIT 1`,
       [userId, preferredDate]
@@ -148,7 +149,7 @@ const submitAppeal = async (req, res) => {
     if (batchRes.rows.length === 0) {
       return res.status(400).json({ message: 'You are not assigned to a batch yet.' });
     }
-    const { teacher_batch_id, teacher_id } = batchRes.rows[0];
+    const { teacher_batch_id, teacher_id, supervisor_id } = batchRes.rows[0];
 
     // The appeal date is the date the student is appealing FOR, not today.
     // The client always sends the day that was clicked in the calendar; we
@@ -281,9 +282,9 @@ const submitAppeal = async (req, res) => {
 
     getIO().to(`batch:${teacher_batch_id}`).emit('attendance:appeal_submitted', formatAppealDates(full.rows[0]));
 
-    const teacherUserId = await getBatchTeacherUserId(teacher_batch_id);
+    const reviewerId = await getBatchTeacherUserId(teacher_batch_id) || supervisor_id;
     void createNotification({
-      userId: teacherUserId,
+      userId: reviewerId,
       title: 'Attendance appeal submitted',
       message: `${full.rows[0].first_name} ${full.rows[0].last_name} submitted an attendance appeal.`,
       type: 'appeal',

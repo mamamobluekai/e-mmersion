@@ -8,7 +8,7 @@ function fullName(person) {
 }
 
 // Written-out dates (e.g. "September 28, 2026") rather than numeric ones.
-const LONG_DATE = { month: 'long', day: 'numeric', year: 'numeric' };
+const LONG_DATE = { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'Asia/Manila' };
 
 function formatLongDate(value) {
   if (!value) return '—';
@@ -51,12 +51,12 @@ function PersonCard({ roleLabel, person, fallback, accent, onClick }) {
   );
 }
 
-function PlacementStatus({ days = [] }) {
+function PlacementStatus() {
   const [submission, setSubmission] = useState(null);
-  const [placement, setPlacement] = useState(null);
+  const [placements, setPlacements] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  // Details popup: { role, person } for the team or a batchmate.
   const [infoModal, setInfoModal] = useState(null);
 
   useEffect(() => {
@@ -71,7 +71,7 @@ function PlacementStatus({ days = [] }) {
         ]);
         if (!cancelled) {
           setSubmission(statusResult.submission || {});
-          setPlacement(placementResult.placement || null);
+          setPlacements(placementResult.placements || []);
         }
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -95,10 +95,7 @@ function PlacementStatus({ days = [] }) {
 
   const statusInfo = statusMap[submission?.status] || { label: submission?.status || 'Not started', cls: styles.badgePending };
 
-  // The list shows classmates only — the signed-in student is excluded.
-  const classmates = (placement?.classmates || []).filter((c) => !c.is_me);
-  const otherCount = classmates.length;
-  const placementDays = days.filter((day) => day.teacher_batch_id === placement?.batch_id);
+  const placement = placements.find(({ deployment_id }) => String(deployment_id) === selectedId) || placements[0];
 
   return (
     <div className={styles.page}>
@@ -111,13 +108,13 @@ function PlacementStatus({ days = [] }) {
           <h2>Deployment Status</h2>
           <p>
             {placement
-              ? `You are assigned to ${placement.batch_label || 'your immersion batch'}. Here is your deployment team.`
+              ? `You are assigned to ${placement.company_name}.`
               : 'Track your deployment and placement status here.'}
           </p>
         </div>
         {placement && (
           <div className={styles.batchPill}>
-            <span>{placement.batch_label || 'My Batch'}</span>
+            <span>{placement.status}</span>
           </div>
         )}
       </div>
@@ -126,6 +123,11 @@ function PlacementStatus({ days = [] }) {
 
       {placement && (
         <>
+          {placements.length > 1 && <label>Select a deployment
+            <select value={placement.deployment_id} onChange={(event) => setSelectedId(event.target.value)}>
+              {placements.map(({ deployment_id, batch_label }) => <option key={deployment_id} value={deployment_id}>{batch_label}</option>)}
+            </select>
+          </label>}
           <div className={styles.section}>
             <div className={styles.sectionTitle}>Partner workplace and schedule</div>
             <div className={styles.infoRow}>
@@ -136,26 +138,33 @@ function PlacementStatus({ days = [] }) {
             <div className={styles.infoRow}>
               <span className={styles.infoLabel}>Deployment schedule</span>
               <span className={styles.infoValue}>
-                {placementDays.length
-                  ? `${formatLongDate(placementDays[0].date)} – ${formatLongDate(placementDays.at(-1).date)} · ${placementDays.length} workdays`
-                  : 'Awaiting schedule'}
+                {formatLongDate(placement.start_date)} – {formatLongDate(placement.end_date)}
               </span>
             </div>
+            <details className={styles.infoRow}>
+              <summary>Official attendance schedule · {placement.attendance_dates.length} workdays</summary>
+              {placement.attendance_windows && <p>Time in {placement.attendance_windows.time_in_open}–{placement.attendance_windows.time_in_close} · Time out {placement.attendance_windows.time_out_open}–{placement.attendance_windows.time_out_close}</p>}
+              <ul>{placement.attendance_dates.map((date) => <li key={date}>{formatLongDate(date)}</li>)}</ul>
+            </details>
+            {placement.instructions && <div className={styles.infoRow}>
+              <span className={styles.infoLabel}>Deployment instructions</span>
+              <p>{placement.instructions}</p>
+            </div>}
           </div>
           <div className={styles.section}>
             <div className={styles.sectionTitle}>
               My Deployment Team
             </div>
             <div className={styles.peopleGrid}>
-              <PersonCard
+              {placement.teachers.map((teacher) => <PersonCard
+                key={teacher.id}
                 roleLabel="Teacher"
-                person={placement.teacher}
-                fallback="Not assigned yet"
+                person={teacher}
                 accent="accentTeacher"
                 onClick={() =>
-                  setInfoModal({ role: 'Teacher', person: placement.teacher })
+                  setInfoModal({ role: 'Teacher', person: teacher })
                 }
-              />
+              />)}
               <PersonCard
                 roleLabel="Supervisor"
                 person={placement.supervisor}
@@ -177,41 +186,6 @@ function PlacementStatus({ days = [] }) {
             </div>
           </div>
 
-          <div className={styles.section}>
-            <div className={styles.sectionTitle}>
-              My Batchmates
-              <span className={styles.countChip}>
-                {otherCount} {otherCount === 1 ? 'classmate' : 'classmates'}
-              </span>
-            </div>
-            {classmates.length === 0 ? (
-              <p className={styles.empty}>No classmates assigned to your batch yet.</p>
-            ) : (
-              <div className={styles.classmateList}>
-                {classmates.map((mate) => (
-                  <button
-                    type="button"
-                    key={mate.student_id}
-                    className={`${styles.classmateItem} ${styles.clickable}`}
-                    onClick={() => setInfoModal({ role: 'Classmate', person: mate, isMate: true })}
-                    title="View classmate details"
-                  >
-                    <div className={styles.classmateAvatar}>
-                      {initials(mate)}
-                    </div>
-                    <div className={styles.classmateInfo}>
-                      <strong>{fullName(mate) || 'Student'}</strong>
-                      <span className={styles.classmateMeta}>
-                        {mate.student_number ? `#${mate.student_number}` : mate.email || 'Student'}
-                        {mate.track_strand ? ` · ${mate.track_strand}` : ''}
-                      </span>
-                    </div>
-                    <span className={styles.chevron} aria-hidden="true">›</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         </>
       )}
 
@@ -253,18 +227,13 @@ function PlacementStatus({ days = [] }) {
         <div className={styles.section}>
           <div className={styles.pendingNote}>
             <div>
-              <strong>You are not assigned to a batch yet</strong>
-              <p>Once your coordinator approves your requirements and places you in a batch, your teacher, supervisor, and batchmates will appear here.</p>
+              <strong>Awaiting deployment assignment</strong>
+              <p>Your schedule and deployment contacts will appear here after your coordinator finalizes your placement.</p>
             </div>
           </div>
         </div>
       )}
 
-      {placement?.created_at && (
-        <p className={styles.footerNote}>
-          Batch assigned on {formatLongDate(placement.created_at)}
-        </p>
-      )}
       {infoModal && (
         <div
           className={styles.modalBackdrop}
@@ -297,68 +266,28 @@ function PlacementStatus({ days = [] }) {
             </div>
 
             <div className={styles.infoModalBody}>
-              {!infoModal.isMate && (
-                <>
-                  <div className={styles.infoRow}>
-                    <span className={styles.infoLabel}>Role</span>
-                    <span className={styles.infoValue}>{infoModal.role}</span>
-                  </div>
-                  {infoModal.person.department && (
-                    <div className={styles.infoRow}>
-                      <span className={styles.infoLabel}>Department</span>
-                      <span className={styles.infoValue}>
-                        {infoModal.person.department}
-                      </span>
-                    </div>
-                  )}
-                  {infoModal.person.email && (
-                    <div className={styles.infoRow}>
-                      <span className={styles.infoLabel}>Email</span>
-                      <span className={styles.infoValue}>
-                        {infoModal.person.email}
-                      </span>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {infoModal.isMate && (
-                <>
-                  <div className={styles.infoRow}>
-                    <span className={styles.infoLabel}>Student No.</span>
-                    <span className={styles.infoValue}>
-                      {infoModal.person.student_number
-                        ? `#${infoModal.person.student_number}`
-                        : '—'}
-                    </span>
-                  </div>
-                  <div className={styles.infoRow}>
-                    <span className={styles.infoLabel}>Track & Strand</span>
-                    <span className={styles.infoValue}>
-                      {infoModal.person.track_strand || '—'}
-                    </span>
-                  </div>
-                  {infoModal.person.grade_level && (
-                    <div className={styles.infoRow}>
-                      <span className={styles.infoLabel}>Grade Level</span>
-                      <span className={styles.infoValue}>
-                        {infoModal.person.grade_level}
-                      </span>
-                    </div>
-                  )}
-                  {infoModal.person.email && (
-                    <div className={styles.infoRow}>
-                      <span className={styles.infoLabel}>Email</span>
-                      <span className={styles.infoValue}>
-                        {infoModal.person.email}
-                      </span>
-                    </div>
-                  )}
-                </>
-              )}
-
               <div className={styles.infoRow}>
-                <span className={styles.infoLabel}>Batch</span>
+                <span className={styles.infoLabel}>Role</span>
+                <span className={styles.infoValue}>{infoModal.role}</span>
+              </div>
+              {infoModal.person.department && (
+                <div className={styles.infoRow}>
+                  <span className={styles.infoLabel}>Department</span>
+                  <span className={styles.infoValue}>
+                    {infoModal.person.department}
+                  </span>
+                </div>
+              )}
+              {infoModal.person.email && (
+                <div className={styles.infoRow}>
+                  <span className={styles.infoLabel}>Email</span>
+                  <span className={styles.infoValue}>
+                    {infoModal.person.email}
+                  </span>
+                </div>
+              )}
+              <div className={styles.infoRow}>
+                <span className={styles.infoLabel}>Deployment</span>
                 <span className={styles.infoValue}>
                   {placement?.batch_label || '—'}
                 </span>

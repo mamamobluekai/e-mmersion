@@ -184,7 +184,7 @@ async function archivePeriod(periodId, archivedBy) {
       SELECT status, confirmed_schedule->>'end' AS end_date
       FROM deployment_requests WHERE workflow_version = 2 AND immersion_period_id = $1`, [periodId]);
     const today = nowInManilaDateOnly();
-    if (managed.rows.some((row) => ['pending', 'approved', 'changes_requested'].includes(row.status) &&
+    if (managed.rows.some((row) => ['draft', 'pending', 'approved', 'changes_requested', 'pending_coordinator_agreement'].includes(row.status) &&
         (!row.end_date || row.end_date >= today))) {
       throw Object.assign(new Error('Resolve open partner deployments before archiving this period.'), { status: 409 });
     }
@@ -330,6 +330,9 @@ async function archivePeriod(periodId, archivedBy) {
               CASE WHEN dr.workflow_version = 2 THEN jsonb_build_object(
                 'partner_id', dr.partner_institution_id, 'teacher_id', dr.teacher_id, 'batch_id', dr.teacher_batch_id,
                 'proposal', dr.proposal, 'confirmed_schedule', dr.confirmed_schedule, 'school_clearance', dr.school_clearance,
+                'original_proposal', dr.original_proposal, 'counterproposal', dr.counterproposal, 'agreement', dr.agreement,
+                'teacher_ids', COALESCE((SELECT jsonb_agg(link.teacher_id ORDER BY link.teacher_id)
+                  FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id), '[]'::jsonb),
                 'pending_amendment', dr.schedule_amendment,
                 'history', COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id)
                   FROM partner_deployment_events e WHERE e.deployment_request_id = dr.id), '[]'::jsonb)

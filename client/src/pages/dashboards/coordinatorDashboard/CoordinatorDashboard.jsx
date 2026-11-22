@@ -5,8 +5,6 @@ import CoordinatorSidebar from './CoordinatorSidebar';
 import StudentApprovals from './StudentApprovals';
 import StudentList from './StudentList';
 import RequirementsReview from './RequirementsReview';
-import TeacherBatches from './TeacherBatches';
-import DeployStudents from './DeployStudents';
 import Supervisors from './Supervisors';
 import PartnerDeployments from '../PartnerDeployments';
 import UserProfileSettings from '../UserProfileSettings';
@@ -29,8 +27,7 @@ function CoordinatorDashboard({ user, onLogout }) {
         <Route path="upload-students" element={<Navigate to="/dashboard/coordinator/students" replace />} />
          <Route path="requirements" element={<RequirementsReview />} />
          <Route path="announcements" element={<Announcements user={user} />} />
-         <Route path="batches" element={<TeacherBatches />} />
-         <Route path="batches/deploy/:batchId" element={<DeployStudents />} />
+         <Route path="batches/*" element={<Navigate to="/dashboard/coordinator/deployment" replace />} />
          <Route path="partner-institutions" element={<Supervisors />} />
          <Route path="supervisors" element={<Navigate to="/dashboard/coordinator/partner-institutions" replace />} />
          <Route path="deployment" element={<PartnerDeployments />} />

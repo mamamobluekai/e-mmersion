@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { AlertTriangle, ExternalLink, FileText, Search, Star, X } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import {
   getBatchDailyDocSummary,
   getStudentDailyDocs,
@@ -139,7 +139,7 @@ function FilePreview({ doc }) {
 
 function TeacherStudentDocumentation() {
   const { token } = useAuth();
-  const { batchId } = useTeacherBatch();
+  const { institutionId } = usePartnerInstitution();
   const [students, setStudents] = useState([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
@@ -168,7 +168,7 @@ function TeacherStudentDocumentation() {
   }, []);
 
   const loadSummary = useCallback(async () => {
-    if (!batchId) {
+    if (!institutionId) {
       setStudents([]);
       setLoading(false);
       return;
@@ -176,14 +176,14 @@ function TeacherStudentDocumentation() {
     setLoading(true);
     setError('');
     try {
-      const result = await getBatchDailyDocSummary(batchId, token);
+      const result = await getBatchDailyDocSummary(institutionId, token);
       setStudents(result.students || []);
     } catch (err) {
       setError(err.message || 'Failed to load documentation summary.');
     } finally {
       setLoading(false);
     }
-  }, [batchId, token]);
+  }, [institutionId, token]);
 
   useEffect(() => { loadSummary(); }, [loadSummary]);
 
@@ -197,7 +197,7 @@ function TeacherStudentDocumentation() {
     );
   }, [students, query]);
 
-  // Switching batches must not leave the previous batch's student, documents
+  // Switching institutions must not leave the previous institution's student, documents
   // or grading form on screen.
   useEffect(() => {
     setSelectedStudent(null);
@@ -208,7 +208,7 @@ function TeacherStudentDocumentation() {
     setFeedback('');
     setCriterionRatings({});
     setQuery('');
-  }, [batchId]);
+  }, [institutionId]);
 
   const loadCriteria = useCallback(async () => {
     setCriteriaLoading(true);
@@ -254,15 +254,15 @@ function TeacherStudentDocumentation() {
   }, [criteriaOpen, closeCriteria]);
 
   const openStudentDocs = async (student) => {
-    if (!batchId) {
-      flash('error', 'Batch not loaded yet.');
+    if (!institutionId) {
+      flash('error', 'Partner institution not loaded yet.');
       return;
     }
     setSelectedStudent(student);
     setDocsLoading(true);
     setStudentDocs([]);
     try {
-      const result = await getStudentDailyDocs({ studentId: student.student_id, batchId }, token);
+      const result = await getStudentDailyDocs({ studentId: student.student_id, batchId: institutionId }, token);
       setStudentDocs(result.docs || []);
     } catch (err) {
       flash('error', err.message || 'Failed to load student documentation.');
@@ -333,7 +333,7 @@ function TeacherStudentDocumentation() {
       closeReview();
       loadSummary();
       if (selectedStudent) {
-        const result2 = await getStudentDailyDocs({ studentId: selectedStudent.student_id, batchId }, token);
+        const result2 = await getStudentDailyDocs({ studentId: selectedStudent.student_id, batchId: institutionId }, token);
         setStudentDocs(result2.docs || []);
       }
     } catch (err) {
@@ -401,7 +401,7 @@ function TeacherStudentDocumentation() {
       {/* Students List */}
       {loading && <p className={styles.info}>Loading students...</p>}
       {!loading && students.length === 0 && (
-        <p className={styles.empty}>No students in this batch yet.</p>
+        <p className={styles.empty}>No students in this partner institution yet.</p>
       )}
       {!loading && students.length > 0 && (
         <>

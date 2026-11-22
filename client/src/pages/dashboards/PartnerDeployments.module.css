@@ -12,6 +12,11 @@
   column-gap: 0;
 }
 
+.page.supervisorPage {
+  max-width: 100%;
+  margin: 0;
+}
+
 .coordinatorPage > * {
   grid-column: 2;
 }
@@ -33,6 +38,25 @@
 
 .page .header {
   margin-bottom: 0;
+}
+
+.supervisorHeader {
+  composes: pageHeader from './supervisorDashboard/Deployment.module.css';
+}
+
+.page .supervisorHeader {
+  --header-padding-inline: clamp(18px, 3vw, 24px);
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 12px;
+  align-items: center;
+  margin-bottom: 0;
+  padding-inline: var(--header-padding-inline);
+}
+
+.supervisorHeaderDescription {
+  grid-column: 1 / -1;
 }
 
 .cardIcon {
@@ -83,6 +107,42 @@
   color: var(--about-muted);
   font-size: 0.88rem;
   line-height: 1.65;
+}
+
+.standardSchedule {
+  border: 1px solid var(--about-border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 14px;
+}
+
+.standardSchedule summary {
+  color: var(--about-maroon);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.standardSchedule dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 10px;
+  margin: 12px 0 0;
+}
+
+.standardSchedule dt {
+  color: var(--about-muted);
+  font-size: 0.78rem;
+}
+
+.standardSchedule dd {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+
+.standardSchedule p {
+  margin-top: 12px;
+  color: var(--about-muted);
+  font-size: 0.84rem;
 }
 
 .tabs {
@@ -496,11 +556,13 @@
   text-transform: uppercase;
 }
 
-.partnerLabel { font-weight: 700; }
-
 .page .filterPanel {
   align-items: end;
   padding: clamp(18px, 2.5vw, 28px);
+}
+
+.page.supervisorPage :is(.filterPanel, .inboxGroup) {
+  padding: clamp(16px, 2vw, 24px);
 }
 
 .page .filters,
@@ -595,6 +657,7 @@
 }
 
 .badge[data-state="pending"],
+.badge[data-state="pending_coordinator_agreement"],
 .badge[data-state="changes_requested"] {
   background: #fff4e2;
   color: #77531f;
@@ -786,7 +849,7 @@
   list-style: none;
 }
 
-.rows li + li,
+.rows > li + li,
 .roster li + li {
   border-top: 1px solid var(--about-border);
 }
@@ -806,13 +869,29 @@
   cursor: pointer;
 }
 
-.requestRow:hover {
+.requestRow:hover,
+.requestRow[aria-expanded="true"] {
   background: var(--about-blush);
   color: var(--about-maroon);
 }
 
 .requestRow > svg {
   color: var(--about-maroon);
+}
+
+.requestRow[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+
+.inlineRequestDetail {
+  display: grid;
+  gap: 12px;
+  margin: 8px 0 14px;
+}
+
+.page .inlineRequestDetail > .panel,
+.page .inlineRequestDetail > .compare > .panel {
+  padding: clamp(12px, 2.5vw, 22px);
 }
 
 .requestRow small,
@@ -834,6 +913,34 @@
 
 .actionName {
   text-transform: capitalize;
+}
+
+.page .historyButton {
+  min-height: 40px;
+  padding-inline: 12px;
+  list-style: none;
+}
+
+.historyButton::-webkit-details-marker {
+  display: none;
+}
+
+.historyDisclosure[open] .historyChevron {
+  transform: rotate(90deg);
+}
+
+.page .historyDisclosure > .panel {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: 100%;
+  inset-inline-end: var(--header-padding-inline);
+  width: min(28rem, calc(100% - 2 * var(--header-padding-inline)));
+  max-height: min(24rem, 60vh);
+  margin-top: 8px;
+  padding: 8px 16px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  box-shadow: 0 8px 18px rgb(23 32 51 / 12%);
 }
 
 .dateList {

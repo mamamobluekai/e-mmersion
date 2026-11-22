@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { MessageCircle } from 'lucide-react';
 import { useChatUnread } from '../../hooks/useChatUnread';
-import BatchChat from '../social/BatchChat';
+import PartnerChat from '../social/PartnerChat';
 import styles from './GroupChatButton.module.css';
 
 export default function GroupChatButton({ user }) {

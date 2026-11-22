@@ -19,7 +19,8 @@ const getCoordinatorProfile = async (req, res) => {
        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
        JOIN students s ON s.id = tbs.student_id
        JOIN users u ON u.id = s.user_id
-       WHERE tb.coordinator_id = $1 AND u.status IN ('approved', 'active')`,
+       WHERE tb.coordinator_id = $1 AND tb.partner_institution_id IS NOT NULL AND tb.archived_at IS NULL
+         AND tbs.deployment_ended_on IS NULL AND u.status IN ('approved', 'active')`,
       [coordinator.id]
     );
     const currentStudents = Number(currentCount.rows[0]?.student_count || 0);
@@ -74,21 +75,22 @@ const getCoordinatorDashboard = async (req, res) => {
       pool.query(`
         SELECT
           COUNT(DISTINCT tb.id)::int AS total,
-          COUNT(tbs.student_id)::int AS assigned_students,
+          COALESCE(SUM(tbs.student_count), 0)::int AS assigned_students,
           COALESCE(SUM(tb.max_students), 0)::int AS capacity,
           COUNT(*) FILTER (WHERE tb.supervisor_id IS NULL)::int AS without_supervisor
         FROM teacher_batches tb
-        LEFT JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-        WHERE tb.coordinator_id = $1
+        LEFT JOIN LATERAL (SELECT COUNT(*)::int AS student_count FROM teacher_batch_students
+          WHERE teacher_batch_id = tb.id AND deployment_ended_on IS NULL) tbs ON true
+        WHERE tb.coordinator_id = $1 AND tb.partner_institution_id IS NOT NULL AND tb.archived_at IS NULL
       `, [coordinatorId]),
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE LOWER(status) = 'pending')::int AS pending,
           COUNT(*) FILTER (WHERE LOWER(status) = 'approved')::int AS approved,
           COUNT(*) FILTER (WHERE LOWER(status) = 'rejected')::int AS rejected,
-          COUNT(*) FILTER (WHERE LOWER(status) = 'fulfilled')::int AS fulfilled
+          COUNT(*) FILTER (WHERE teacher_batch_id IS NOT NULL AND status = 'approved')::int AS fulfilled
         FROM deployment_requests
-        WHERE coordinator_id = $1
+        WHERE coordinator_id = $1 AND workflow_version = 2
       `, [req.user.id]),
       pool.query(`
         SELECT
@@ -104,7 +106,7 @@ const getCoordinatorDashboard = async (req, res) => {
         FROM deployment_requests dr
         JOIN users su ON su.id = dr.supervisor_id
         JOIN supervisors sv ON sv.user_id = su.id
-        WHERE dr.coordinator_id = $1
+        WHERE dr.coordinator_id = $1 AND dr.workflow_version = 2
         ORDER BY dr.created_at DESC
         LIMIT 5
       `, [req.user.id]),

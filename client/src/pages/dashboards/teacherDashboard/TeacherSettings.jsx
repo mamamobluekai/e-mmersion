@@ -31,9 +31,9 @@ function TeacherSettings() {
         <h3 className={styles.section}>Attendance Windows</h3>
         <p className={styles.hint}>
           Attendance opens and closes automatically using the window times your
-          supervisor saved for each batch (default: Time In 8:00 AM &ndash; 8:30 AM,
+          supervisor saved for each partner institution (default: Time In 8:00 AM &ndash; 8:30 AM,
           Time Out 5:00 PM &ndash; 5:30 PM, Asia/Manila). Students see the exact
-          window for their own batch on the Attendance page.
+          window for their own partner institution on the Attendance page.
         </p>
       </div>
       <div className={styles.card}>

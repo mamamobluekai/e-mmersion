@@ -14,9 +14,9 @@ function toISO({ y, m, d }) {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
-// Large calendar view of a batch's immersion days. Immersion days are shaded,
+// Large calendar view of a partner institution's immersion days. Immersion days are shaded,
 // weekends and other non-attendance days are muted.
-function ImmersionScheduleCalendar({ dates = [], title, batchLabel, onClose }) {
+function ImmersionScheduleCalendar({ dates = [], title, institutionName, onClose }) {
   const attendanceDays = useMemo(() => new Set(dates), [dates]);
 
   const [cursor, setCursor] = useState(() => {
@@ -84,9 +84,9 @@ function ImmersionScheduleCalendar({ dates = [], title, batchLabel, onClose }) {
             </span>
             <div>
               <span className={styles.calEyebrow}>Immersion Schedule</span>
-              <h2 id="immersion-calendar-title">{title || 'Batch Schedule'}</h2>
+              <h2 id="immersion-calendar-title">{title || 'Partner Institution Schedule'}</h2>
               <p>
-                {batchLabel ? `${batchLabel} · ` : ''}
+                {institutionName ? `${institutionName} · ` : ''}
                 {dates.length} immersion day{dates.length === 1 ? '' : 's'}
               </p>
             </div>
@@ -140,7 +140,7 @@ function ImmersionScheduleCalendar({ dates = [], title, batchLabel, onClose }) {
           </div>
 
           {dates.length === 0 && (
-            <p className={styles.calEmpty}>No immersion schedule has been set for this batch yet.</p>
+            <p className={styles.calEmpty}>No immersion schedule has been set for this partner institution yet.</p>
           )}
         </div>
 

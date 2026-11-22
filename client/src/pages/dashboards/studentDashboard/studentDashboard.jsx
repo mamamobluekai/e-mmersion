@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { getMyJourney } from '../../../api/studentApi';
-import BatchChat from '../../../components/social/BatchChat';
+import PartnerChat from '../../../components/social/PartnerChat';
 import About from '../About';
 import Announcements from '../Announcements/Announcements';
 import UserProfileSettings from '../UserProfileSettings';
@@ -106,7 +106,7 @@ function StudentDashboard({ user, onLogout }) {
         <Route path="pre-immersion" element={<JourneyStage stage="pre"><Requirements key="missions" checklistOnly /></JourneyStage>} />
         <Route path="pre-immersion/requirements" element={<JourneyStage stage="pre"><Requirements key="forms" /></JourneyStage>} />
         <Route path="immersion-proper" element={stagePage('immersion', journey && <DailyMissionRoadmap journey={journey} />)} />
-        <Route path="immersion-proper/placement-status" element={stagePage('immersion', <PlacementStatus days={journey?.days} />)} />
+        <Route path="immersion-proper/placement-status" element={stagePage('immersion', <PlacementStatus />)} />
         <Route path="immersion-proper/attendance" element={stagePage('immersion', <Attendance />)} />
         <Route path="immersion-proper/daily-documentation" element={stagePage('immersion', <DailyDocumentation />)} />
         <Route path="post-immersion" element={stagePage('post', journey && <Progress journey={journey} />)} />

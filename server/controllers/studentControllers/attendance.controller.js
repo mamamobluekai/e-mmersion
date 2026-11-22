@@ -24,21 +24,19 @@ const {
 async function getActiveBatch(userId) {
   const r = await pool.query(
     `SELECT tbs.teacher_batch_id, tb.teacher_id, to_jsonb(tbs)->>'deployment_started_on' AS deployment_started_on,
-            to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed,
-            EXISTS (
-              SELECT 1 FROM work_immersion_schedules wis
-              WHERE wis.teacher_batch_id = tbs.teacher_batch_id
-                AND $2::date BETWEEN wis.start_date AND wis.end_date
+            true AS partner_managed,
+            ((dr.confirmed_schedule->'dates') ? ($2::date)::text
                 AND (to_jsonb(tbs)->>'deployment_started_on' IS NULL OR
                   $2::date >= (to_jsonb(tbs)->>'deployment_started_on')::date)
             ) AS has_active_schedule
      FROM teacher_batch_students tbs
      JOIN students s ON s.id = tbs.student_id
      JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
      WHERE s.user_id = $1 AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
          $2::date < (to_jsonb(tbs)->>'deployment_ended_on')::date AND
          $2::date >= (to_jsonb(tbs)->>'deployment_started_on')::date)
-       AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
+       AND tb.archived_at IS NULL
      ORDER BY has_active_schedule DESC, tbs.assigned_at DESC, tbs.id DESC
      LIMIT 1`,
     [userId, todayInTimezone('Asia/Manila')]

@@ -17,7 +17,7 @@ import styles from './CoordinatorOverview.module.css';
 const ROUTES = {
   students: '/dashboard/coordinator/students',
   requirements: '/dashboard/coordinator/requirements',
-  batches: '/dashboard/coordinator/batches',
+  batches: '/dashboard/coordinator/deployment',
   supervisors: '/dashboard/coordinator/supervisors',
 };
 
@@ -83,7 +83,7 @@ function CoordinatorOverview() {
           <h1>
             {getGreeting()}, {firstName}! <span aria-hidden="true">👋</span>
           </h1>
-          <p>Stay on top of today’s priorities with a quick overview of approvals, student requirements, and batch activities.
+          <p>Stay on top of today’s priorities with a quick overview of approvals, student requirements, and deployments.
           </p>
         </div>
       </section>
@@ -135,7 +135,7 @@ function CoordinatorOverview() {
               </div>
               <div className={styles.roleCard}>
                 <p className={styles.cardEyebrow}>PLACEMENT COORDINATION</p>
-                <p>Organize teacher batches, monitor capacity, and coordinate deployment requests to support student immersion placement.</p>
+                <p>Agree on work immersion schedules with supervisors and finalize eligible student placements.</p>
               </div>
             </section>
           </div>

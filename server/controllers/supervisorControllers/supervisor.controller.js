@@ -40,48 +40,10 @@ async function ensureSupervisorReportsTable(client = pool) {
   await client.query('CREATE INDEX IF NOT EXISTS idx_supervisor_reports_student ON supervisor_reports(student_id)');
 }
 
-// Immersion-day generation, holiday and blocked-date skipping, and make-up
-// days are all owned by the shared helper. See server/utils/immersionDays.js.
-const {
-  buildImmersionDays: buildImmersionDaysRaw,
-  loadExcludedDates,
-  appendMakeupDays,
-  durationToDays,
-  toDateOnly,
-} = require('../../utils/immersionDays');
-
-/**
- * The batch's scheduled immersion days, with Philippine holidays and
- * supervisor-blocked dates skipped. Callers that need per-student make-up days
- * should pass the student's attendance through appendMakeupDays afterwards.
- */
-async function buildImmersionDays(startDate, durationValue = 10, opts = {}) {
-  const { blocked } = await loadExcludedDates(opts.teacherBatchId ?? null, opts.supervisorId ?? null);
-  return buildImmersionDaysRaw(startDate, 'days', durationValue, { blockedDates: blocked });
-}
-
 async function getSupervisorBatches(supervisorUserId) {
-  const deployment = await pool.query(
-    `SELECT dr.id AS request_id, dr.batch_label, dr.strand,
-            c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
-            c.employee_id AS coordinator_employee_id, c.department AS coordinator_department,
-            c.designation AS coordinator_designation, c.school AS coordinator_school,
-            cu.email AS coordinator_email, cu.phone AS coordinator_phone,
-            NULL::text AS teacher_first_name, NULL::text AS teacher_last_name,
-            NULL::text AS teacher_employee_id, NULL::text AS teacher_department,
-            NULL::text AS teacher_designation, NULL::text AS teacher_school,
-            NULL::text AS teacher_email, NULL::text AS teacher_phone,
-            'deployment' AS source
-     FROM deployment_requests dr
-     JOIN coordinators c ON c.user_id = dr.coordinator_id
-     LEFT JOIN users cu ON cu.id = c.user_id
-     WHERE dr.supervisor_id = $1 AND dr.direction = 'coordinator_to_supervisor' AND dr.status = 'approved'
-       AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'
-     ORDER BY dr.created_at DESC`, [supervisorUserId]
-  );
   const teacher = await pool.query(
     `SELECT tb.id AS request_id, tb.batch_label, NULL AS strand,
-            dr.id AS partner_request_id,
+            dr.id AS partner_request_id, dr.confirmed_schedule,
             c.first_name AS coordinator_first_name, c.last_name AS coordinator_last_name,
             c.employee_id AS coordinator_employee_id, c.department AS coordinator_department,
             c.designation AS coordinator_designation, c.school AS coordinator_school,
@@ -96,12 +58,29 @@ async function getSupervisorBatches(supervisorUserId) {
      LEFT JOIN users cu ON cu.id = c.user_id
      LEFT JOIN teachers t ON t.id = tb.teacher_id
      LEFT JOIN users tu ON tu.id = t.user_id
-     LEFT JOIN deployment_requests dr ON (to_jsonb(dr)->>'teacher_batch_id')::int = tb.id
-       AND to_jsonb(dr)->>'workflow_version' = '2'
-     WHERE tb.supervisor_id = $1 AND (to_jsonb(tb)->>'partner_institution_id' IS NULL OR tb.archived_at IS NULL)
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+     WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL
      ORDER BY tb.created_at DESC`, [supervisorUserId]
   );
-  return [...deployment.rows, ...teacher.rows];
+  return teacher.rows;
+}
+
+async function getSupervisorPartnerInstitutions(supervisorUserId) {
+  const result = await pool.query(
+    `SELECT DISTINCT ON (pi.id)
+            pi.id, pi.name, pi.industry, pi.description, pi.address,
+            MIN(dr.confirmed_schedule->>'start') AS deployment_start,
+            MAX(dr.confirmed_schedule->>'end') AS deployment_end,
+            COUNT(DISTINCT tb.id) AS batch_count
+     FROM teacher_batches tb
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+     JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
+     WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL
+     GROUP BY pi.id
+     ORDER BY pi.id`,
+    [supervisorUserId]
+  );
+  return result.rows;
 }
 
 const studentFields = `s.id AS student_id, s.user_id, s.student_number,
@@ -115,30 +94,11 @@ const studentFields = `s.id AS student_id, s.user_id, s.student_number,
   srs.status AS requirements_status,
   cert.certificate_number, cert.cloudinary_url AS certificate_url`;
 
-async function getDeploymentStudents(requestId, supervisorUserId) {
-  const result = await pool.query(
-    `SELECT ${studentFields}
-     FROM deployment_request_students drs JOIN deployment_requests dr ON dr.id = drs.deployment_request_id
-     JOIN users u ON u.id = drs.student_id JOIN students s ON s.user_id = u.id
-     JOIN student_requirement_submissions srs ON srs.user_id = u.id
-     LEFT JOIN LATERAL (
-       SELECT certificate_number, cloudinary_url
-       FROM certificates c
-       WHERE c.student_id = s.id
-       ORDER BY c.created_at DESC
-       LIMIT 1
-     ) cert ON true
-     WHERE drs.deployment_request_id = $1 AND dr.supervisor_id = $2 ORDER BY s.last_name, s.first_name`,
-    [requestId, supervisorUserId]
-  );
-  return result.rows;
-}
-
 async function getTeacherBatchStudents(requestId, supervisorUserId) {
   const result = await pool.query(
     `SELECT ${studentFields}, to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed
      FROM teacher_batch_students tbs JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-     JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id JOIN users u ON u.id = s.user_id
+     JOIN students s ON s.id = tbs.student_id JOIN users u ON u.id = s.user_id
      JOIN student_requirement_submissions srs ON srs.user_id = u.id
      LEFT JOIN LATERAL (
        SELECT certificate_number, cloudinary_url
@@ -148,8 +108,7 @@ async function getTeacherBatchStudents(requestId, supervisorUserId) {
        LIMIT 1
      ) cert ON true
      WHERE tbs.teacher_batch_id = $1 AND tb.supervisor_id = $2
-       AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
-         (to_jsonb(tbs)->>'deployment_ended_on')::date > (to_jsonb(tbs)->>'deployment_started_on')::date)
+       AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
      ORDER BY s.last_name, s.first_name`,
     [requestId, supervisorUserId]
   );
@@ -162,126 +121,49 @@ async function getTeacherBatchStudents(requestId, supervisorUserId) {
   });
 }
 
-async function getAssignedStudentForReport(supervisorUserId, studentId, batchId, batchSource) {
-  if (batchSource === 'teacher') {
-    const result = await pool.query(
-      `SELECT s.id AS student_id, tb.id AS batch_id, tb.teacher_id, 'teacher' AS batch_source
-       FROM teacher_batches tb
-       JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-       JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
-       WHERE tb.supervisor_id = $1 AND s.id = $2 AND tb.id = $3
-       LIMIT 1`,
-      [supervisorUserId, studentId, batchId]
-    );
-    return result.rows[0] || null;
-  }
-
+async function getSupervisorPartnerInstitutionStudents(institutionId, supervisorUserId) {
   const result = await pool.query(
-    `SELECT s.id AS student_id, dr.id AS batch_id, NULL::integer AS teacher_id, 'deployment' AS batch_source
-     FROM deployment_requests dr
-     JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-     JOIN students s ON s.user_id = drs.student_id
-     WHERE dr.supervisor_id = $1 AND s.id = $2 AND dr.id = $3
-     LIMIT 1`,
-    [supervisorUserId, studentId, batchId]
+    `SELECT ${studentFields}
+     FROM teacher_batch_students tbs
+     JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+     JOIN students s ON s.id = tbs.student_id
+     JOIN users u ON u.id = s.user_id
+     JOIN student_requirement_submissions srs ON srs.user_id = u.id
+     LEFT JOIN LATERAL (
+       SELECT certificate_number, cloudinary_url
+       FROM certificates c
+       WHERE c.student_id = s.id
+       ORDER BY c.created_at DESC
+       LIMIT 1
+     ) cert ON true
+     WHERE dr.partner_institution_id = $1 AND tb.supervisor_id = $2
+       AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
+     ORDER BY s.last_name, s.first_name`,
+    [institutionId, supervisorUserId]
   );
-  return result.rows[0] || null;
+  return result.rows;
 }
 
-// Reuses the supervisor's existing schedule resolution so the progress bars
-// line up with the same immersion days the attendance report already uses.
-async function resolveImmersionDaysForStudent(supervisorUserId, studentProfileId, batchId = null) {
-  const userIdRes = await pool.query('SELECT user_id FROM students WHERE id = $1', [studentProfileId]);
-  const userId = userIdRes.rows[0]?.user_id;
-  if (!userId) return [];
-
-  const tbsRes = await pool.query(
-    `SELECT tb.id, tb.batch_label, to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed
+async function getAssignedStudentForReport(supervisorUserId, studentId, batchId) {
+  const { rows: [assignment] } = await pool.query(
+    `SELECT tbs.student_id, tb.id AS batch_id, tb.teacher_id, 'teacher' AS batch_source
      FROM teacher_batches tb
+     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
      JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-     WHERE tb.supervisor_id = $1 AND tbs.student_id = $2 AND ($3::int IS NULL OR tb.id = $3)
-     ORDER BY (to_jsonb(tbs)->>'deployment_ended_on' IS NULL) DESC, tbs.assigned_at DESC, tb.id DESC
-     LIMIT 1`,
-    [supervisorUserId, studentProfileId, batchId]
-  );
-  const batch = tbsRes.rows[0];
-  if (batch?.partner_managed) {
-    const schedule = (await getStudentSchedules(studentProfileId)).find((row) => row.teacher_batch_id === batch.id);
-    return schedule ? schedule.attendance_dates.split(',').filter(Boolean).map((date, index) => ({
-      date, number: (schedule.first_day_number || 1) + index, is_makeup: false,
-    })) : [];
-  }
-
-  let schedule = null;
-  if (batch) {
-    const schedRes = await pool.query(
-      `SELECT start_date, duration_type, duration_value
-       FROM work_immersion_schedules
-       WHERE teacher_batch_id = $1
-       ORDER BY start_date ASC LIMIT 1`,
-      [batch.id]
-    );
-    schedule = schedRes.rows[0];
-  }
-
-  if (!schedule) {
-    const firstRes = await pool.query(
-      `SELECT MIN(sa.date) AS first_date
-       FROM student_attendance sa
-       JOIN students s ON s.id = sa.student_id
-       WHERE s.user_id = $1`,
-      [userId]
-    );
-    schedule = {
-      start_date: firstRes.rows[0]?.first_date || new Date().toISOString().slice(0, 10),
-      duration_type: 'days',
-      duration_value: 10,
-    };
-  }
-
-  const teacherBatchId = batch?.id || null;
-
-  // The student's OWN day list: the batch schedule, plus one make-up day for
-  // every immersion day they did not complete. Holidays and blocked dates are
-  // excluded from both halves.
-  const scheduled = await buildImmersionDays(
-    schedule.start_date,
-    durationToDays(schedule.duration_type, schedule.duration_value),
-    { teacherBatchId, supervisorId: supervisorUserId }
-  );
-
-  let attendanceRows = { rows: [] };
-  if (scheduled.length) {
-    const dateList = scheduled.map((d) => d.date);
-    attendanceRows = await pool.query(
-      `SELECT to_char(date, 'YYYY-MM-DD') AS date, check_in_time, check_out_time
-         FROM student_attendance
-        WHERE student_id = $1 AND date = ANY($2::date[])`,
-      [studentProfileId, dateList]
-    );
-  }
-  const attendanceByDate = new Map(attendanceRows.rows.map((r) => [r.date, r]));
-
-  // The Time Out window close decides whether a day counts as completed.
-  const cfgRes = teacherBatchId
-    ? await pool.query(
-        "SELECT to_char(time_out_close, 'HH24:MI') AS time_out_close FROM attendance_config WHERE teacher_batch_id = $1",
-        [teacherBatchId]
-      )
-    : { rows: [] };
-
-  const { blocked } = await loadExcludedDates(teacherBatchId, supervisorUserId);
-  return appendMakeupDays({
-    scheduledDays: scheduled,
-    attendanceByDate,
-    timeOutClose: cfgRes.rows[0]?.time_out_close || null,
-    blockedDates: blocked,
-  }).map((d) => ({ number: d.number, date: d.date, is_makeup: d.is_makeup }));
+     WHERE tb.supervisor_id = $1 AND tbs.student_id = $2 AND tb.id = $3
+       AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL`,
+    [supervisorUserId, studentId, batchId]);
+  return assignment;
 }
 
-// Per-student progress for the supervisor's "Student Progress" panel.
-// Scoped to the calling supervisor, so a supervisor can only ever inspect a
-// student assigned to one of THEIR batches (teacher batch or deployment).
+async function resolveImmersionDaysForStudent(studentId, batchId) {
+  const schedule = (await getStudentSchedules(studentId)).find((row) => row.teacher_batch_id === batchId);
+  return schedule ? schedule.attendance_dates.split(',').filter(Boolean).map((date, index) => ({
+    date, number: schedule.first_day_number + index, is_makeup: false,
+  })) : [];
+}
+
 const getStudentProgress = async (req, res) => {
   try {
     const supervisorUserId = req.user.id;
@@ -306,49 +188,23 @@ const getStudentProgress = async (req, res) => {
     const student = studentRes.rows[0];
     if (!student) return res.status(404).json({ error: 'Student not found.' });
 
-    // Ownership: teacher-batch membership, or a deployment request for this supervisor.
+    // Scope progress to finalized assignments for this supervisor.
     const ownerRes = await pool.query(
       `SELECT tb.id AS batch_id, tb.batch_label, 'teacher' AS source,
               to_jsonb(tb)->>'partner_institution_id' IS NOT NULL AS partner_managed
        FROM teacher_batches tb
        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-       WHERE tb.supervisor_id = $1 AND tbs.student_id = $2
-         AND (to_jsonb(tbs)->>'deployment_ended_on' IS NULL OR
-           (to_jsonb(tbs)->>'deployment_ended_on')::date > (to_jsonb(tbs)->>'deployment_started_on')::date)
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+       WHERE tb.supervisor_id = $1 AND tbs.student_id = $2 AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
        ORDER BY (to_jsonb(tbs)->>'deployment_ended_on' IS NULL) DESC, tbs.assigned_at DESC
        LIMIT 1`,
       [supervisorUserId, studentProfileId]
     );
 
-    let batch = ownerRes.rows[0] || null;
-    let teacherBatchId = batch?.batch_id || null;
+    const batch = ownerRes.rows[0];
+    if (!batch) return res.status(403).json({ error: 'This student is not assigned to you.' });
+    const teacherBatchId = batch.batch_id;
 
-    if (!batch) {
-      const deployRes = await pool.query(
-        `SELECT dr.id AS batch_id, dr.batch_label, 'deployment' AS source
-         FROM deployment_requests dr
-         JOIN deployment_request_students drs ON drs.deployment_request_id = dr.id
-         WHERE dr.supervisor_id = $1 AND drs.student_id = $2
-         LIMIT 1`,
-        [supervisorUserId, student.user_id]
-      );
-      batch = deployRes.rows[0] || null;
-    }
-
-    if (!batch) {
-      return res.status(403).json({ error: 'This student is not assigned to you.' });
-    }
-
-    // Deployment students are normally ALSO placed into a teacher batch when
-    // the coordinator fulfils the request. Daily documentation is keyed by
-    // teacher_batch_id, so prefer that when it exists.
-    if (batch.source === 'deployment') {
-      const tbsRes = await pool.query(
-        'SELECT teacher_batch_id FROM teacher_batch_students WHERE student_id = $1 LIMIT 1',
-        [studentProfileId]
-      );
-      teacherBatchId = tbsRes.rows[0]?.teacher_batch_id || null;
-    }
     // ---- 1. REQUIREMENTS (each document type + the student's file state) ----
     // Form requirements (Personal Information, Guardian & Emergency) are filled
     // in on the Requirements page rather than uploaded, so they are left out of
@@ -381,7 +237,7 @@ const getStudentProgress = async (req, res) => {
     const requirementsCompleted = requirements.filter((r) => r.completed).length;
 
     // ---- 2. ATTENDANCE per immersion day ----
-    const immersionDays = await resolveImmersionDaysForStudent(supervisorUserId, studentProfileId, teacherBatchId);
+    const immersionDays = await resolveImmersionDaysForStudent(studentProfileId, teacherBatchId);
     const dateList = immersionDays.map((d) => d.date);
 
     const attRes = dateList.length
@@ -472,9 +328,7 @@ const getSupervisorBatchStudents = async (req, res) => {
     const batches = await getSupervisorBatches(req.user.id);
     const enriched = [];
     for (const batch of batches) {
-      const students = batch.source === 'teacher'
-        ? await getTeacherBatchStudents(batch.request_id, req.user.id)
-        : await getDeploymentStudents(batch.request_id, req.user.id);
+      const students = await getTeacherBatchStudents(batch.request_id, req.user.id);
 
       const userIds = students.map((s) => s.user_id);
       const docsResult = await pool.query(
@@ -490,9 +344,9 @@ const getSupervisorBatchStudents = async (req, res) => {
         `SELECT student_id, COUNT(DISTINCT date)::int AS days
          FROM student_attendance sa JOIN students s ON s.id = sa.student_id
          WHERE s.user_id = ANY($1::int[])
-           AND sa.check_in_time IS NOT NULL AND sa.check_out_time IS NOT NULL
+           AND sa.teacher_batch_id = $2 AND sa.check_in_time IS NOT NULL AND sa.check_out_time IS NOT NULL
          GROUP BY student_id`,
-        [userIds]
+        [userIds, batch.request_id]
       );
       const attByStudent = new Map(attResult.rows.map((row) => [row.student_id, Number(row.days)]));
 
@@ -511,15 +365,15 @@ const getSupervisorBatchStudents = async (req, res) => {
                 COUNT(*) FILTER (WHERE sdd.status IN ('graded', 'reviewed'))::int AS done
          FROM student_daily_documentation sdd
          JOIN students s ON s.id = sdd.student_id
-         WHERE s.user_id = ANY($1::int[])
+         WHERE s.user_id = ANY($1::int[]) AND sdd.teacher_batch_id = $2
          GROUP BY sdd.student_id`,
-        [userIds]
+        [userIds, batch.request_id]
       );
       const docDaysByStudent = new Map(docDayRes.rows.map((row) => [row.student_id, Number(row.done)]));
 
       const summaries = new Map();
       for (const s of students) {
-        const days = await resolveImmersionDaysForStudent(req.user.id, s.student_id, batch.source === 'teacher' ? batch.request_id : null);
+        const days = await resolveImmersionDaysForStudent(s.student_id, batch.request_id);
         const totalDays = days.length;
         const present = attByStudent.get(s.student_id) || 0;
         const docsDone = docDaysByStudent.get(s.student_id) || 0;
@@ -561,63 +415,32 @@ const getSupervisorBatchStudents = async (req, res) => {
   }
 };
 
-async function getSchedule(batch, requestId, supervisorUserId, userIds) {
-  const result = batch.source === 'teacher'
-    ? await pool.query('SELECT teacher_batch_id, supervisor_id, start_date, duration_type, duration_value FROM work_immersion_schedules WHERE teacher_batch_id = $1 ORDER BY start_date ASC LIMIT 1', [requestId])
-    : await pool.query(`SELECT wis.teacher_batch_id, wis.supervisor_id, wis.start_date, wis.duration_type, wis.duration_value FROM work_immersion_schedules wis
-        JOIN teacher_batches tb ON tb.id = wis.teacher_batch_id JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-        JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
-        WHERE tb.supervisor_id = $1 AND s.user_id = ANY($2::int[]) ORDER BY wis.start_date ASC LIMIT 1`, [supervisorUserId, userIds]);
-  let schedule = result.rows[0];
-  if (!schedule) {
-    const first = await pool.query(`SELECT MIN(sa.date) AS first_date FROM student_attendance sa JOIN students s ON s.id = sa.student_id WHERE s.user_id = ANY($1::int[])`, [userIds]);
-    schedule = {
-      // With no schedule row, fall back to the batch itself for teacher
-      // batches so its blocked dates are still honoured.
-      teacher_batch_id: batch.source === 'teacher' ? requestId : null,
-      supervisor_id: supervisorUserId,
-      start_date: first.rows[0]?.first_date || new Date().toISOString().slice(0, 10),
-      duration_type: 'days',
-      duration_value: 10,
-    };
-  }
-  const duration = schedule.duration_type === 'hours' ? Math.ceil(Number(schedule.duration_value) / 8) : Number(schedule.duration_value);
-  // teacherBatchId/supervisorId MUST be passed: without them the day builder
-  // only skips holidays, and the batch's blocked dates would still show here.
-  return buildImmersionDays(schedule.start_date, duration, {
-    teacherBatchId: schedule.teacher_batch_id,
-    supervisorId: schedule.supervisor_id,
-  });
-}
-
 const getBatchAttendance = async (req, res) => {
   try {
     const supervisorUserId = req.user.id;
     const { requestId } = req.params;
-    const source = ['teacher', 'deployment'].includes(req.query.source) ? req.query.source : null;
-    const batchResult = await pool.query(`SELECT dr.id, dr.batch_label, 'deployment' AS source FROM deployment_requests dr
-      WHERE dr.id = $1 AND dr.supervisor_id = $2 AND COALESCE(to_jsonb(dr)->>'workflow_version', '1') = '1'
-        AND ($3::text IS NULL OR $3 = 'deployment')
-      UNION ALL SELECT tb.id, tb.batch_label, 'teacher' AS source FROM teacher_batches tb
-      WHERE tb.id = $1 AND tb.supervisor_id = $2 AND ($3::text IS NULL OR $3 = 'teacher') LIMIT 1`, [requestId, supervisorUserId, source]);
-    if (!batchResult.rows.length) return res.status(404).json({ error: 'Batch not found.' });
-    const batch = batchResult.rows[0];
-    const usersResult = batch.source === 'teacher'
-      ? await pool.query('SELECT DISTINCT s.user_id FROM teacher_batch_students tbs JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id WHERE tbs.teacher_batch_id = $1', [requestId])
-      : await pool.query('SELECT drs.student_id AS user_id FROM deployment_request_students drs JOIN deployment_requests dr ON dr.id = drs.deployment_request_id WHERE drs.deployment_request_id = $1 AND dr.supervisor_id = $2', [requestId, supervisorUserId]);
+    const { rows: [batch] } = await pool.query(
+      `SELECT tb.batch_label, dr.confirmed_schedule->'dates' AS dates
+       FROM teacher_batches tb JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id
+       WHERE tb.id = $1 AND tb.supervisor_id = $2 AND tb.archived_at IS NULL AND dr.workflow_version = 2 AND dr.status = 'approved'`,
+      [requestId, supervisorUserId]);
+    if (!batch) return res.status(404).json({ error: 'Deployment not found.' });
+    const usersResult = await pool.query(
+      `SELECT s.user_id FROM teacher_batch_students tbs JOIN students s ON s.id = tbs.student_id
+       WHERE tbs.teacher_batch_id = $1 AND tbs.deployment_ended_on IS NULL`, [requestId]);
     const userIds = usersResult.rows.map((row) => row.user_id);
     if (!userIds.length) return res.json({ batch_label: batch.batch_label, students: [], days: [], dates: [], summary: { total_students: 0, days: 0 } });
 
-    const immersionDays = await getSchedule(batch, requestId, supervisorUserId, userIds);
+    const immersionDays = (batch.dates || []).map((date, index) => ({ date, number: index + 1 }));
     const dates = immersionDays.map((day) => day.date);
     const { from, to } = req.query;
     const filters = [];
-    const params = [userIds, dates];
+    const params = [userIds, dates, requestId];
     if (from) { params.push(from); filters.push(`AND sa.date >= $${params.length}`); }
     if (to) { params.push(to); filters.push(`AND sa.date <= $${params.length}`); }
     const recordsResult = await pool.query(`SELECT sa.id, sa.student_id, sa.date, sa.status, sa.check_in_time, sa.check_out_time, sa.appeal_time_in_id, sa.appeal_time_out_id
       FROM student_attendance sa JOIN students s ON s.id = sa.student_id
-      WHERE s.user_id = ANY($1::int[]) AND sa.date = ANY($2::date[]) ${filters.join(' ')} ORDER BY sa.date ASC`, params);
+      WHERE s.user_id = ANY($1::int[]) AND sa.date = ANY($2::date[]) AND sa.teacher_batch_id = $3 ${filters.join(' ')} ORDER BY sa.date ASC`, params);
     const records = new Map(recordsResult.rows.map((row) => [`${row.student_id}:${String(row.date).slice(0, 10)}`, row]));
 
     // Pull the appeal reasons so the supervisor can read why a student was
@@ -649,7 +472,7 @@ const getBatchAttendance = async (req, res) => {
     // teacher batches (attendance_appeals.teacher_batch_id references
     // teacher_batches), so deployment batches are skipped.
     const directAppeals = new Map();
-    if (batch.source === 'teacher' && dates.length > 0) {
+    if (dates.length > 0) {
       const directRes = await pool.query(
         `SELECT a.id, a.student_id, a.attendance_type, a.appeal_date, a.excuse,
                 a.file_url, a.file_name, a.status, a.teacher_comment,
@@ -657,9 +480,9 @@ const getBatchAttendance = async (req, res) => {
          FROM attendance_appeals a
          JOIN students s ON s.id = a.student_id
          WHERE s.user_id = ANY($1::int[])
-           AND a.appeal_date = ANY($2::date[])
+           AND a.appeal_date = ANY($2::date[]) AND a.teacher_batch_id = $3
          ORDER BY a.created_at DESC`,
-        [userIds, dates]
+        [userIds, dates, requestId]
       );
       for (const appeal of directRes.rows) {
         const key = `${appeal.student_id}:${formatDateOnly(appeal.appeal_date)}:${appeal.attendance_type}`;
@@ -703,7 +526,6 @@ const createReportConcern = async (req, res) => {
     const supervisorUserId = req.user.id;
     const studentId = Number(req.body.student_id);
     const batchId = Number(req.body.batch_id);
-    const batchSource = req.body.batch_source === 'teacher' ? 'teacher' : 'deployment';
     const category = String(req.body.category || '').trim();
     const priority = String(req.body.priority || 'normal').trim().toLowerCase();
     const message = String(req.body.message || '').trim();
@@ -712,7 +534,7 @@ const createReportConcern = async (req, res) => {
       return res.status(400).json({ error: 'Student, batch, category, and message are required.' });
     }
 
-    const assignment = await getAssignedStudentForReport(supervisorUserId, studentId, batchId, batchSource);
+    const assignment = await getAssignedStudentForReport(supervisorUserId, studentId, batchId);
 
     if (!assignment) {
       return res.status(404).json({ error: 'Assigned student not found for this supervisor.' });
@@ -775,11 +597,11 @@ const getReportsConcerns = async (req, res) => {
 
     const result = await pool.query(
       `SELECT r.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
-              COALESCE(tb.batch_label, dr.batch_label, 'Deployment Batch') AS batch_label
+              COALESCE(tb.batch_label, dr.snapshot->'request'->>'batch_label', 'Deployment') AS batch_label
        FROM supervisor_reports r
        JOIN students s ON s.id = r.student_id
        LEFT JOIN teacher_batches tb ON r.batch_source = 'teacher' AND tb.id = r.batch_id
-       LEFT JOIN deployment_requests dr ON r.batch_source = 'deployment' AND dr.id = r.batch_id
+       LEFT JOIN retired_deployment_requests dr ON r.batch_source = 'deployment' AND dr.original_request_id = r.batch_id
        WHERE r.supervisor_id = $1
        ORDER BY r.created_at DESC`,
       [req.user.id]
@@ -836,14 +658,14 @@ const getTeacherReportsConcerns = async (req, res) => {
 
     const result = await pool.query(
       `SELECT r.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
-              COALESCE(tb.batch_label, dr.batch_label, 'Deployment Batch') AS batch_label,
+              COALESCE(tb.batch_label, dr.snapshot->'request'->>'batch_label', 'Deployment') AS batch_label,
               tb.id AS teacher_batch_id,
               sup.first_name AS supervisor_first_name, sup.last_name AS supervisor_last_name,
               sup.employee_id AS supervisor_employee_id, sup.company_name AS supervisor_company
        FROM supervisor_reports r
        JOIN students s ON s.id = r.student_id
        LEFT JOIN teacher_batches tb ON r.batch_source = 'teacher' AND tb.id = r.batch_id
-       LEFT JOIN deployment_requests dr ON r.batch_source = 'deployment' AND dr.id = r.batch_id
+       LEFT JOIN retired_deployment_requests dr ON r.batch_source = 'deployment' AND dr.original_request_id = r.batch_id
        LEFT JOIN supervisors sup ON sup.user_id = r.supervisor_id
        WHERE r.teacher_id = $1
        ORDER BY r.created_at DESC`,
@@ -925,6 +747,8 @@ const confirmReportConcern = async (req, res) => {
 
 module.exports = {
   getSupervisorBatchStudents,
+  getSupervisorPartnerInstitutions,
+  getSupervisorPartnerInstitutionStudents,
   getStudentProgress,
   getBatchAttendance,
   createReportConcern,

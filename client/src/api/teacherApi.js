@@ -1,8 +1,6 @@
 import axios from 'axios';
 import { API_BASE } from '../config/api';
 
-
-
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}` };
 }
@@ -11,7 +9,23 @@ function getToken() {
   return localStorage.getItem('wim-token') || '';
 }
 
-/* ---------------- Teacher Batch ---------------- */
+/* ---------------- Teacher Partner Institution ---------------- */
+
+export async function getMyPartnerInstitutions(token) {
+  const res = await axios.get(`${API_BASE}/coordinator/teacher-partner-institutions/me`, {
+    headers: authHeaders(token),
+  });
+  return res.data;
+}
+
+export async function getPartnerInstitutionStudents(institutionId, token) {
+  const res = await axios.get(`${API_BASE}/coordinator/partner-institutions/${institutionId}/students`, {
+    headers: authHeaders(token),
+  });
+  return res.data;
+}
+
+/* ---------------- Teacher Batch (Legacy) ---------------- */
 
 export async function getMyTeacherBatch(token) {
   const res = await axios.get(`${API_BASE}/coordinator/teacher-batches/me`, {
@@ -71,13 +85,6 @@ export async function getBatchConfig(batchId, token) {
   return res.data;
 }
 
-export async function updateBatchConfig(batchId, config, token) {
-  const res = await axios.put(`${API_BASE}/attendance/teacher/batch/${batchId}/config`, config, {
-    headers: authHeaders(token),
-  });
-  return res.data;
-}
-
 export async function getBatchRecords(batchId, date, token) {
   const res = await axios.get(`${API_BASE}/attendance/teacher/batch/${batchId}/records`, {
     headers: authHeaders(token),
@@ -118,13 +125,6 @@ export async function reviewAppeal(appealId, payload, token) {
 
 export async function getBatchSchedules(batchId, token) {
   const res = await axios.get(`${API_BASE}/attendance/teacher/batch/${batchId}/schedules`, {
-    headers: authHeaders(token),
-  });
-  return res.data;
-}
-
-export async function upsertBatchSchedule(batchId, payload, token) {
-  const res = await axios.put(`${API_BASE}/attendance/teacher/batch/${batchId}/schedules`, payload, {
     headers: authHeaders(token),
   });
   return res.data;

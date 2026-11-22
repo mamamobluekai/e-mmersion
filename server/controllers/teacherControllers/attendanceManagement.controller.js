@@ -95,19 +95,20 @@ const getBatchAttendanceReport = async (req, res) => {
     if (own.error) return res.status(own.status).json({ error: own.error });
 
     const schedules = await pool.query(
-      `SELECT start_date, duration_type, duration_value
-       FROM work_immersion_schedules
-       WHERE teacher_batch_id = $1
-       ORDER BY start_date ASC`,
+      `SELECT wis.start_date, wis.duration_type, wis.duration_value,
+              dr.confirmed_schedule->'dates' AS agreed_dates
+       FROM work_immersion_schedules wis
+       LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = wis.teacher_batch_id
+         AND dr.workflow_version = 2 AND dr.status = 'approved'
+       WHERE wis.teacher_batch_id = $1
+       ORDER BY wis.start_date ASC`,
       [batchId]
     );
     const { blocked } = await loadExcludedDates(batchId, null);
     const dates = [...new Set(
-      schedules.rows.flatMap((schedule) =>
-        buildImmersionDateList(schedule.start_date, schedule.duration_type, schedule.duration_value, {
-          blockedDates: blocked,
-        })
-      )
+      schedules.rows.flatMap((schedule) => Array.isArray(schedule.agreed_dates)
+        ? schedule.agreed_dates.map(String)
+        : buildImmersionDateList(schedule.start_date, schedule.duration_type, schedule.duration_value, { blockedDates: blocked }))
     )].sort();
 
     if (dates.length === 0) return res.json({ dates: [], records: [] });
@@ -124,7 +125,7 @@ const getBatchAttendanceReport = async (req, res) => {
          SELECT s.id, s.first_name, s.last_name, s.student_number,
                 s.grade_level, s.track_strand, s.photo_url
          FROM teacher_batch_students tbs
-         JOIN students s ON s.id = tbs.student_id OR s.user_id = tbs.student_id
+         JOIN students s ON s.id = tbs.student_id
          WHERE tbs.teacher_batch_id = $1
        ) s
        LEFT JOIN student_attendance sa
@@ -248,18 +249,17 @@ const reviewAppeal = async (req, res) => {
 
     const row = appeal.rows[0];
 
-    // The assigned TEACHER, the COORDINATOR who created the batch, and the
-    // SUPERVISOR linked to the batch may all decide an appeal. Teachers are
-    // still checked against this specific appeal's teacher_id so a teacher from
-    // another batch can never review someone else's appeal.
     const access = await resolveBatchAccess(req.user, row.teacher_batch_id);
-    const mayReview = access.isTeacher
-      ? Number(access.teacherId) === Number(row.teacher_id)
-      : access.isSupervisor || access.isCoordinator;
+    const mayReview = access.isTeacher || access.isSupervisor || access.isCoordinator;
     if (!mayReview) {
       return res.status(403).json({ error: 'Access denied.' });
     }
+    const agreement = access.batch?.confirmed_schedule;
+    if (status === 'approved' && agreement && !agreement.dates.includes(row.appeal_date)) {
+      return res.status(409).json({ error: 'The appeal date must be an agreed workday.' });
+    }
 
+    await client.query('BEGIN');
     const updated = await client.query(
       `UPDATE attendance_appeals
        SET status = $1, teacher_comment = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP,
@@ -276,14 +276,12 @@ const reviewAppeal = async (req, res) => {
     // - Status becomes 'present' so the day reads as covered in the grid.
     // - Existing check_in / check_out timestamps are kept: no timestamps are
     //   ever fabricated, so a fully absent day just flips absent -> present.
-    // - Falls back to a legacy status if the DB's check constraint doesn't yet
-    //   allow 'present' (run migration 016 to widen the constraint).
     if (status === 'approved') {
       const appealDate = row.appeal_date || nowLocalDate();
       const isTimeOut = row.attendance_type === 'time_out';
       const inIdSql = isTimeOut ? 'NULL::int' : '$5';
       const outIdSql = isTimeOut ? '$5' : 'NULL::int';
-      const tryUpsert = (st) => client.query(
+      const applied = await client.query(
         `INSERT INTO student_attendance
           (student_id, teacher_batch_id, date, status, appeal_time_in_id, appeal_time_out_id)
          VALUES ($1, $2, $3, $4, ${inIdSql}, ${outIdSql})
@@ -291,19 +289,18 @@ const reviewAppeal = async (req, res) => {
            status = EXCLUDED.status,
            appeal_time_in_id = COALESCE(student_attendance.appeal_time_in_id, EXCLUDED.appeal_time_in_id),
            appeal_time_out_id = COALESCE(student_attendance.appeal_time_out_id, EXCLUDED.appeal_time_out_id),
-           updated_at = CURRENT_TIMESTAMP`,
-        [row.student_id, row.teacher_batch_id, appealDate, st, appealId]
+           updated_at = CURRENT_TIMESTAMP
+         WHERE student_attendance.teacher_batch_id = EXCLUDED.teacher_batch_id`,
+        [row.student_id, row.teacher_batch_id, appealDate, 'present', appealId]
       );
 
-      try {
-        await tryUpsert('present');
-      } catch (e) {
-        // Constraint still restricts to legacy values — fall back to the
-        // appropriate one for the appealed attendance_type.
-        if (e.code !== '23514') throw e;
-        await tryUpsert(isTimeOut ? 'checked_out' : 'checked_in');
+      if (!applied.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'This date already has attendance for another deployment.' });
       }
     }
+
+    await client.query('COMMIT');
 
     const studentUserId = await getStudentUserId(row.student_id);
     void createNotification({
@@ -322,6 +319,8 @@ const reviewAppeal = async (req, res) => {
 
     res.json({ appeal: formatAppealDates(updated.rows[0]), message: `Appeal ${status}.` });
   } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23514') return res.status(409).json({ error: 'Attendance must belong to an agreed workday for this student.' });
     console.error('reviewAppeal error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {

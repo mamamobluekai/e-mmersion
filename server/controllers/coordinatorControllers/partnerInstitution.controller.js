@@ -164,7 +164,8 @@ async function assertNoOpenPartnerDeployments(client, institutionId, userId = nu
   const open = await client.query(`
     SELECT 1 FROM deployment_requests dr
     WHERE to_jsonb(dr)->>'workflow_version' = '2' AND (to_jsonb(dr)->>'partner_institution_id')::int = $1
-      AND ($2::int IS NULL OR dr.supervisor_id = $2) AND dr.status IN ('pending','approved','changes_requested')
+      AND ($2::int IS NULL OR dr.supervisor_id = $2)
+      AND dr.status IN ('draft', 'pending', 'approved', 'changes_requested', 'pending_coordinator_agreement')
       AND (to_jsonb(dr)->>'confirmed_schedule' IS NULL OR
         to_jsonb(dr)->'confirmed_schedule'->>'end' >= to_char(now() AT TIME ZONE 'Asia/Manila', 'YYYY-MM-DD'))
     LIMIT 1`, [institutionId, userId]);

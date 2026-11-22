@@ -47,7 +47,7 @@ function nowInManilaDateOnly() {
 
 // Validates that a string is a real YYYY-MM-DD calendar date.
 function isValidManilaDate(s) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return false;
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const [y, m, d] = s.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
   return (

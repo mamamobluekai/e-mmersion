@@ -11,15 +11,15 @@ import TeacherStudentEvaluations from './TeacherStudentEvaluations';
 import TeacherStudentDocumentation from './TeacherStudentDocumentation';
 import TeacherReportsConcerns from './TeacherReportsConcerns';
 import TeacherSettings from './TeacherSettings';
-import BatchChat from '../../../components/social/BatchChat';
+import PartnerChat from '../../../components/social/PartnerChat';
 import Announcements from '../Announcements/Announcements';
 import UserProfileSettings from '../UserProfileSettings';
-import { TeacherBatchProvider } from '../../../context/TeacherBatchProvider';
+import { PartnerInstitutionProvider } from '../../../context/PartnerInstitutionProvider';
 import About from '../About';
 
 function TeacherDashboard({ user, onLogout }) {
   return (
-    <TeacherBatchProvider>
+    <PartnerInstitutionProvider>
     <DashboardLayout
       topNav={<DashboardTopNav user={user} onLogout={onLogout} title="Teacher Dashboard" />}
       sidebar={<TeacherSidebar />}
@@ -37,14 +37,14 @@ function TeacherDashboard({ user, onLogout }) {
          <Route path="appeals" element={<Navigate to="/dashboard/teacher/attendance" replace />} />
          <Route path="settings" element={<TeacherSettings />} />
 
-         <Route path="group-chat" element={<BatchChat user={user} />} />
+         <Route path="group-chat" element={<PartnerChat user={user} />} />
          <Route path="profile" element={<UserProfileSettings />} />
          <Route path="about" element={<About user={user} />} />
          <Route path="documents" element={<TeacherDocuments user={user} />} />
          <Route path="*" element={<Navigate to="overview" replace />} />
        </Routes>
     </DashboardLayout>
-    </TeacherBatchProvider>
+    </PartnerInstitutionProvider>
   );
 }
 

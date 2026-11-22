@@ -11,7 +11,7 @@ import {
 } from '../../api/chatApi';
 import { io } from 'socket.io-client';
 import { SOCKET_URL } from '../../config/api';
-import styles from './BatchChat.module.css';
+import styles from './PartnerChat.module.css';
 
 
 function getToken() {
@@ -495,13 +495,13 @@ export default function BatchChat({ user, inModal = false }) {
     <div className={`${styles.container} ${inModal ? styles.modalMode : ''}`}>
       <div className={styles.header}>
         <h2 className={styles.title}>Group Chat</h2>
-        <p className={styles.subtitle}>Chat with your batch members</p>
+        <p className={styles.subtitle}>Chat with your partner institution members</p>
       </div>
 
       <div className={`${styles.layout} ${inModal ? styles.modalLayout : ''}`}>
         <div className={styles.chatArea}>
           <button type="button" className={styles.batchesButton} onClick={() => setBatchesOpen(true)}>
-            Batches
+            Partner Institutions
           </button>
           <div className={styles.chatToolbarDivider} />
 
@@ -574,9 +574,9 @@ export default function BatchChat({ user, inModal = false }) {
                 </button>
               </form>
             </>
-          ) : (
+) : (
             <div className={styles.emptyChat}>
-              <p>Select a batch to start chatting.</p>
+              <p>Select a partner institution to start chatting.</p>
             </div>
           )}
         </div>
@@ -590,11 +590,11 @@ export default function BatchChat({ user, inModal = false }) {
             if (event.target === event.currentTarget) setBatchesOpen(false);
           }}
         >
-          <aside className={styles.batchesDrawer} role="dialog" aria-modal="true" aria-label="Batch details">
+          <aside className={styles.batchesDrawer} role="dialog" aria-modal="true" aria-label="Partner institution details">
             <div className={styles.drawerHeader}>
               <div>
                 <span className={styles.drawerEyebrow}>Group chat</span>
-                <h3>Batches</h3>
+                <h3>Partner Institutions</h3>
               </div>
               <button type="button" className={styles.drawerClose} onClick={() => setBatchesOpen(false)} aria-label="Close">
                 ✕
@@ -605,7 +605,7 @@ export default function BatchChat({ user, inModal = false }) {
               {loading ? (
                 <p className={styles.emptySidebar}>Loading...</p>
               ) : batches.length === 0 ? (
-                <p className={styles.emptySidebar}>No batches assigned yet.</p>
+                <p className={styles.emptySidebar}>No partner institutions assigned yet.</p>
               ) : (
                 <ul className={styles.batchList}>
                   {batches.map((batch) => (
@@ -628,35 +628,35 @@ export default function BatchChat({ user, inModal = false }) {
                     </li>
                   ))}
                 </ul>
-              )}
-
-              {selectedBatch && (
-                <div className={styles.membersBlock}>
-                  <h4 className={styles.membersTitle}>
-                    Classmates · {selectedBatch.batch_label}
-                  </h4>
-                  {membersLoading ? (
-                    <p className={styles.emptySidebar}>Loading classmates...</p>
-                  ) : members.length === 0 ? (
-                    <p className={styles.emptySidebar}>No classmates found.</p>
-                  ) : (
-                    <ul className={styles.membersList}>
-                      {members.map((member) => (
-                        <li key={member.id} className={styles.memberItem}>
-                          <span className={styles.memberName}>
-                            {member.name}
-                            {String(member.id) === String(currentUserId) && <em> (You)</em>}
-                          </span>
-                          {member.studentNumber && (
-                            <span className={styles.memberId}>{member.studentNumber}</span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
+)}
             </div>
+
+            {selectedBatch && (
+              <div className={styles.membersBlock}>
+                <h4 className={styles.membersTitle}>
+                  Classmates · {selectedBatch.batch_label}
+                </h4>
+                {membersLoading ? (
+                  <p className={styles.emptySidebar}>Loading classmates...</p>
+                ) : members.length === 0 ? (
+                  <p className={styles.emptySidebar}>No classmates found.</p>
+                ) : (
+                  <ul className={styles.membersList}>
+                    {members.map((member) => (
+                      <li key={member.id} className={styles.memberItem}>
+                        <span className={styles.memberName}>
+                          {member.name}
+                          {String(member.id) === String(currentUserId) && <em> (You)</em>}
+                        </span>
+                        {member.studentNumber && (
+                          <span className={styles.memberId}>{member.studentNumber}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </aside>
         </div>
       )}

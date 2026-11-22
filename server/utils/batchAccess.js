@@ -2,7 +2,7 @@
 //
 // A teacher batch can be accessed by THREE different roles now:
 //   - the TEACHER the batch is assigned to (may handle several batches)
-//   - the SUPERVISOR linked to the batch (owns attendance scheduling)
+//   - the SUPERVISOR linked to the batch
 //   - the COORDINATOR who created the batch
 //
 // Centralising the check keeps attendance scheduling, records, and reports
@@ -18,8 +18,11 @@ const pool = require('../db/');
  */
 async function resolveBatchAccess(user, batchId) {
   const batchRes = await pool.query(
-    `SELECT id, teacher_id, coordinator_id, supervisor_id, batch_label, max_students
-     FROM teacher_batches WHERE id = $1`,
+    `SELECT tb.id, tb.teacher_id, tb.coordinator_id, tb.supervisor_id, tb.batch_label, tb.max_students,
+       tb.archived_at, dr.id AS deployment_request_id, dr.confirmed_schedule
+     FROM teacher_batches tb
+     LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2
+     WHERE tb.id = $1`,
     [batchId]
   );
   const batch = batchRes.rows[0] || null;
@@ -49,9 +52,11 @@ async function resolveBatchAccess(user, batchId) {
 
   // Teacher: teacher_batches.teacher_id references teachers.id.
   if (!result.isSupervisor && !result.isCoordinator) {
-    const teacherRes = await pool.query('SELECT id FROM teachers WHERE user_id = $1', [user.id]);
+    const teacherRes = await pool.query(`SELECT t.id FROM teachers t WHERE t.user_id = $1 AND (
+      t.id = $2 OR EXISTS (SELECT 1 FROM partner_deployment_teachers link
+        WHERE link.deployment_request_id = $3 AND link.teacher_id = t.id))`, [user.id, batch.teacher_id, batch.deployment_request_id]);
     const teacherId = teacherRes.rows[0]?.id;
-    if (teacherId && Number(batch.teacher_id) === Number(teacherId)) {
+    if (teacherId) {
       result.isTeacher = true;
       result.teacherId = teacherId;
     }

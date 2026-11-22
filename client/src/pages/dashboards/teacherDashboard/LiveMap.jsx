@@ -4,7 +4,7 @@ import * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { io } from 'socket.io-client';
 import { useAuth } from '../../../context/AuthContext';
-import { useTeacherBatch } from '../../../hooks/useTeacherBatch';
+import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import { getBatchCurrentLocations } from '../../../api/teacherApi';
 import { buildBatchColorMap } from '../../../utils/batchColors';
 import styles from './LiveMap.module.css';
@@ -747,7 +747,7 @@ function AirParticleLayer({ conditions, level }) {
 
 function LiveMap() {
   const { token } = useAuth();
-  const { batches, loading: batchesLoading } = useTeacherBatch();
+  const { institutions, loading: institutionsLoading } = usePartnerInstitution();
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -774,12 +774,12 @@ function LiveMap() {
     return () => window.removeEventListener('wim-map-layer', handleLayerRestore);
   }, []);
 
-  // The map is NOT scoped to the selected batch: it shows the students of
-  // every batch the teacher handles, colored by batch.
-  const batchKey = useMemo(() => batches.map((b) => Number(b.id)).join(','), [batches]);
-  const batchIds = useMemo(() => batchKey ? batchKey.split(',').map(Number) : [], [batchKey]);
-  const colorMap = useMemo(() => buildBatchColorMap(batches), [batches]);
-  const hasBatches = batches.length > 0;
+  // The map is NOT scoped to the selected institution: it shows the students of
+  // every institution the teacher handles, colored by institution.
+  const institutionKey = useMemo(() => institutions.map((inst) => Number(inst.id)).join(','), [institutions]);
+  const institutionIds = useMemo(() => institutionKey ? institutionKey.split(',').map(Number) : [], [institutionKey]);
+  const colorMap = useMemo(() => buildBatchColorMap(institutions), [institutions]);
+  const hasInstitutions = institutions.length > 0;
 
   // Start from the last saved view so a refresh never jumps back to defaults.
   const initialView = useMemo(
@@ -876,11 +876,11 @@ function LiveMap() {
     };
   }, [mapLayer]);
 
-  // Fetch student locations for every assigned batch
+  // Fetch student locations for every assigned partner institution
   useEffect(() => {
-    if (!token || !hasBatches) {
+    if (!token || !hasInstitutions) {
       setStudents([]);
-      setLoading(!batchesLoading);
+      setLoading(!institutionsLoading);
       return undefined;
     }
     let cancelled = false;
@@ -891,7 +891,7 @@ function LiveMap() {
       abortControllerRef.current = new AbortController();
       try {
         const results = await Promise.all(
-          batchIds.map((id) =>
+          institutionIds.map((id) =>
             getBatchCurrentLocations(id, token, { signal: abortControllerRef.current.signal })
           )
         );
@@ -900,8 +900,8 @@ function LiveMap() {
         const seen = new Set();
         let message = null;
         results.forEach((res, index) => {
-          const id = batchIds[index];
-          const label = batches.find((b) => Number(b.id) === id)?.batch_label || '';
+          const id = institutionIds[index];
+          const label = institutions.find((inst) => Number(inst.id) === id)?.name || '';
           if (res?.message && !message) message = res.message;
           (res?.students || []).forEach((s) => {
             if (seen.has(s.student_id)) return;
@@ -931,9 +931,9 @@ function LiveMap() {
       abortControllerRef.current?.abort();
       if (locationUpdateTimeoutRef.current) clearTimeout(locationUpdateTimeoutRef.current);
     };
-    // `batches` is stable state from the shared provider; it only changes when
-    // the batch list is (re)loaded, so this effect keys off the batch set.
-  }, [batchIds, batches, batchesLoading, hasBatches, token]);
+    // `institutions` is stable state from the shared provider; it only changes when
+    // the institution list is (re)loaded, so this effect keys off the institution set.
+  }, [institutionIds, institutions, institutionsLoading, hasInstitutions, token]);
 
   // Socket connection management
   useEffect(() => {
@@ -942,7 +942,7 @@ function LiveMap() {
 
     socketRef.current.on('connect', () => {
       setSocketStatus('connected');
-      batchIds.forEach((id) => socketRef.current?.emit('student:join_batch', id));
+      institutionIds.forEach((id) => socketRef.current?.emit('student:join_batch', id));
     });
     socketRef.current.on('disconnect', () => setSocketStatus('disconnected'));
     socketRef.current.on('connect_error', () => setSocketStatus('error'));
@@ -1016,28 +1016,28 @@ function LiveMap() {
     });
 
     return () => socketRef.current?.disconnect();
-  }, [batchIds, token]);
+  }, [institutionIds, token]);
 
-  // (Re)join every assigned batch room whenever the batch set changes
+  // (Re)join every assigned institution room whenever the institution set changes
   useEffect(() => {
-    if (!batchIds.length || socketRef.current?.disconnected) return;
-    batchIds.forEach((id) => {
+    if (!institutionIds.length || socketRef.current?.disconnected) return;
+    institutionIds.forEach((id) => {
       socketRef.current?.emit('student:join_batch', id, (ack) => {
-        if (ack?.success) console.log('Joined batch room:', id);
+        if (ack?.success) console.log('Joined institution room:', id);
       });
     });
-  }, [batchIds]);
+  }, [institutionIds]);
 
   const activeStudents = useMemo(() => students.filter((s) => s.status === 'checked_in'), [students]);
 
   const batchSummary = useMemo(
     () =>
-      batches.map((b) => ({
-        ...b,
-        color: colorMap[b.id],
-        total: students.filter((s) => Number(s.batch_id) === Number(b.id)).length,
+      institutions.map((inst) => ({
+        ...inst,
+        color: colorMap[inst.id],
+        total: students.filter((s) => Number(s.batch_id) === Number(inst.id)).length,
       })),
-    [batches, colorMap, students]
+    [institutions, colorMap, students]
   );
 
   const statusIndicatorClass =
@@ -1061,11 +1061,11 @@ function LiveMap() {
           </div>
         </div>
 
-        {!batchesLoading && !hasBatches && <p className={styles.info}>You have not been assigned to a batch yet.</p>}
+        {!institutionsLoading && !hasInstitutions && <p className={styles.info}>You have not been assigned to a partner institution yet.</p>}
 
-        {hasBatches && (
+        {hasInstitutions && (
           <p className={styles.batchTag}>
-            Showing all {batches.length} batch{batches.length !== 1 ? 'es' : ''} — marker color identifies the batch
+            Showing all {institutions.length} partner institution{institutions.length !== 1 ? 's' : ''} — marker color identifies the partner institution
           </p>
         )}
 
@@ -1075,12 +1075,12 @@ function LiveMap() {
           </div>
         )}
 
-        {loading && hasBatches && <p className={styles.info}>Loading map data...</p>}
+        {loading && hasInstitutions && <p className={styles.info}>Loading map data...</p>}
 
-        {!loading && hasBatches && (
+        {!loading && hasInstitutions && (
           <div className={styles.mapWrapper}>
             {scheduleMessage && students.length === 0 && <p className={styles.info}>{scheduleMessage}</p>}
-            {!scheduleMessage && students.length === 0 && <p className={styles.info}>No student data available for your batches.</p>}
+            {!scheduleMessage && students.length === 0 && <p className={styles.info}>No student data available for your partner institutions.</p>}
             {students.length > 0 && activeStudents.length === 0 && (
               <p className={styles.info}>No students are currently checked in.</p>
             )}
@@ -1156,17 +1156,17 @@ function LiveMap() {
             role="presentation"
             onClick={() => setBatchPanelOpen(false)}
           />
-          <aside className={styles.batchDrawer} role="dialog" aria-modal="true" aria-label="Batch students">
+          <aside className={styles.batchDrawer} role="dialog" aria-modal="true" aria-label="Partner institution students">
             <div className={styles.drawerHeader}>
               <div>
                 <span className={styles.drawerEyebrow}>Live attendance</span>
-                <h3>Students by batch</h3>
+                <h3>Students by partner institution</h3>
               </div>
               <button
                 type="button"
                 className={styles.drawerClose}
                 onClick={() => setBatchPanelOpen(false)}
-                aria-label="Close batch list"
+                aria-label="Close partner institution list"
               >
                 ✕
               </button>
@@ -1188,7 +1188,7 @@ function LiveMap() {
                     </header>
 
                     {batchStudents.length === 0 ? (
-                      <p className={styles.drawerEmpty}>No students timed in for this batch.</p>
+                      <p className={styles.drawerEmpty}>No students timed in for this partner institution.</p>
                     ) : (
                       <ul className={styles.drawerList}>
                         {batchStudents.map((student) => (

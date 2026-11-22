@@ -4,7 +4,7 @@ import UserProfileSettings from '../UserProfileSettings';
 import {
   ChartNoAxesColumn,
   Upload,
-  Layers,
+  Building2,
   CalendarDays,
   ClipboardPenLine,
   ScrollText,
@@ -28,9 +28,9 @@ const links = [
     icon: Upload,
   },
   {
-    to: '/dashboard/supervisor/students',
-    label: 'Batches',
-    icon: Layers,
+    to: '/dashboard/supervisor/partner-institutions',
+    label: 'Partner Institutions',
+    icon: Building2,
   },
   {
     to: '/dashboard/supervisor/attendance-schedule',
@@ -56,7 +56,7 @@ const links = [
   },
   // 'Student Criteria' was retired: criteria are now edited from the
   // "Grading Criteria" modal on the Evaluate Student page.
-   {
+  {
     to: '/dashboard/supervisor/grade-appeals',
     label: 'Grade Appeals',
     icon: FileText,
@@ -66,7 +66,7 @@ const links = [
     label: 'Certifications',
     icon: ScrollText,
   },
- 
+
   {
     to: '/dashboard/supervisor/announcements',
     label: 'Announcements',
@@ -92,7 +92,7 @@ function SupervisorSidebar({ isOpen, onClose }) {
   return (
     <DashboardSidebar
       title="Supervisor"
-      subtitle="Deployment Requests"
+      subtitle="Partner Institutions"
       links={links}
       isOpen={isOpen}
       onClose={onClose}

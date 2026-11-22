@@ -2,6 +2,7 @@ const { Server } = require('socket.io');
 const { verifyAccessToken } = require('../utils/generateToken');
 const { isOriginAllowed } = require('../config/corsOption');
 const pool = require('../db');
+const { resolveBatchAccess } = require('../utils/batchAccess');
 const { getPreImmersion } = require('../services/studentJourney.service');
 
 let io;
@@ -14,6 +15,8 @@ async function canAccessBatch(batchId, userId, role) {
     if (!pre.complete) return false;
     const result = await pool.query(
       `SELECT 1 FROM teacher_batch_students tbs
+       JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id AND tb.archived_at IS NULL
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
        JOIN students s ON s.id = tbs.student_id
        JOIN users u ON u.id = s.user_id
        WHERE tbs.teacher_batch_id = $1 AND u.id = $2
@@ -26,37 +29,8 @@ async function canAccessBatch(batchId, userId, role) {
     return result.rows.length > 0;
   }
 
-  if (role === 'teacher') {
-    const result = await pool.query(
-      `SELECT 1 FROM teacher_batches tb
-       JOIN teachers t ON t.id = tb.teacher_id
-       WHERE tb.id = $1 AND t.user_id = $2 LIMIT 1`,
-      [batchId, userId]
-    );
-    return result.rows.length > 0;
-  }
-
-  if (role === 'coordinator') {
-    const result = await pool.query(
-      `SELECT 1 FROM teacher_batches tb
-       JOIN coordinators c ON c.id = tb.coordinator_id
-       WHERE tb.id = $1 AND c.user_id = $2 LIMIT 1`,
-      [batchId, userId]
-    );
-    return result.rows.length > 0;
-  }
-
-  if (role === 'supervisor') {
-    const result = await pool.query(
-      `SELECT 1 FROM teacher_batches tb
-       JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-       WHERE tb.id = $1 AND sv.user_id = $2 LIMIT 1`,
-      [batchId, userId]
-    );
-    return result.rows.length > 0;
-  }
-
-  return false;
+  const { batch, isTeacher, isSupervisor, isCoordinator } = await resolveBatchAccess({ id: userId, role }, batchId);
+  return Boolean(batch?.deployment_request_id && !batch.archived_at && (isTeacher || isSupervisor || isCoordinator));
 }
 
 function initializeSocket(server) {

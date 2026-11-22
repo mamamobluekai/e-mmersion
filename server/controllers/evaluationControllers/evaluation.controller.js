@@ -1,5 +1,7 @@
 const pool = require('../../db');
 const { createNotification, getStudentUserId } = require('../../services/notification.service');
+const { getDeploymentAttendance, requiredAttendanceDays } = require('../../services/deploymentAttendance');
+const { assertBatchAccess } = require('../../utils/batchAccess');
 
 async function ensureEvaluationTables() {
   await pool.query(`
@@ -174,15 +176,10 @@ async function submitEvaluation(req, res) {
       return res.status(400).json({ error: 'studentId and categoryScores are required.' });
     }
 
-    const attendanceResult = await client.query(
-      `SELECT COUNT(DISTINCT date)::int AS days
-       FROM student_attendance
-       WHERE student_id = $1 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
-      [studentId]
-    );
-    const attendanceDays = Number(attendanceResult.rows[0]?.days || 0);
-    if (attendanceDays < 10) {
-      return res.status(400).json({ error: `This student has not yet completed the required 10-day work immersion. Current attendance days: ${attendanceDays}.` });
+    const placement = await getDeploymentAttendance(client, studentId, req.user.id, batchId || null);
+    if (!placement) return res.status(403).json({ error: 'This student is not assigned to your deployment.' });
+    if (placement.attendance_days < placement.required_attendance_days) {
+      return res.status(400).json({ error: `Complete ${placement.required_attendance_days} agreed workdays before evaluation. Recorded days: ${placement.attendance_days}.` });
     }
 
     const criteriaResult = await client.query(
@@ -193,8 +190,8 @@ async function submitEvaluation(req, res) {
     const { category_scores, overall_score, overall_percentage } = computeScores(criteria, categoryScores);
 
     const existing = await client.query(
-      'SELECT id FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 LIMIT 1',
-      [studentId, req.user.id]
+      'SELECT id FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 AND batch_id = $3 LIMIT 1',
+      [studentId, req.user.id, placement.batch_id]
     );
 
     let result;
@@ -204,14 +201,14 @@ async function submitEvaluation(req, res) {
          SET batch_id = $1, category_scores = $2::jsonb, overall_score = $3, overall_percentage = $4, comments = $5, updated_at = CURRENT_TIMESTAMP
          WHERE id = $6
          RETURNING *`,
-        [batchId || null, JSON.stringify(category_scores), overall_score, overall_percentage, comments || null, existing.rows[0].id]
+        [placement.batch_id, JSON.stringify(category_scores), overall_score, overall_percentage, comments || null, existing.rows[0].id]
       );
     } else {
       result = await client.query(
         `INSERT INTO student_evaluations (student_id, evaluator_id, batch_id, category_scores, overall_score, overall_percentage, comments)
          VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
          RETURNING *`,
-        [studentId, req.user.id, batchId || null, JSON.stringify(category_scores), overall_score, overall_percentage, comments || null]
+        [studentId, req.user.id, placement.batch_id, JSON.stringify(category_scores), overall_score, overall_percentage, comments || null]
       );
     }
 
@@ -243,6 +240,11 @@ async function getStudentEvaluation(req, res) {
   try {
     await ensureEvaluationTables();
     const { studentId } = req.params;
+    const { batchId } = req.query;
+    if (batchId && req.user.role !== 'admin') {
+      const gate = await assertBatchAccess(req.user, batchId);
+      if (!gate.ok) return res.status(gate.denied.status).json({ error: gate.denied.error });
+    }
     const result = await pool.query(
       `SELECT se.*, u.email AS evaluator_email,
               s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand
@@ -250,10 +252,11 @@ async function getStudentEvaluation(req, res) {
        JOIN users u ON u.id = se.evaluator_id
        LEFT JOIN supervisors sv ON sv.user_id = se.evaluator_id
        JOIN students s ON s.id = se.student_id
-       WHERE se.student_id = $1
+       WHERE se.student_id = $1 AND ($2::int IS NULL OR se.batch_id = $2)
+         AND ($3::int IS NULL OR se.evaluator_id = $3)
        ORDER BY se.created_at DESC
        LIMIT 1`,
-      [studentId]
+      [studentId, batchId || null, req.user.role === 'supervisor' ? req.user.id : null]
     );
     if (!result.rows.length) {
       return res.json({ evaluation: null });
@@ -269,6 +272,10 @@ async function listBatchEvaluations(req, res) {
   try {
     await ensureEvaluationTables();
     const { batchId } = req.params;
+    if (req.user.role !== 'admin') {
+      const gate = await assertBatchAccess(req.user, batchId);
+      if (!gate.ok) return res.status(gate.denied.status).json({ error: gate.denied.error });
+    }
     const result = await pool.query(
       `SELECT se.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email
        FROM student_evaluations se
@@ -291,61 +298,37 @@ async function listMyStudents(req, res) {
     const supervisorUserId = req.user.id;
 
     const batchesResult = await pool.query(
-      `SELECT dr.id AS request_id, dr.batch_label, 'deployment' AS source
-       FROM deployment_requests dr
-       WHERE dr.supervisor_id = $1 AND dr.status = 'approved'
-       UNION ALL
-       SELECT tb.id AS request_id, tb.batch_label, 'teacher' AS source
+      `SELECT tb.id AS request_id, tb.batch_label, dr.confirmed_schedule
        FROM teacher_batches tb
-       WHERE tb.supervisor_id = $1`,
-      [supervisorUserId]
-    );
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+       WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL`, [supervisorUserId]);
 
     const enriched = [];
     for (const b of batchesResult.rows) {
-      let students;
-      if (b.source === 'teacher') {
-        const r = await pool.query(
-          `SELECT s.id AS student_id, s.user_id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email
-           FROM teacher_batch_students tbs
-           JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-           JOIN students s ON s.id = tbs.student_id
-           JOIN users u ON u.id = s.user_id
-           WHERE tbs.teacher_batch_id = $1
-           ORDER BY s.last_name, s.first_name`,
-          [b.request_id]
-        );
-        students = r.rows;
-      } else {
-        const r = await pool.query(
-          `SELECT s.id AS student_id, s.user_id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email
-           FROM deployment_request_students drs
-           JOIN deployment_requests dr ON dr.id = drs.deployment_request_id
-           JOIN users u ON u.id = drs.student_id
-           JOIN students s ON s.user_id = u.id
-           WHERE drs.deployment_request_id = $1 AND dr.supervisor_id = $2
-           ORDER BY s.last_name, s.first_name`,
-          [b.request_id, supervisorUserId]
-        );
-        students = r.rows;
-      }
-
+      const { rows: students } = await pool.query(
+        `SELECT s.id AS student_id, s.user_id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email
+         FROM teacher_batch_students tbs
+         JOIN students s ON s.id = tbs.student_id
+         JOIN users u ON u.id = s.user_id
+         WHERE tbs.teacher_batch_id = $1 AND tbs.deployment_ended_on IS NULL
+         ORDER BY s.last_name, s.first_name`, [b.request_id]);
       for (const s of students) {
         const evResult = await pool.query(
-          'SELECT id, overall_score, overall_percentage, created_at FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 LIMIT 1',
-          [s.student_id, supervisorUserId]
+          'SELECT id, overall_score, overall_percentage, created_at FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 AND batch_id = $3 LIMIT 1',
+          [s.student_id, supervisorUserId, b.request_id]
         );
         const attendanceResult = await pool.query(
           `SELECT COUNT(DISTINCT date)::int AS days
            FROM student_attendance
-           WHERE student_id = $1 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
-          [s.student_id]
+           WHERE student_id = $1 AND teacher_batch_id = $2 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
+          [s.student_id, b.request_id]
         );
         enriched.push({
           ...s,
           batch_id: b.request_id,
           batch_label: b.batch_label,
           attendance_days: Number(attendanceResult.rows[0]?.days || 0),
+          required_attendance_days: requiredAttendanceDays(b.confirmed_schedule),
           evaluation: evResult.rows[0] || null,
         });
       }
@@ -427,7 +410,10 @@ async function getTeacherBatchEvaluations(req, res) {
               sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
        FROM teacher_batches tb
        JOIN supervisors sv ON sv.user_id = tb.supervisor_id
-       WHERE tb.teacher_id = $1
+       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+       WHERE tb.archived_at IS NULL AND (tb.teacher_id = $1 OR EXISTS (
+         SELECT 1 FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id AND link.teacher_id = $1
+       ))
        ORDER BY tb.batch_label ASC`,
       [teacherId]
     );
@@ -439,7 +425,7 @@ async function getTeacherBatchEvaluations(req, res) {
          FROM teacher_batch_students tbs
          JOIN students s ON s.id = tbs.student_id
          JOIN users u ON u.id = s.user_id
-         WHERE tbs.teacher_batch_id = $1
+         WHERE tbs.teacher_batch_id = $1 AND tbs.deployment_ended_on IS NULL
          ORDER BY s.last_name ASC, s.first_name ASC`,
         [batch.batch_id]
       );

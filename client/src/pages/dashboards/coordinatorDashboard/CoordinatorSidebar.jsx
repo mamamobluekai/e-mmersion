@@ -4,7 +4,6 @@ import UserProfileSettings from '../UserProfileSettings';
 import {
   Users,
   ClipboardList,
-  Library,
   Building2,
   Megaphone,
   User,
@@ -39,11 +38,6 @@ const links = [
     to: '/dashboard/coordinator/requirements',
     label: 'Requirements',
     icon: ClipboardList,
-  },
-  {
-    to: '/dashboard/coordinator/batches',
-    label: 'Deployment',
-    icon: Library,
   },
   {
     to: '/dashboard/coordinator/partner-institutions',

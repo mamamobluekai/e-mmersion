@@ -41,8 +41,9 @@ export async function submitStudentEvaluation(payload) {
   });
 }
 
-export async function getStudentEvaluation(studentId) {
-  return apiFetch(`/evaluation/student/${studentId}`);
+export async function getStudentEvaluation(studentId, batchId) {
+  const query = batchId ? `?batchId=${encodeURIComponent(batchId)}` : '';
+  return apiFetch(`/evaluation/student/${studentId}${query}`);
 }
 
 export async function getBatchEvaluations(batchId) {
