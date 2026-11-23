@@ -68,13 +68,14 @@ const getMyPlacementInfo = async (req, res) => {
       [req.user.id]
     );
     if (!studentRow.rows.length) {
-      return res.json({ placement: null });
+      return res.json({ placement: null, placements: [], assignment: null });
     }
     const studentId = studentRow.rows[0].id;
 
     const batchResult = await pool.query(
       `SELECT tb.id AS batch_id,
               tb.batch_label,
+              approval.decided_at AS approval_date,
               tbs.deployment_started_on,
               dr.id AS deployment_id,
               dr.confirmed_schedule->>'start' AS start_date,
@@ -95,6 +96,8 @@ const getMyPlacementInfo = async (req, res) => {
        JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
        JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
+       LEFT JOIN partner_student_assignments approval ON approval.deployment_request_id = dr.id
+         AND approval.student_id = tbs.student_id AND approval.status = 'accepted'
        LEFT JOIN LATERAL (
          SELECT jsonb_agg(jsonb_build_object('id', t.id, 'first_name', t.first_name, 'last_name', t.last_name,
            'department', t.department, 'email', tu.email) ORDER BY t.id) AS members
@@ -113,15 +116,19 @@ const getMyPlacementInfo = async (req, res) => {
       [studentId]
     );
 
-    if (!batchResult.rows.length) {
-      return res.json({ placement: null });
-    }
+    const { rows: [assignment] } = await pool.query(`SELECT a.status, a.submitted_at, a.decided_at,
+      a.rejection_reason, pi.name AS partner_name
+      FROM partner_student_assignments a JOIN deployment_requests dr ON dr.id = a.deployment_request_id
+      JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
+      WHERE a.student_id = $1 AND (a.status IN ('pending', 'rejected') OR (a.status = 'accepted' AND dr.teacher_batch_id IS NULL))
+      ORDER BY a.submitted_at DESC LIMIT 1`, [studentId]);
 
     const today = nowInManilaDateOnly();
     const placements = batchResult.rows.map((batch) => ({
         batch_id: batch.batch_id,
         batch_label: batch.batch_label,
         deployment_id: batch.deployment_id,
+        approval_date: batch.approval_date,
         company_name: batch.company_name,
         company_address: batch.company_address,
         start_date: batch.start_date,
@@ -146,7 +153,7 @@ const getMyPlacementInfo = async (req, res) => {
             }
           : null,
     }));
-    res.json({ placement: placements[0], placements });
+    res.json({ placement: placements[0] || null, placements, assignment: assignment || null });
   } catch (err) {
     console.error('getMyPlacementInfo error:', err);
     res.status(500).json({ error: 'Server error.' });

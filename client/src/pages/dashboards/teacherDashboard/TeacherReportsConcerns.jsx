@@ -52,7 +52,7 @@ function getSupervisorName(report) {
 }
 
 function getInstitutionLabel(report) {
-  return report.batch_label || 'Partner Institution';
+  return report.partner_institution_name || report.batch_label || 'Partner Institution';
 }
 
 function getConcernType(report) {
@@ -111,10 +111,13 @@ function TeacherReportsConcerns() {
   const handleConfirm = async (reportId) => {
     setConfirmingId(reportId);
     try {
-      await confirmReportConcern(reportId, token);
+      const { report: confirmed } = await confirmReportConcern(reportId, token);
+      const updateStatus = (report) => report?.id === reportId ?
+        { ...report, status: confirmed.status, updated_at: confirmed.updated_at || report.updated_at } : report;
       setReports((current) => current.map((report) =>
-        report.id === reportId ? { ...report, status: 'resolved', updated_at: new Date().toISOString() } : report
+        updateStatus(report)
       ));
+      setDetailReport(updateStatus);
     } catch (err) {
       setNotice({ type: 'error', text: err.response?.data?.error || err.message || 'Failed to confirm report.' });
     } finally {
@@ -133,7 +136,7 @@ function TeacherReportsConcerns() {
   const institutionReports = useMemo(
     () =>
       reports.filter(
-        (report) => !institutionId || Number(report.teacher_batch_id) === Number(institutionId)
+        (report) => !institutionId || Number(report.partner_institution_id) === Number(institutionId)
       ),
     [reports, institutionId]
   );

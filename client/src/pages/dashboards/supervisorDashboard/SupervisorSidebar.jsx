@@ -6,6 +6,7 @@ import {
   Upload,
   Building2,
   CalendarDays,
+  UsersRound,
   ClipboardPenLine,
   ScrollText,
   User,
@@ -42,6 +43,11 @@ const links = [
     label: 'Student Attendance',
     icon: CalendarDays,
     group: 'Immersion Proper',
+  },
+  {
+    to: '/dashboard/supervisor/student-progress',
+    label: 'Student Progress',
+    icon: UsersRound,
   },
   {
     to: '/dashboard/supervisor/reports-concerns',

@@ -7,6 +7,7 @@ import styles from './SupervisorEvaluation.module.css';
 
 function SupervisorEvaluation() {
   const [criteria, setCriteria] = useState([]);
+  const [criteriaVersion, setCriteriaVersion] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -27,6 +28,7 @@ function SupervisorEvaluation() {
         if (cancelled) return;
 
         setCriteria(criteriaData.criteria || []);
+        setCriteriaVersion(criteriaData.criteria_version || '');
       } catch (e) {
         if (!cancelled) {
           setError(e.message);
@@ -132,7 +134,9 @@ function SupervisorEvaluation() {
     setMessage('');
 
     try {
-      await saveEvaluationCriteria(criteria);
+      const saved = await saveEvaluationCriteria(criteria, criteriaVersion);
+      setCriteria(saved.criteria);
+      setCriteriaVersion(saved.criteria_version);
       setMessage('Evaluation criteria updated successfully.');
     } catch (e) {
       setError(e.message);

@@ -1,4 +1,4 @@
-// Supervisor overview → "Student Progress".
+// Supervisor Immersion Proper student progress.
 //
 // A student list for every batch the supervisor owns. Clicking a student opens
 // a centered modal showing:
@@ -103,11 +103,11 @@ function SupervisorStudentProgress() {
   };
 
   return (
-    <div className={styles.wrapper}>
+    <section className={styles.wrapper} aria-labelledby="supervisor-student-progress-title">
       {/* SECTION HEADER */}
       <div className={styles.sectionHeader}>
         <div>
-          <h2>Student Progress</h2>
+          <h1 id="supervisor-student-progress-title">Student Progress</h1>
           <p>Click a student to review requirements, attendance and daily documentation.</p>
         </div>
       </div>
@@ -128,7 +128,7 @@ function SupervisorStudentProgress() {
         <div className={styles.empty}>
           <Users size={30} />
           <h3>No students assigned yet</h3>
-          <p>Students appear here once the coordinator assigns them to your batch.</p>
+          <p>Students appear here once the coordinator deploys their batch.</p>
         </div>
       ) : (
         <div className={styles.studentGrid}>
@@ -144,6 +144,7 @@ function SupervisorStudentProgress() {
               key={`${batch.request_id}-${student.student_id}`}
               type="button"
               className={styles.studentCard}
+              aria-haspopup="dialog"
               onClick={() => openStudent(student, batch)}
             >
               <span className={styles.cardNameCol}>
@@ -179,6 +180,7 @@ function SupervisorStudentProgress() {
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
+            aria-labelledby="supervisor-progress-student"
           >
             <div className={styles.panelHeader}>
               <div className={styles.panelStudent}>
@@ -186,7 +188,7 @@ function SupervisorStudentProgress() {
                   {getInitials(active.student.first_name, active.student.last_name)}
                 </span>
                 <div>
-                  <h2>{fullName(active.student)}</h2>
+                  <h2 id="supervisor-progress-student">{fullName(active.student)}</h2>
                   <p>
                     {active.student.student_number || '—'}
                     {active.student.grade_level ? ` · Grade ${active.student.grade_level}` : ''}
@@ -408,7 +410,7 @@ function SupervisorStudentProgress() {
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 }
 

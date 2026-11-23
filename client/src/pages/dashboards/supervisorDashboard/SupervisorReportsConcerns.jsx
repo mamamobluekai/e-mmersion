@@ -10,9 +10,11 @@ import { ChevronDown, Plus, Trash2, X } from 'lucide-react';
 import {
   createSupervisorReportConcern,
   deleteSupervisorReportConcern,
-  getSupervisorBatches,
+  getSupervisorPartnerInstitutions,
+  getSupervisorPartnerInstitutionStudents,
   getSupervisorReportsConcerns,
 } from '../../../api/supervisorApi';
+import { getStudentName } from '../../../components/shared/studentFields';
 import styles from './SupervisorReportsConcerns.module.css';
 
 function formatDate(value) {
@@ -46,17 +48,20 @@ function sortByPriority(reports) {
 
 function SupervisorReportsConcerns() {
   const [reports, setReports] = useState([]);
+  const [loadingReports, setLoadingReports] = useState(true);
   const [notice, setNotice] = useState(null);
   const [historyError, setHistoryError] = useState('');
   const [expandedId, setExpandedId] = useState(null);
 
   // Create form state. The form itself lives in the side modal.
   const [formOpen, setFormOpen] = useState(false);
-  const [students, setStudents] = useState([]);
+  const [institutionResult, setInstitutionResult] = useState({ loading: true, institutions: [] });
+  const [studentRoster, setStudentRoster] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [formError, setFormError] = useState('');
   const [form, setForm] = useState({
+    institutionId: '',
     studentId: '',
     category: 'Concern',
     priority: 'normal',
@@ -64,66 +69,57 @@ function SupervisorReportsConcerns() {
   });
 
   const loadReports = useCallback(async () => {
-    setNotice(null);
+    setHistoryError('');
     try {
       const data = await getSupervisorReportsConcerns();
       setReports(data.reports || []);
     } catch (err) {
-      setNotice({ type: 'error', text: err.message || 'Failed to load reports and concerns.' });
+      setHistoryError(err.message || 'Failed to load reports and concerns.');
+    } finally {
+      setLoadingReports(false);
     }
   }, []);
 
   useEffect(() => {
     loadReports();
+    window.addEventListener('focus', loadReports);
+    return () => window.removeEventListener('focus', loadReports);
   }, [loadReports]);
 
-  // The form only needs the supervisor's students. Each entry carries the batch
-  // it came from, so the batch is derived from the student instead of being
-  // picked separately. A student can appear in both a deployment request and a
-  // teacher batch, so the teacher batch wins (it has the assigned teacher).
+  const institutions = institutionResult.institutions;
+  const assignedInstitution = institutions.length === 1 ? institutions[0] : null;
+  const selectedInstitutionId = assignedInstitution ? String(assignedInstitution.id) : form.institutionId;
+
   useEffect(() => {
-    let cancelled = false;
-    async function loadStudents() {
-      try {
-        const data = await getSupervisorBatches();
-        if (cancelled) return;
-
-        const byStudent = new Map();
-        for (const batch of data.batches || []) {
-          for (const student of batch.students || []) {
-            const entry = {
-              studentId: student.student_id,
-              name: `${student.first_name || ''} ${student.last_name || ''}`.trim(),
-              studentNumber: student.student_number || '',
-              batchId: batch.request_id,
-              batchSource: batch.source,
-              batchLabel: batch.batch_label || '',
-            };
-            const existing = byStudent.get(entry.studentId);
-            if (!existing || (existing.batchSource !== 'teacher' && entry.batchSource === 'teacher')) {
-              byStudent.set(entry.studentId, entry);
-            }
-          }
-        }
-
-        setStudents(
-          [...byStudent.values()].sort((a, b) =>
-            `${a.name} ${a.studentNumber}`.localeCompare(`${b.name} ${b.studentNumber}`)
-          )
-        );
-      } catch (err) {
-        if (!cancelled) setFormError(err.message || 'Failed to load your students.');
-      }
-    }
-    loadStudents();
-    return () => { cancelled = true; };
+    let active = true;
+    getSupervisorPartnerInstitutions().then(
+      ({ institutions: assigned }) => { if (active) setInstitutionResult({ institutions: assigned || [] }); },
+      (error) => { if (active) setInstitutionResult({ error: error.message, institutions: [] }); },
+    );
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!formOpen || !selectedInstitutionId) return;
+    let active = true;
+    getSupervisorPartnerInstitutionStudents(selectedInstitutionId).then(
+      ({ students: assigned }) => {
+        if (!active) return;
+        const unique = new Map((assigned || []).map((student) => [student.student_id, student]));
+        setStudentRoster({ institutionId: selectedInstitutionId, students: [...unique.values()] });
+      },
+      (error) => {
+        if (active) setStudentRoster({ institutionId: selectedInstitutionId, students: [], error: error.message });
+      },
+    );
+    return () => { active = false; };
+  }, [formOpen, selectedInstitutionId]);
 
   // Escape closes the create modal.
   useEffect(() => {
     if (!formOpen) return undefined;
     const onKey = (event) => {
-      if (event.key === 'Escape') setFormOpen(false);
+      if (event.key === 'Escape' && !submitting) setFormOpen(false);
     };
     document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
@@ -132,15 +128,18 @@ function SupervisorReportsConcerns() {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [formOpen]);
+  }, [formOpen, submitting]);
 
-  // The batch is not chosen by hand: it follows the selected student.
-  const selectedStudent = useMemo(
-    () => students.find((student) => String(student.studentId) === form.studentId) || null,
-    [students, form.studentId]
-  );
-
+  const roster = studentRoster?.institutionId === selectedInstitutionId ? studentRoster : null;
+  const students = roster?.students || [];
+  const selectedStudent = students.find(({ student_id }) => String(student_id) === form.studentId);
   const sortedReports = useMemo(() => sortByPriority(reports), [reports]);
+
+  const openForm = () => {
+    setStudentRoster(null);
+    setFormError('');
+    setFormOpen(true);
+  };
 
   const toggleExpanded = (reportId) => {
     setExpandedId((current) => (current === reportId ? null : reportId));
@@ -154,16 +153,15 @@ function SupervisorReportsConcerns() {
     setFormError('');
     try {
       await createSupervisorReportConcern({
-        student_id: Number(selectedStudent.studentId),
-        batch_id: selectedStudent.batchId,
-        batch_source: selectedStudent.batchSource,
+        student_id: selectedStudent.student_id,
+        partner_institution_id: Number(selectedInstitutionId),
         category: form.category,
         priority: form.priority,
         message: form.message.trim(),
       });
       setForm((current) => ({ ...current, studentId: '', message: '' }));
       setFormOpen(false);
-      setNotice({ type: 'success', text: 'Report submitted. The assigned teacher has been notified.' });
+      setNotice({ type: 'success', text: 'Report submitted to the assigned teacher.' });
       await loadReports();
     } catch (err) {
       setFormError(err.message || 'Failed to submit report.');
@@ -192,19 +190,20 @@ function SupervisorReportsConcerns() {
       <header className={styles.pageHeader}>
         <div>
           <h1>My Reports &amp; Concerns</h1>
-          <p>Concerns you reported about your assigned students, and whether the teacher has resolved them.</p>
+          <p>File concerns for students at your partner institutions and track the assigned teacher’s response.</p>
         </div>
       </header>
 
-      {notice && <div className={`${styles.notice} ${styles['notice_' + notice.type]}`}>{notice.text}</div>}
+      {notice && <div className={`${styles.notice} ${styles['notice_' + notice.type]}`} role="status">{notice.text}</div>}
 
-      {historyError && <p className={styles.formError}>{historyError}</p>}
+      {historyError && <p className={styles.formError} role="alert">{historyError}</p>}
 
       <section className={styles.historySection}>
         <h3 className={styles.formTitle}>Reports &amp; Concerns You Created</h3>
 
-        {reports.length === 0 ? (
-          <p className={styles.empty}>You have not filed any reports or concerns yet.</p>
+        {loadingReports ? <p className={styles.empty} role="status">Loading reports and concerns…</p> :
+          sortedReports.length === 0 ? (
+          !historyError && <p className={styles.empty}>You have not filed any reports or concerns yet.</p>
         ) : (
           <div className={styles.concernList}>
             {sortedReports.map((report) => {
@@ -239,6 +238,10 @@ function SupervisorReportsConcerns() {
                         {report.first_name} {report.last_name}
                       </strong>
                       <span className={styles.meta}>
+                        {report.partner_institution_name && <>
+                          <span>{report.partner_institution_name}</span>
+                          <span className={styles.metaDot} aria-hidden="true">·</span>
+                        </>}
                         <span>{getConcernType(report)}</span>
                         <span className={styles.metaDot} aria-hidden="true">·</span>
                         <span>{formatDate(report.created_at)}</span>
@@ -262,6 +265,10 @@ function SupervisorReportsConcerns() {
                   {isExpanded && (
                     <div className={styles.cardDetails}>
                       <div className={styles.detailGrid}>
+                        <div className={styles.detailItem}>
+                          <span className={styles.detailLabel}>Partner institution</span>
+                          {report.partner_institution_name || report.batch_label || 'Unavailable'}
+                        </div>
                         <div className={styles.detailItem}>
                           <span className={styles.detailLabel}>Student ID</span>
                           {report.student_number || 'No ID'}
@@ -311,7 +318,7 @@ function SupervisorReportsConcerns() {
         )}
 
         <div className={styles.newReportBar}>
-          <button type="button" className={styles.confirmBtn} onClick={() => setFormOpen(true)}>
+          <button type="button" className={styles.confirmBtn} aria-haspopup="dialog" onClick={openForm}>
             <Plus size={14} />
             Create Report or Concern
           </button>
@@ -324,7 +331,7 @@ function SupervisorReportsConcerns() {
           className={styles.drawerOverlay}
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setFormOpen(false);
+            if (!submitting && event.target === event.currentTarget) setFormOpen(false);
           }}
         >
           <aside
@@ -337,12 +344,13 @@ function SupervisorReportsConcerns() {
               <div>
                 <span className={styles.drawerEyebrow}>NEW REPORT</span>
                 <h3 id="new-report-title">Create Report or Concern</h3>
-                <p>The assigned teacher is notified immediately.</p>
+                <p>{assignedInstitution ? assignedInstitution.name : 'The report goes to the student’s assigned teacher.'}</p>
               </div>
               <button
                 type="button"
                 className={styles.drawerClose}
                 onClick={() => setFormOpen(false)}
+                disabled={submitting}
                 aria-label="Close report form"
               >
                 <X size={18} />
@@ -351,23 +359,40 @@ function SupervisorReportsConcerns() {
 
             <div className={styles.drawerBody}>
               <form className={styles.reportForm} onSubmit={submitReport}>
-                {formError && <p className={styles.formError}>{formError}</p>}
+                {(formError || institutionResult.error || roster?.error) &&
+                  <p className={styles.formError} role="alert">{formError || institutionResult.error || roster?.error}</p>}
+                {institutionResult.loading && <p role="status">Loading assigned partner institutions…</p>}
+                {!institutionResult.loading && !institutionResult.error && institutions.length === 0 &&
+                  <p>No assigned partner institutions.</p>}
 
                 <div className={styles.reportFields}>
+                  {institutions.length > 1 && <label>
+                    Partner institution
+                    <select value={selectedInstitutionId} disabled={submitting} required
+                      onChange={(event) => {
+                        setStudentRoster(null);
+                        setFormError('');
+                        setForm((current) => ({ ...current, institutionId: event.target.value, studentId: '' }));
+                      }}>
+                      <option value="" disabled>Select an institution</option>
+                      {institutions.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+                    </select>
+                  </label>}
                   <label>
                     Student
                     <select
                       value={form.studentId}
                       onChange={(event) => setForm((current) => ({ ...current, studentId: event.target.value }))}
+                      disabled={submitting || !students.length}
                       required
                     >
-                      <option value="">Select a student</option>
+                      <option value="">{selectedInstitutionId && !roster ? 'Loading students…' :
+                        roster && !students.length ? 'No deployed students' : 'Select a student'}</option>
                       {students.map((student) => (
-                       <option key={student.studentId} value={student.studentId}>
-                         {student.name || `Student ${student.studentId}`}
-                         {student.studentNumber ? ` (${student.studentNumber})` : ''}
-                         {student.batchLabel ? ` — ${student.batchLabel}` : ''}
-                       </option>
+                        <option key={student.student_id} value={student.student_id}>
+                          {getStudentName(student) || `Student ${student.student_id}`}
+                          {student.student_number ? ` (${student.student_number})` : ''}
+                        </option>
                       ))}
                     </select>
                   </label>
@@ -413,13 +438,13 @@ function SupervisorReportsConcerns() {
                 </label>
 
                 <div className={styles.reportActions}>
-                  <button type="button" className={styles.secondaryBtn} onClick={() => setFormOpen(false)}>
+                  <button type="button" className={styles.secondaryBtn} onClick={() => setFormOpen(false)} disabled={submitting}>
                     Cancel
                   </button>
                   <button
                     type="submit"
                     className={styles.confirmBtn}
-                    disabled={submitting || !form.studentId || !form.message.trim()}
+                    disabled={submitting || !selectedStudent || !form.message.trim()}
                   >
                     {submitting ? 'Submitting...' : 'Submit Report'}
                   </button>

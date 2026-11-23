@@ -1,43 +1,38 @@
 ﻿.page {
-  width: 100%;
-  color: #172033;
-  font-family: 'Lexend', Inter, system-ui, sans-serif;
-}
-
-.pageHeader,
-.cardHeader {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px 24px;
-  padding: 22px 24px;
+  composes: page from '../About.module.css';
+  container: attendance-schedule / inline-size;
 }
 
 .pageHeader {
-  margin-bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px 24px;
+  margin-bottom: 12px;
+  padding: 16px 0;
 }
 
-.pageHeader h1,
-.cardHeader h2 {
+.pageHeader h1 {
   margin: 0;
+  font-size: clamp(1.55rem, 3vw, 2.1rem);
   letter-spacing: -0.035em;
 }
 
-.pageHeader h1 { font-size: 1.85rem; }
-.cardHeader h2 { font-size: 1.2rem; }
-
 .pageHeader p,
-.cardHeader p {
-  margin: 6px 0 0;
-  color: #596579;
-  font-size: 0.9rem;
+.hoursSummary,
+.scheduleNotes p,
+.calendarEmpty {
+  margin: 8px 0 0;
+  color: var(--about-muted);
+  font-size: 0.88rem;
+  line-height: 1.6;
 }
 
 .card,
 .empty,
 .loadingPanel {
-  border: 1px solid #eadde0;
+  border: 1px solid var(--about-border);
   border-radius: 16px;
   background: #fff;
 }
@@ -45,48 +40,267 @@
 .empty,
 .loadingPanel { padding: 22px 24px; }
 
-.cardHeader {
-  border-bottom: 1px solid #eadde0;
+.card { overflow: hidden; }
+.scheduleLayout { display: grid; }
+
+.attendanceHours,
+.workdays,
+.scheduleNotes {
+  min-width: 0;
+  padding: clamp(16px, 4cqi, 36px);
 }
 
-.cardHeader a {
-  align-self: center;
-  color: #8b1e2d;
-  font-size: 0.9rem;
-  font-weight: 700;
+.attendanceHours {
+  background: #fcf8f9;
+  border-bottom: 1px solid var(--about-border);
 }
 
-.agreedSchedule {
-  display: grid;
-  gap: 16px;
-  padding: 20px 24px;
-}
-
-.agreedSchedule dl {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 32px;
+.card h2,
+.calendarHeading h3 {
   margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
 }
 
-.agreedSchedule dt { color: #596579; }
-.agreedSchedule dd { margin: 0; font-weight: 700; }
-.agreedSchedule label { display: grid; gap: 6px; max-width: 420px; }
+.hoursSummary strong { color: var(--about-ink); }
 
-.agreedSchedule select {
+.deploymentFilter {
+  display: grid;
+  gap: 6px;
+  width: min(100%, 18rem);
+  color: var(--about-muted);
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+
+.deploymentFilter select {
   min-height: 42px;
-  padding: 0 8px;
-  border: 1px solid #eadde0;
+  min-width: 0;
+  padding-inline: 10px;
+  border: 1px solid var(--about-border);
   border-radius: 8px;
   background: #fff;
-  color: inherit;
+  color: var(--about-ink);
   font: inherit;
 }
 
-.agreedSchedule summary { cursor: pointer; }
-.agreedSchedule ul { columns: 2; padding-left: 22px; }
+.clocks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(9px, 3cqi, 28px);
+  margin-top: clamp(24px, 5cqi, 44px);
+}
 
-@media (max-width: 520px) {
-  .pageHeader, .cardHeader, .agreedSchedule { padding: 16px; }
-  .pageHeader h1 { font-size: 1.4rem; }
+.clockWindow {
+  --dial-accent: var(--about-maroon);
+  margin: 0;
+  min-width: 0;
+  text-align: center;
+}
+
+.clockWindow + .clockWindow { --dial-accent: #3c5870; }
+
+.clockDial {
+  position: relative;
+  width: min(100%, 9.5rem);
+  aspect-ratio: 1;
+  margin-inline: auto;
+  border: 1px solid var(--about-border);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 6px 16px rgb(82 29 47 / 7%);
+}
+
+.dialTicks,
+.dialWindow {
+  position: absolute;
+  border-radius: 50%;
+  mask-image: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+}
+
+.dialTicks {
+  inset: 9px;
+  background: repeating-conic-gradient(from -1deg, #b6abb1 0deg 2deg, transparent 2deg 30deg);
+}
+
+.dialWindow {
+  inset: 3px;
+  background: conic-gradient(from var(--hour-angle), var(--dial-accent) 0deg var(--window-angle), transparent var(--window-angle));
+}
+
+.dialNorth,
+.dialEast,
+.dialSouth,
+.dialWest {
+  position: absolute;
+  color: var(--about-muted);
+  font-size: clamp(0.65rem, 2.4cqi, 0.76rem);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dialNorth { top: 16%; left: 50%; translate: -50% 0; }
+.dialEast { top: 50%; right: 16%; translate: 0 -50%; }
+.dialSouth { bottom: 16%; left: 50%; translate: -50% 0; }
+.dialWest { top: 50%; left: 16%; translate: 0 -50%; }
+
+.hourHand,
+.minuteHand {
+  position: absolute;
+  bottom: 50%;
+  left: 50%;
+  border-radius: 4px;
+  background: var(--dial-accent);
+  transform-origin: center bottom;
+  translate: -50% 0;
+}
+
+.hourHand {
+  width: 3px;
+  height: 21%;
+  transform: rotate(var(--hour-angle));
+}
+
+.minuteHand {
+  width: 2px;
+  height: 29%;
+  transform: rotate(var(--minute-angle));
+}
+
+.dialPin {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dial-accent);
+  translate: -50% -50%;
+}
+
+.clockWindow figcaption {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+  color: var(--dial-accent);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.clockWindow strong {
+  color: var(--about-ink);
+  font-size: clamp(0.85rem, 2cqi, 1rem);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.clockWindow time { white-space: nowrap; }
+
+.calendarHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  margin: 10px 0 6px;
+}
+
+.calendarHeading h3 { font-size: 1rem; }
+
+.monthControls { display: flex; gap: 5px; }
+
+.monthControls button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid var(--about-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--about-maroon);
+  cursor: pointer;
+}
+
+.monthControls button:hover:not(:disabled) { background: var(--about-blush); }
+.monthControls button:disabled { opacity: 0.45; cursor: default; }
+
+.page :is(button, select):focus-visible {
+  outline: 2px solid var(--about-maroon);
+  outline-offset: 2px;
+}
+
+.calendarTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendarTable th {
+  padding: 6px 0 8px;
+  border-bottom: 1px solid var(--about-border);
+  color: var(--about-muted);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.calendarTable td { padding: 3px 2px; }
+
+.calendarTable time {
+  display: grid;
+  width: min(100%, 38px);
+  margin-inline: auto;
+  aspect-ratio: 1;
+  place-items: center;
+  color: var(--about-muted);
+  font-size: 0.88rem;
+}
+
+.calendarTable time[data-agreed] {
+  border-radius: 8px;
+  background: var(--about-maroon);
+  color: #fff;
+  font-weight: 700;
+}
+
+.calendarLegend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--about-border);
+  color: var(--about-muted);
+  font-size: 0.84rem;
+}
+
+.calendarLegend span {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--about-maroon);
+}
+
+.scheduleNotes { border-top: 1px solid var(--about-border); }
+.scheduleNotes p { white-space: pre-wrap; }
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@container attendance-schedule (min-width: 48rem) {
+  .scheduleLayout {
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  }
+
+  .attendanceHours {
+    border-right: 1px solid var(--about-border);
+    border-bottom: 0;
+  }
 }

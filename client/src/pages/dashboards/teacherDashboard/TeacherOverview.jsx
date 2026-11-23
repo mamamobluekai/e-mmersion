@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users,
@@ -8,12 +8,8 @@ import {
   Activity,
 } from 'lucide-react';
 
-import {
-  getTeacherBatchStudents,
-  getBatchRecords,
-  getBatchDailyDocSummary,
-} from '../../../api/teacherApi';
-
+import { getTeacherInstitutionOverview } from '../../../api/teacherApi';
+import { useAuth } from '../../../context/AuthContext';
 import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import styles from './TeacherOverview.module.css';
 
@@ -43,124 +39,57 @@ function TeacherDashboard({ user }) {
     reload: reloadInstitutions,
   } = usePartnerInstitution();
 
-  const [students, setStudents] = useState([]);
-  const [records, setRecords] = useState([]);
-  const [docSummary, setDocSummary] = useState([]);
+  const { token } = useAuth();
+  const [dashboard, setDashboard] = useState(null);
+  const [loadError, setLoadError] = useState(null);
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [noInstitution, setNoInstitution] = useState(false);
+  useEffect(() => {
+    if (institutionsLoading || !selectedInstitutionId || !token) return undefined;
 
-  const token = localStorage.getItem('wim-token');
-
-  const loadDashboard = useCallback(
-    async ({ silent = false } = {}) => {
-      // Wait for the institution list before deciding there is no institution.
-      if (institutionsLoading) return;
-
-      if (!selectedInstitutionId) {
-        setNoInstitution(true);
-        setStudents([]);
-        setRecords([]);
-        setDocSummary([]);
-        setLoading(false);
-        return;
-      }
-
+    let request;
+    async function load() {
+      request?.abort();
+      const controller = new AbortController();
+      request = controller;
       try {
-        if (!silent) {
-          setLoading(true);
-        }
-
-        setError('');
-        setNoInstitution(false);
-
-        const today = new Date().toISOString().split('T')[0];
-
-        const [
-          studentsData,
-          recordsData,
-          docSummaryData,
-        ] = await Promise.all([
-          getTeacherBatchStudents(selectedInstitutionId, token),
-          getBatchRecords(selectedInstitutionId, today, token),
-          getBatchDailyDocSummary(selectedInstitutionId, token).catch(() => null),
-        ]);
-
-        setStudents(
-          Array.isArray(studentsData)
-            ? studentsData
-            : studentsData?.students || []
-        );
-
-        setRecords(
-          Array.isArray(recordsData)
-            ? recordsData
-            : recordsData?.records || []
-        );
-
-        setDocSummary(
-          Array.isArray(docSummaryData)
-            ? docSummaryData
-            : docSummaryData?.students || []
-        );
-      } catch (err) {
-        console.error('Teacher dashboard error:', err);
-
-        setError(
-          err?.response?.data?.message ||
-            err?.message ||
-            'Unable to load dashboard.'
-        );
-      } finally {
-        setLoading(false);
+        const data = await getTeacherInstitutionOverview(selectedInstitutionId, token, controller.signal);
+        if (controller.signal.aborted) return;
+        setDashboard({ institutionId: selectedInstitutionId, ...data });
+        setLoadError(null);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setLoadError({
+          institutionId: selectedInstitutionId,
+          message: error.response?.data?.error || 'Could not load this partner institution’s overview.',
+        });
       }
-    },
-    [token, selectedInstitutionId, institutionsLoading]
-  );
+    }
 
-  // Reload whenever the selected institution changes (switching the institution button
-  // re-computes the attendance pie/percentages for that institution).
-  useEffect(() => {
-    // Clear the previous institution's numbers so a switch never flashes stale data.
-    setStudents([]);
-    setRecords([]);
-    setDocSummary([]);
-  }, [selectedInstitutionId]);
-
-  useEffect(() => {
-    loadDashboard();
-  }, [loadDashboard]);
-
-  // Refresh automatically when the page is opened, and whenever the
-  // browser tab becomes visible again (so returning to this page
-  // always shows up-to-date data without a refresh button).
-  useEffect(() => {
-    const refresh = () => {
+    function refresh() {
       if (document.visibilityState === 'visible') {
         reloadInstitutions();
-        loadDashboard({ silent: true });
+        load();
       }
-    };
+    }
 
+    load();
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
-
+    const interval = window.setInterval(refresh, 30000);
     return () => {
+      request?.abort();
+      window.clearInterval(interval);
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [loadDashboard, reloadInstitutions]);
+  }, [token, selectedInstitutionId, institutionsLoading, reloadInstitutions]);
 
-  const studentCount = students.length;
-
-  const presentCount = records.filter(
-    (record) =>
-      record.status === 'present' ||
-      record.attendance_status === 'present' ||
-      record.time_in
-  ).length;
-
+  const currentDashboard = dashboard?.institutionId === selectedInstitutionId ? dashboard : null;
+  const error = loadError?.institutionId === selectedInstitutionId ? loadError.message : '';
+  const loading = Boolean(selectedInstitutionId && !currentDashboard && !error);
+  const studentCount = currentDashboard?.student_count || 0;
+  const presentCount = currentDashboard?.present_count || 0;
+  const docSummary = currentDashboard?.documentation || [];
   const absentCount = Math.max(studentCount - presentCount, 0);
 
   /* ---------------- Documentation (institution-scoped) ---------------- */
@@ -222,7 +151,7 @@ function TeacherDashboard({ user }) {
     );
   }
 
-  if (noInstitution) {
+  if (!selectedInstitutionId) {
     return (
       <div className={styles.page}>
         <section className={styles.pageHeader}>
@@ -247,7 +176,9 @@ function TeacherDashboard({ user }) {
 
         <div className={styles.emptyState}>
           <Users size={40} />
-          <p>No partner institution assigned. Contact your coordinator.</p>
+          <p role={institutionsError ? "alert" : undefined}>
+            {institutionsError || 'No partner institution assigned. Contact your coordinator.'}
+          </p>
         </div>
       </div>
     );
@@ -269,7 +200,7 @@ function TeacherDashboard({ user }) {
       </section>
 
       {(error || institutionsError) && (
-        <div className={styles.errorAlert}>
+        <div className={styles.errorAlert} role="alert">
           <AlertCircle size={18} />
           <span>{error || institutionsError}</span>
         </div>
@@ -291,7 +222,7 @@ function TeacherDashboard({ user }) {
               institution and recomputes the attendance pie below. */}
           {institutions.length > 0 && (
             <div className={styles.batchSwitcher}>
-              {institutions.map((inst, index) => {
+              {institutions.map((inst) => {
                 const isActive =
                   Number(inst.id) === Number(selectedInstitutionId);
 
@@ -316,6 +247,7 @@ function TeacherDashboard({ user }) {
           {selectedInstitution && (
             <p className={styles.batchSwitcherLabel}>
               Showing: {institutionNameDisplay}
+              {selectedInstitution.supervisor_name && <> · Supervisor {selectedInstitution.supervisor_name}</>}
             </p>
           )}
 

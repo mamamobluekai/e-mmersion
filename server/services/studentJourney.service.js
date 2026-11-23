@@ -104,7 +104,7 @@ function summarizeJourney(requirements, days, policy) {
   const postUnlocked = immersionComplete && (!policy.evaluationBeforePost || policy.evaluated);
   const stages = {
     pre: requirements.complete ? 'completed' : 'active',
-    immersion: postUnlocked ? 'completed' : requirements.complete ? 'active' : 'locked',
+    immersion: postUnlocked ? 'completed' : requirements.complete && days.length > 0 ? 'active' : 'locked',
     post: postUnlocked ? (policy.evaluated ? 'completed' : 'active') : 'locked',
   };
   const completedMissions = requirements.approved + attendanceCompleted + docsCompleted + Number(postUnlocked && policy.evaluated);

@@ -4,7 +4,7 @@
 const requiredInfoFields = [
   'student_number', 'first_name', 'last_name', 'gender', 'birthdate', 'age',
   'contact_number', 'email', 'home_address', 'section',
-  'track_strand', 'school', 'preferred_industry', 'career_goal', 'industry_reason',
+  'track_strand', 'school', 'career_goal', 'industry_reason',
   'guardian_name', 'guardian_relationship', 'guardian_contact', 'guardian_email',
   'guardian_address', 'emergency_contact', 'emergency_contact_number',
 ];

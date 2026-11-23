@@ -1,9 +1,13 @@
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 const PDFDocument = require('pdfkit');
 const cloudinary = require('../../db/cloudinary');
 const streamifier = require('streamifier');
 const pool = require('../../db');
 const { createNotification } = require('../../services/notification.service');
-const { getDeploymentAttendance } = require('../../services/deploymentAttendance');
+const { listDeploymentAttendance } = require('../../services/deploymentAttendance');
+const { getStudentJourney } = require('../../services/studentJourney.service');
+const { nowInManilaDateOnly } = require('../../utils/manilaDate');
 
 async function uploadPdfToCloudinary(buffer, publicId) {
   return new Promise((resolve, reject) => {
@@ -205,8 +209,9 @@ function buildCertificatePdf(student, issuedBy, template = {}) {
       const bodyY = Math.min(nameRuleY + 24, bodyLimit - 34);
       doc.font('Times-Roman').fontSize(12.5).fillColor(BODY)
         .text(
-          `has successfully completed the ${programName} at ${companyName}, ` +
-            'having fulfilled all required hours, daily documentation, and evaluation standards.',
+            String(student.certificate_number).startsWith('CERT-FORCE-')
+              ? `participated in the ${programName} at ${companyName}. This certificate was issued by supervisor exception.`
+              : `has completed the ${programName} at ${companyName} and met the immersion requirements for certificate issuance.`,
           M + 130,
           bodyY,
           { align: 'center', width: W - (M + 130) * 2, lineGap: 5 }
@@ -312,625 +317,342 @@ function buildCertificatePdf(student, issuedBy, template = {}) {
   });
 }
 
+const DEFAULT_TEMPLATE = {
+  school_name: 'Work Immersion Program',
+  company_name: '',
+  program_name: 'Work Immersion',
+  footer_text: 'Verify this certificate at the issuing institution. This is an official record of work immersion completion.',
+  border_color: '#8b1e2d',
+  title_text: 'CERTIFICATE OF COMPLETION',
+};
+
+const TEMPLATE_FIELDS = Object.keys(DEFAULT_TEMPLATE).join(', ');
+let certificateSchema;
+
+function ensureCertificateSchema() {
+  certificateSchema ||= pool.query(readFileSync(join(__dirname, '../../db/migrations/048_partner_institution_certificates.sql'), 'utf8'))
+    .catch((error) => {
+      certificateSchema = undefined;
+      throw error;
+    });
+  return certificateSchema;
+}
+
+function buildFullName(row) {
+  return row.full_name || [row.first_name, row.middle_name, row.last_name, row.suffix]
+    .map((part) => String(part ?? '').trim()).filter(Boolean).join(' ');
+}
+
+function positiveId(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 && id <= 2147483647 ? id : null;
+}
+
+async function getAssignedInstitutions(supervisorId) {
+  const { rows } = await pool.query(`
+    SELECT pi.id, pi.name
+    FROM partner_institutions pi
+    WHERE EXISTS (
+      SELECT 1 FROM partner_institution_supervisor_history h
+      WHERE h.institution_id = pi.id AND h.supervisor_user_id = $1 AND h.ended_at IS NULL
+    ) OR EXISTS (
+      SELECT 1 FROM deployment_requests dr
+      WHERE dr.partner_institution_id = pi.id AND dr.supervisor_id = $1
+        AND dr.workflow_version = 2 AND dr.status = 'approved' AND dr.teacher_batch_id IS NOT NULL
+    )
+    ORDER BY pi.name, pi.id`, [supervisorId]);
+  return rows;
+}
+
+async function resolveTemplate(db, supervisorId, institution, legacyBatchId = null) {
+  const { rows: [saved] } = await db.query(`
+    SELECT ${TEMPLATE_FIELDS}
+    FROM certificate_templates
+    WHERE supervisor_id = $1
+      AND (partner_institution_id = $2
+        OR (partner_institution_id IS NULL AND teacher_batch_id = $3)
+        OR (partner_institution_id IS NULL AND teacher_batch_id IS NULL))
+    ORDER BY (teacher_batch_id IS NOT NULL) DESC, (partner_institution_id IS NOT NULL) DESC
+    LIMIT 1`, [supervisorId, institution?.id ?? null, legacyBatchId]);
+
+  const template = { ...DEFAULT_TEMPLATE, ...saved };
+  return { ...template, company_name: institution?.name || template.company_name || 'Host Company' };
+}
+
+function completedPlacementDays(journey, placement) {
+  return journey.days.filter((day) =>
+    day.teacher_batch_id === placement.batch_id && day.attendance.status === 'Completed').length;
+}
+
 const getEligibleStudents = async (req, res) => {
   try {
+    await ensureCertificateSchema();
     const showAll = String(req.query.all || '').toLowerCase() === 'true';
-
-    const baseQuery = `
-      WITH supervisor_batches AS (
-        SELECT tbs.student_id
-        FROM teacher_batches tb
-        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
-        WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
-      )
-      SELECT u.id AS user_id,
-             s.id AS student_id,
-             s.first_name,
-             s.last_name,
-             s.student_number,
-             s.grade_level,
-             s.track_strand,
-             u.email,
-             srs.status AS requirements_status,
-             srs.submitted_at,
-             cert.certificate_number,
-             cert.cloudinary_url AS certificate_url
-      FROM users u
-      JOIN students s ON s.user_id = u.id
-      JOIN student_requirement_submissions srs ON srs.user_id = u.id
-      LEFT JOIN LATERAL (
-        SELECT certificate_number, cloudinary_url
-        FROM certificates c
-        WHERE c.student_id = s.id
-        ORDER BY c.created_at DESC
-        LIMIT 1
-      ) cert ON true
-      WHERE u.role = 'student'
-        AND s.id IN (SELECT student_id FROM supervisor_batches)`;
-
-    const rows = await pool.query(
-      `${baseQuery}
-       ORDER BY s.last_name ASC, s.first_name ASC`,
-      [req.user.id]
-    );
-
-    const enriched = await Promise.all(
-      rows.rows.map(async (s) => {
-        const placement = await getDeploymentAttendance(pool, s.student_id, req.user.id);
-        const docsResult = await pool.query(
-          `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='Verified')::int AS verified
-           FROM student_documents
-           WHERE student_id = $1`,
-          [s.student_id]
-        );
-        const attendanceDays = placement?.attendance_days || 0;
-        const totalDocs = docsResult.rows[0]?.total || 0;
-        const verifiedDocs = docsResult.rows[0]?.verified || 0;
-        const completed =
-          s.requirements_status === 'Approved' && totalDocs > 0 && verifiedDocs === totalDocs &&
-          Boolean(placement && attendanceDays >= placement.required_attendance_days);
-        return { ...s, attendance_days: attendanceDays, total_documents: totalDocs, verified_documents: verifiedDocs, completed };
-      })
-    );
-
-    res.json({ eligible: showAll ? enriched : enriched.filter(({ completed }) => completed) });
+    const supervisorId = req.user.id;
+    const [placements, institutions] = await Promise.all([
+      listDeploymentAttendance(pool, { supervisorId }),
+      getAssignedInstitutions(supervisorId),
+    ]);
+    const studentIds = [...new Set(placements.map(({ student_id }) => student_id))];
+    const { rows: certificates } = await pool.query(`
+      SELECT DISTINCT ON (student_id, deployment_request_id)
+        student_id, deployment_request_id, certificate_number, issued_by
+      FROM certificates
+      WHERE student_id = ANY($1::int[]) AND deployment_request_id IS NOT NULL
+      ORDER BY student_id, deployment_request_id, created_at DESC, id DESC`, [studentIds]);
+    const issued = new Map(certificates.map((row) => [`${row.student_id}:${row.deployment_request_id}`, row]));
+    const journeys = new Map();
+    const students = await Promise.all(placements.map(async (placement) => {
+      const { user_id, student_id, deployment_request_id, partner_institution_id, partner_institution_name,
+        first_name, last_name, student_number, email } = placement;
+      if (!journeys.has(user_id)) journeys.set(user_id, getStudentJourney(user_id));
+      const journey = await journeys.get(user_id);
+      const certificate = issued.get(`${student_id}:${deployment_request_id}`);
+      const forced = certificate?.certificate_number.startsWith('CERT-FORCE-') || false;
+      return { user_id, student_id, deployment_request_id, partner_institution_id, partner_institution_name,
+        first_name, last_name, student_number, email, attendance_days: completedPlacementDays(journey, placement),
+        completed: journey.stages.post !== 'locked',
+        certificate_number: certificate?.certificate_number ?? null,
+        forced, can_undo: forced && (certificate.issued_by === supervisorId || req.user.role === 'admin') };
+    }));
+    students.sort((a, b) => a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name));
+    res.json({ eligible: showAll ? students : students.filter(({ completed }) => completed), institutions });
   } catch (err) {
     console.error('getEligibleStudents error:', err);
-    res.status(500).json({ error: 'Server error.' });
+    res.status(500).json({ error: 'Could not load certification eligibility.' });
   }
 };
 
-const generateCertificate = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { studentId } = req.params;
-    const supervisorUserId = req.user.id;
-    await ensureBatchTemplateSchema(client);
+async function getCertificatePlacement(client, req) {
+  const userId = positiveId(req.params.studentId);
+  const deploymentRequestId = req.query.deploymentRequestId == null ? null : positiveId(req.query.deploymentRequestId);
+  if (!userId || (req.query.deploymentRequestId != null && !deploymentRequestId)) {
+    return { status: 400, error: 'Invalid student or deployment.' };
+  }
+  const { rows: [student] } = await client.query(`
+    SELECT s.*, u.email FROM students s JOIN users u ON u.id = s.user_id
+    WHERE s.user_id = $1 AND u.role = 'student' FOR UPDATE OF s`, [userId]);
+  if (!student) return { status: 404, error: 'Student not found.' };
 
-    let studentResult;
+  const [placement] = await listDeploymentAttendance(client, {
+    studentId: student.id,
+    supervisorId: req.user.role === 'admin' ? null : req.user.id,
+    deploymentRequestId,
+  });
+  if (!placement) return { status: 403, error: 'The student is not assigned to one of your partner deployments.' };
+  return { student, placement };
+}
+
+function issueCertificate(forced) {
+  return async (req, res) => {
+    let client;
+    let uploaded;
     try {
-      studentResult = await client.query(
-        `SELECT u.id AS user_id, u.email, s.id AS student_id, s.first_name, s.middle_name,
-                s.last_name, s.suffix, s.student_number,
-                s.grade_level, s.track_strand, srs.status AS requirements_status
-         FROM users u
-         JOIN students s ON s.user_id = u.id
-         JOIN student_requirement_submissions srs ON srs.user_id = u.id
-         WHERE u.id = $1 AND u.role = 'student'
-         LIMIT 1`,
-        [studentId]
-      );
+      await ensureCertificateSchema();
+      const userId = positiveId(req.params.studentId);
+      if (!userId) return res.status(400).json({ error: 'Invalid student or deployment.' });
+      const journey = await getStudentJourney(userId);
+      client = await pool.connect();
+      await client.query('BEGIN');
+      const { student, placement, status, error } = await getCertificatePlacement(client, req);
+      if (error) return res.status(status).json({ error });
+
+      const { rows: [existing] } = await client.query(`
+        SELECT id, certificate_number, cloudinary_url FROM certificates
+        WHERE student_id = $1 AND deployment_request_id = $2
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [student.id, placement.deployment_request_id]);
+      if (existing) {
+        return res.json({ message: 'Certificate already issued for this deployment.', certificate: existing,
+          forced: existing.certificate_number.startsWith('CERT-FORCE-') });
+      }
+      if (!forced && journey.stages.post === 'locked') {
+        return res.status(400).json({ error: 'The student has not completed the required immersion milestones.' });
+      }
+
+      const supervisorId = req.user.id;
+      const institution = { id: placement.partner_institution_id, name: placement.partner_institution_name };
+      const template = await resolveTemplate(client, supervisorId, institution);
+      const certificateNumber = `CERT-${forced ? 'FORCE-' : ''}${Date.now()}-${student.id}`;
+      const completionDate = nowInManilaDateOnly();
+      const attendanceDays = completedPlacementDays(journey, placement);
+      const studentRecord = { ...student, full_name: buildFullName(student), attendance_days: attendanceDays,
+        certificate_number: certificateNumber, completion_date: completionDate };
+      const issuer = await getIssuerDisplayName(client, supervisorId, req.user.email);
+      const pdf = await buildCertificatePdf(studentRecord, issuer, template);
+      uploaded = await uploadPdfToCloudinary(pdf, certificateNumber);
+
+      const { rows: [certificate] } = await client.query(`
+        INSERT INTO certificates (student_id, full_name, certificate_number, completion_date, requirements_status,
+          documentation_status, attendance_days, issued_by, cloudinary_public_id, cloudinary_url, teacher_batch_id,
+          deployment_request_id, partner_institution_id, template_snapshot)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        RETURNING id, certificate_number, cloudinary_url`,
+      [student.id, studentRecord.full_name, certificateNumber, completionDate, forced ? 'Forced' : 'Approved',
+        journey.documentation.total > 0 && journey.documentation.completed === journey.documentation.total ? 'Graded' : 'Pending',
+        attendanceDays, supervisorId, uploaded.public_id, cloudinaryDownloadUrl(uploaded.secure_url),
+        placement.batch_id, placement.deployment_request_id, institution.id, template]);
+      await client.query('COMMIT');
+      uploaded = null;
+
+      void createNotification({
+        userId: student.user_id,
+        title: 'Certificate available',
+        message: 'Your work immersion certificate is now available for download.',
+        type: 'certificate',
+        category: 'certificate',
+        priority: 'high',
+        actionUrl: '/dashboard/student/post-immersion/documents',
+        relatedUserId: supervisorId,
+        entityType: 'certificate',
+        entityId: certificate.id,
+        eventKey: `certificate:${certificate.id}`,
+      }).catch((err) => console.error('Certificate notification failed:', err.message));
+
+      res.status(201).json({ certificate, forced });
     } catch (err) {
-      return res.status(404).json({ error: 'Student not found.' });
+      console.error('issueCertificate error:', err);
+      if (uploaded?.public_id) {
+        await cloudinary.uploader.destroy(uploaded.public_id, { resource_type: 'raw' })
+          .catch((error) => console.error('Certificate upload cleanup failed:', error.message));
+      }
+      res.status(500).json({ error: 'Could not issue the certificate.' });
+    } finally {
+      if (client) {
+        await client.query('ROLLBACK').catch(() => {});
+        client.release();
+      }
     }
-    if (!studentResult.rows.length) {
-      return res.status(404).json({ error: 'Student not found.' });
+  };
+}
+
+const generateCertificate = issueCertificate(false);
+const forceGenerateCertificate = issueCertificate(true);
+
+const undoForceIssue = async (req, res) => {
+  let client;
+  try {
+    await ensureCertificateSchema();
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const { student, placement, status, error } = await getCertificatePlacement(client, req);
+    if (error) return res.status(status).json({ error });
+
+    const { rows } = await client.query(`
+      DELETE FROM certificates
+      WHERE student_id = $1 AND deployment_request_id = $2
+        AND certificate_number LIKE 'CERT-FORCE-%'
+        AND ($3::int IS NULL OR issued_by = $3)
+      RETURNING cloudinary_public_id`,
+    [student.id, placement.deployment_request_id, req.user.role === 'admin' ? null : req.user.id]);
+    if (!rows.length) return res.status(404).json({ error: 'No force-issued certificate found for this deployment.' });
+    await client.query('COMMIT');
+    for (const { cloudinary_public_id } of rows) {
+      await cloudinary.uploader.destroy(cloudinary_public_id, { resource_type: 'raw' })
+        .catch((err) => console.error('Certificate upload cleanup failed:', err.message));
     }
-    const student = studentResult.rows[0];
-
-    // The batch the student is in decides the design; the supervisor's own
-    // default is only used when that batch has none.
-    const placement = await getDeploymentAttendance(client, student.student_id, req.user.role === 'admin' ? null : supervisorUserId);
-    if (!placement) return res.status(403).json({ error: 'The student is not assigned to an authorized deployment.' });
-    const teacherBatchId = placement.batch_id;
-    const template = await resolveTemplate(client, supervisorUserId, teacherBatchId);
-
-    const existing = await client.query(
-      `SELECT id, certificate_number, cloudinary_url
-       FROM certificates
-       WHERE student_id = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [student.student_id]
-    );
-    if (existing.rows.length) {
-      return res.json({
-        message: 'Certificate already generated.',
-        certificate: existing.rows[0],
-        forced: String(existing.rows[0].certificate_number || '').startsWith('CERT-FORCE-'),
-      });
-    }
-
-    const attendanceDays = placement.attendance_days;
-
-    const docsResult = await client.query(
-      `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='Verified')::int AS verified
-       FROM student_documents
-       WHERE student_id = $1`,
-      [student.student_id]
-    );
-    const documentationGraded = docsResult.rows[0]?.verified === docsResult.rows[0]?.total && docsResult.rows[0].total > 0;
-
-    if (student.requirements_status !== 'Approved' || !documentationGraded || attendanceDays < placement.required_attendance_days) {
-      return res.status(400).json({ error: 'Student has not completed all milestones yet.' });
-    }
-
-    const certificateNumber = `CERT-${Date.now()}-${student.student_id}`;
-    const completionDate = new Date().toISOString().slice(0, 10);
-    const studentRecord = {
-      ...student,
-      full_name: buildFullName(student),
-      attendance_days: attendanceDays,
-      certificate_number: certificateNumber,
-      completion_date: completionDate,
-    };
-
-    const issuerName = await getIssuerDisplayName(client, supervisorUserId, req.user?.email);
-    const pdfBuffer = await buildCertificatePdf(studentRecord, issuerName, template);
-    const publicId = certificateNumber;
-    const uploadResult = await uploadPdfToCloudinary(pdfBuffer, publicId);
-
-    const insert = await client.query(
-      `INSERT INTO certificates (student_id, full_name, certificate_number, completion_date, requirements_status, documentation_status, attendance_days, issued_by, cloudinary_public_id, cloudinary_url, teacher_batch_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING id, certificate_number, cloudinary_url`,
-      [
-        student.student_id,
-        buildFullName(student),
-        certificateNumber,
-        completionDate,
-        student.requirements_status,
-        documentationGraded ? 'Graded' : 'Pending',
-        attendanceDays,
-        supervisorUserId,
-        uploadResult.public_id,
-        cloudinaryDownloadUrl(uploadResult.secure_url),
-        teacherBatchId,
-      ]
-    );
-
-    void createNotification({
-      userId: student.user_id,
-      title: 'Certificate available',
-      message: 'Your work immersion certificate is now available for download.',
-      type: 'certificate',
-      category: 'certificate',
-      priority: 'high',
-      actionUrl: '/dashboard/student/progress',
-      relatedUserId: supervisorUserId,
-      entityType: 'certificate',
-      entityId: insert.rows[0].id,
-      eventKey: `certificate:${insert.rows[0].id}`,
-    }).catch((err) => console.error('Certificate notification failed:', err.message));
-
-    res.status(201).json({ certificate: insert.rows[0] });
+    res.json({ message: 'Certificate removed successfully.' });
   } catch (err) {
-    console.error('generateCertificate error:', err);
-    res.status(500).json({ error: 'Server error.' });
+    console.error('undoForceIssue error:', err);
+    res.status(500).json({ error: 'Could not remove the force-issued certificate.' });
   } finally {
-    client.release();
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
   }
 };
 
 const getMyCertificate = async (req, res) => {
   try {
-    const studentRow = await pool.query(
-      `SELECT id FROM students WHERE user_id = $1 LIMIT 1`,
-      [req.user.id]
-    );
-    const studentId = studentRow.rows[0]?.id;
-    if (!studentId) {
-      return res.status(404).json({ error: 'Student profile not found.' });
-    }
-
-    const certificate = await pool.query(
-      `SELECT id, certificate_number, full_name, completion_date, cloudinary_url
-       FROM certificates
-       WHERE student_id = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [studentId]
-    );
-
-    if (!certificate.rows.length) {
-      return res.status(404).json({ error: 'No certificate generated yet.' });
-    }
-
-    res.json({ certificate: certificate.rows[0] });
+    const { rows: [certificate] } = await pool.query(`
+      SELECT c.id, c.certificate_number, c.full_name, c.completion_date, c.cloudinary_url
+      FROM certificates c JOIN students s ON s.id = c.student_id
+      WHERE s.user_id = $1 AND NULLIF(c.cloudinary_url, '') IS NOT NULL
+      ORDER BY c.created_at DESC, c.id DESC LIMIT 1`, [req.user.id]);
+    if (!certificate) return res.status(404).json({ error: 'No certificate generated yet.' });
+    res.json({ certificate });
   } catch (err) {
     console.error('getMyCertificate error:', err);
-    res.status(500).json({ error: 'Server error.' });
+    res.status(500).json({ error: 'Could not load the certificate.' });
   }
 };
-
-const DEFAULT_TEMPLATE = {
-  school_name: 'Work Immersion Program',
-  company_name: 'Host Company',
-  program_name: 'Work Immersion',
-  footer_text:
-    'Verify this certificate at the issuing institution. This is an official record of work immersion completion.',
-  border_color: '#8b1e2d',
-  title_text: 'CERTIFICATE OF COMPLETION',
-};
-
-/**
- * A student's name as it should appear on the certificate.
- * middle_name and suffix exist on `students` but were never selected before,
- * so they were silently dropped from the certificate.
- */
-function buildFullName(row) {
-  if (!row) return '';
-  if (row.full_name) return row.full_name;
-  return [row.first_name, row.middle_name, row.last_name, row.suffix]
-    .map((p) => (p == null ? '' : String(p).trim()))
-    .filter(Boolean)
-    .join(' ');
-}
-
-/**
- * Add the per-batch design columns. Idempotent, so the feature works whether or
- * not migration 024 has been applied - this project has no migration runner.
- */
-async function ensureBatchTemplateSchema(db = pool) {
-  await db.query(`
-    ALTER TABLE certificate_templates
-      ADD COLUMN IF NOT EXISTS teacher_batch_id INTEGER
-        REFERENCES teacher_batches(id) ON DELETE CASCADE;
-
-    -- Migration 005 created a table-level UNIQUE(supervisor_id), which caps a
-    -- supervisor at ONE design row and makes every per-batch insert fail. It
-    -- must be dropped before the partial indexes below can take effect.
-    ALTER TABLE certificate_templates
-      DROP CONSTRAINT IF EXISTS certificate_templates_supervisor_id_key;
-
-    ALTER TABLE certificates
-      ADD COLUMN IF NOT EXISTS teacher_batch_id INTEGER
-        REFERENCES teacher_batches(id) ON DELETE SET NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_certificate_templates_batch
-      ON certificate_templates (teacher_batch_id)
-      WHERE teacher_batch_id IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_certificate_templates_supervisor_default
-      ON certificate_templates (supervisor_id)
-      WHERE teacher_batch_id IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_certificate_templates_lookup
-      ON certificate_templates (supervisor_id, teacher_batch_id);
-    CREATE INDEX IF NOT EXISTS idx_certificates_batch
-      ON certificates (teacher_batch_id);
-  `);
-}
-
-/** The batch a student belongs to (the batch that issued their certificate). */
-async function getStudentBatchId(db, studentId) {
-  const res = await db.query(
-    `SELECT teacher_batch_id FROM teacher_batch_students
-      WHERE student_id = $1
-      ORDER BY assigned_at ASC
-      LIMIT 1`,
-    [studentId]
-  );
-  return res.rows[0]?.teacher_batch_id ?? null;
-}
-
-/**
- * Resolve the design to use: the batch's own design if it has one, otherwise
- * the supervisor's default, otherwise the built-in defaults.
- */
-async function resolveTemplate(db, supervisorUserId, teacherBatchId) {
-  if (teacherBatchId != null) {
-    const batchRes = await db.query(
-      `SELECT school_name, company_name, program_name, footer_text, border_color, title_text
-         FROM certificate_templates
-        WHERE supervisor_id = $1 AND teacher_batch_id = $2
-        LIMIT 1`,
-      [supervisorUserId, teacherBatchId]
-    );
-    if (batchRes.rows.length) return batchRes.rows[0];
-  }
-
-  const supRes = await db.query(
-    `SELECT school_name, company_name, program_name, footer_text, border_color, title_text
-       FROM certificate_templates
-      WHERE supervisor_id = $1 AND teacher_batch_id IS NULL
-      LIMIT 1`,
-    [supervisorUserId]
-  );
-  if (supRes.rows.length) return supRes.rows[0];
-  return { ...DEFAULT_TEMPLATE };
-}
 
 const downloadMyCertificate = async (req, res) => {
   try {
-    await ensureBatchTemplateSchema();
+    await ensureCertificateSchema();
+    const { rows: [certificate] } = await pool.query(`
+      SELECT c.*, s.student_number, s.grade_level, s.track_strand, issuer.email AS issuer_email,
+        pi.name AS partner_institution_name
+      FROM students s JOIN certificates c ON c.student_id = s.id
+      LEFT JOIN partner_institutions pi ON pi.id = c.partner_institution_id
+      LEFT JOIN users issuer ON issuer.id = c.issued_by
+      WHERE s.user_id = $1 AND NULLIF(c.cloudinary_url, '') IS NOT NULL
+      ORDER BY c.created_at DESC, c.id DESC LIMIT 1`, [req.user.id]);
+    if (!certificate) return res.status(404).json({ error: 'No certificate generated yet.' });
 
-    const result = await pool.query(
-      `SELECT c.id,
-              c.certificate_number,
-              c.full_name,
-              c.completion_date,
-              c.requirements_status,
-              c.documentation_status,
-              c.attendance_days,
-              c.issued_by,
-              c.teacher_batch_id AS certificate_batch_id,
-              s.id AS student_id,
-              s.first_name,
-              s.middle_name,
-              s.last_name,
-              s.suffix,
-              s.student_number,
-              s.grade_level,
-              s.track_strand,
-              u.email,
-              issuer.email AS issuer_email
-       FROM students s
-       JOIN users u ON u.id = s.user_id
-       JOIN certificates c ON c.student_id = s.id
-       LEFT JOIN users issuer ON issuer.id = c.issued_by
-       WHERE s.user_id = $1 AND NULLIF(c.cloudinary_url, '') IS NOT NULL
-       ORDER BY c.created_at DESC
-       LIMIT 1`,
-      [req.user.id]
-    );
-
-    if (!result.rows.length) {
-      return res.status(404).json({ error: 'No certificate generated yet.' });
-    }
-
-    const certificate = result.rows[0];
-    // The batch the certificate was issued for decides its design; the issuing
-    // supervisor is only the fallback.
-    const template = await resolveTemplate(
-      pool,
-      certificate.issued_by,
-      certificate.certificate_batch_id
-    );
-    const issuerName = await getIssuerDisplayName(
-      pool,
-      certificate.issued_by,
-      certificate.issuer_email
-    );
-    const pdfBuffer = await buildCertificatePdf(
-      { ...certificate, full_name: certificate.full_name || buildFullName(certificate) },
-      issuerName,
-      template
-    );
-    const filename = `Certificate_${certificate.certificate_number || certificate.id}.pdf`;
-
+    const template = certificate.template_snapshot || await resolveTemplate(pool, certificate.issued_by,
+      { id: certificate.partner_institution_id, name: certificate.partner_institution_name }, certificate.teacher_batch_id);
+    const issuer = await getIssuerDisplayName(pool, certificate.issued_by, certificate.issuer_email);
+    const pdf = await buildCertificatePdf(certificate, issuer, template);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', pdfBuffer.length);
-    res.send(pdfBuffer);
+    res.setHeader('Content-Disposition', `attachment; filename="Certificate_${certificate.certificate_number}.pdf"`);
+    res.send(pdf);
   } catch (err) {
     console.error('downloadMyCertificate error:', err);
-    res.status(500).json({ error: 'Server error.' });
+    res.status(500).json({ error: 'Could not download the certificate.' });
   }
 };
 
+async function getTemplateInstitution(req, rawId) {
+  if (rawId == null || rawId === '') return { institution: null };
+  const id = positiveId(rawId);
+  if (!id) return { status: 400, error: 'Invalid partner institution.' };
+  const institution = (await getAssignedInstitutions(req.user.id)).find((item) => item.id === id);
+  return institution ? { institution } : { status: 403, error: 'This partner institution is not assigned to you.' };
+}
+
 const getMyCertificateTemplate = async (req, res) => {
   try {
-    await ensureBatchTemplateSchema();
-
-    // Optional ?batchId= returns that batch's own design; omitted returns the
-    // supervisor default.
-    const batchId =
-      req.query.batchId === undefined || req.query.batchId === '' || req.query.batchId === 'default'
-        ? null
-        : Number(req.query.batchId);
-    if (batchId !== null && !Number.isInteger(batchId)) {
-      return res.status(400).json({ error: 'Invalid batch id.' });
-    }
-
-    const template = await resolveTemplate(pool, req.user.id, batchId);
-    res.json({ ...template, teacher_batch_id: batchId, is_default: batchId === null });
+    await ensureCertificateSchema();
+    const { institution, status, error } = await getTemplateInstitution(req, req.query.institutionId);
+    if (error) return res.status(status).json({ error });
+    const template = await resolveTemplate(pool, req.user.id, institution);
+    res.json({ ...template, partner_institution_id: institution?.id ?? null });
   } catch (err) {
     console.error('getMyCertificateTemplate error:', err);
-    res.status(500).json({ error: 'Server error.' });
+    res.status(500).json({ error: 'Could not load the certificate design.' });
   }
 };
 
 const saveMyCertificateTemplate = async (req, res) => {
-  const client = await pool.connect();
   try {
-    await ensureBatchTemplateSchema(client);
-
-    const {
-      school_name = DEFAULT_TEMPLATE.school_name,
-      company_name = DEFAULT_TEMPLATE.company_name,
-      program_name = DEFAULT_TEMPLATE.program_name,
-      footer_text = DEFAULT_TEMPLATE.footer_text,
-      border_color = DEFAULT_TEMPLATE.border_color,
-      title_text = DEFAULT_TEMPLATE.title_text,
-    } = req.body || {};
-
-    const rawBatchId = req.body?.teacher_batch_id;
-    const teacherBatchId = rawBatchId == null || rawBatchId === '' ? null : Number(rawBatchId);
-    if (teacherBatchId !== null && !Number.isInteger(teacherBatchId)) {
-      client.release();
-      return res.status(400).json({ error: 'Invalid batch id.' });
+    await ensureCertificateSchema();
+    const { institution, status, error } = await getTemplateInstitution(req, req.body?.partner_institution_id);
+    if (error) return res.status(status).json({ error });
+    const values = Object.fromEntries(Object.entries(DEFAULT_TEMPLATE).map(([field, fallback]) => [
+      field, req.body?.[field] === undefined ? fallback : req.body[field],
+    ]));
+    values.company_name = institution?.name || DEFAULT_TEMPLATE.company_name;
+    if (Object.entries(values).some(([field, value]) =>
+      typeof value !== 'string' || value.length > (field === 'footer_text' ? 1000 : 255))
+      || !/^#[0-9a-f]{6}$/i.test(values.border_color)) {
+      return res.status(400).json({ error: 'Check the certificate text lengths and accent color.' });
     }
 
-    // A batch design and the supervisor default live in the same table, so the
-    // conflict target is chosen by whether teacher_batch_id is set. ON CONFLICT
-    // cannot reference a partial index by name, so both cases are matched with
-    // an IS NOT DISTINCT FROM guard instead.
-    const existing = await client.query(
-      `SELECT id FROM certificate_templates
-        WHERE supervisor_id = $1 AND teacher_batch_id IS NOT DISTINCT FROM $2
-        LIMIT 1`,
-      [req.user.id, teacherBatchId]
-    );
-
-    let row;
-    if (existing.rows.length) {
-      const upd = await client.query(
-        `UPDATE certificate_templates
-            SET school_name = $2, company_name = $3, program_name = $4,
-                footer_text = $5, border_color = $6, title_text = $7,
-                updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1
-        RETURNING school_name, company_name, program_name, footer_text, border_color, title_text`,
-        [existing.rows[0].id, school_name, company_name, program_name, footer_text, border_color, title_text]
-      );
-      row = upd.rows[0];
-    } else {
-      const ins = await client.query(
-        `INSERT INTO certificate_templates
-           (supervisor_id, teacher_batch_id, school_name, company_name, program_name, footer_text, border_color, title_text)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        RETURNING school_name, company_name, program_name, footer_text, border_color, title_text`,
-        [req.user.id, teacherBatchId, school_name, company_name, program_name, footer_text, border_color, title_text]
-      );
-      row = ins.rows[0];
-    }
-
-    res.json({ ...row, teacher_batch_id: teacherBatchId, is_default: teacherBatchId === null });
+    const conflict = institution
+      ? '(supervisor_id, partner_institution_id) WHERE partner_institution_id IS NOT NULL'
+      : '(supervisor_id) WHERE teacher_batch_id IS NULL AND partner_institution_id IS NULL';
+    const { rows: [saved] } = await pool.query(`
+      INSERT INTO certificate_templates (supervisor_id, partner_institution_id, ${TEMPLATE_FIELDS})
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      ON CONFLICT ${conflict} DO UPDATE SET
+        ${Object.keys(values).map((field) => `${field} = EXCLUDED.${field}`).join(', ')}, updated_at = CURRENT_TIMESTAMP
+      RETURNING ${TEMPLATE_FIELDS}, partner_institution_id`,
+    [req.user.id, institution?.id ?? null, ...Object.values(values)]);
+    res.json(saved);
   } catch (err) {
     console.error('saveMyCertificateTemplate error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
-const forceGenerateCertificate = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { studentId } = req.params;
-    const supervisorUserId = req.user.id;
-    await ensureBatchTemplateSchema(client);
-
-    const studentResult = await client.query(
-      `SELECT u.id AS user_id, s.id AS student_id, s.first_name, s.middle_name,
-              s.last_name, s.suffix, s.student_number,
-              s.grade_level, s.track_strand, srs.status AS requirements_status
-       FROM users u
-       JOIN students s ON s.user_id = u.id
-       JOIN student_requirement_submissions srs ON srs.user_id = u.id
-       WHERE u.id = $1 AND u.role = 'student'
-       LIMIT 1`,
-      [studentId]
-    );
-    if (!studentResult.rows.length) {
-      return res.status(404).json({ error: 'Student not found.' });
-    }
-    const student = studentResult.rows[0];
-
-    // Same design resolution as the normal issue path.
-    const teacherBatchId = await getStudentBatchId(client, student.student_id);
-    const template = await resolveTemplate(client, supervisorUserId, teacherBatchId);
-
-    const existing = await client.query(
-      `SELECT id, certificate_number, cloudinary_url
-       FROM certificates
-       WHERE student_id = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [student.student_id]
-    );
-    if (existing.rows.length) {
-      return res.json({
-        message: 'Certificate already generated.',
-        certificate: existing.rows[0],
-        forced: String(existing.rows[0].certificate_number || '').startsWith('CERT-FORCE-'),
-      });
-    }
-
-    const attendanceResult = await client.query(
-      `SELECT COUNT(DISTINCT date)::int AS days
-       FROM student_attendance
-       WHERE student_id = $1 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
-      [student.student_id]
-    );
-    const docsResult = await client.query(
-      `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='Verified')::int AS verified
-       FROM student_documents
-       WHERE student_id = $1`,
-      [student.student_id]
-    );
-
-    const certificateNumber = `CERT-FORCE-${Date.now()}-${student.student_id}`;
-    const completionDate = new Date().toISOString().slice(0, 10);
-    const studentRecord = {
-      ...student,
-      full_name: buildFullName(student),
-      attendance_days: attendanceResult.rows[0]?.days || 0,
-      certificate_number: certificateNumber,
-      completion_date: completionDate,
-    };
-
-    const issuerName = await getIssuerDisplayName(client, supervisorUserId, req.user?.email);
-    const pdfBuffer = await buildCertificatePdf(studentRecord, issuerName, template);
-    const publicId = certificateNumber;
-    const uploadResult = await uploadPdfToCloudinary(pdfBuffer, publicId);
-
-    const insert = await client.query(
-      `INSERT INTO certificates (student_id, full_name, certificate_number, completion_date, requirements_status, documentation_status, attendance_days, issued_by, cloudinary_public_id, cloudinary_url, teacher_batch_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING id, certificate_number, cloudinary_url`,
-      [
-        student.student_id,
-        buildFullName(student),
-        certificateNumber,
-        completionDate,
-        'Forced',
-        docsResult.rows[0]?.verified ? 'Graded' : 'Pending',
-        attendanceResult.rows[0]?.days || 0,
-        supervisorUserId,
-        uploadResult.public_id,
-        cloudinaryDownloadUrl(uploadResult.secure_url),
-        teacherBatchId,
-      ]
-    );
-
-    void createNotification({
-      userId: student.user_id,
-      title: 'Certificate available',
-      message: 'Your work immersion certificate is now available for download.',
-      type: 'certificate',
-      category: 'certificate',
-      priority: 'high',
-      actionUrl: '/dashboard/student/progress',
-      relatedUserId: supervisorUserId,
-      entityType: 'certificate',
-      entityId: insert.rows[0].id,
-      eventKey: `certificate:${insert.rows[0].id}`,
-    }).catch((err) => console.error('Certificate notification failed:', err.message));
-
-    res.status(201).json({ certificate: insert.rows[0], forced: true });
-  } catch (err) {
-    console.error('forceGenerateCertificate error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
-  }
-};
-
-const undoForceIssue = async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { studentId } = req.params;
-
-    const certResult = await client.query(
-      `SELECT c.id, c.cloudinary_public_id, c.cloudinary_url, c.certificate_number
-       FROM certificates c
-       JOIN students s ON s.id = c.student_id
-       WHERE s.user_id = $1
-         AND c.certificate_number LIKE 'CERT-FORCE-%'
-       ORDER BY c.created_at DESC`,
-      [studentId]
-    );
-    if (!certResult.rows.length) {
-      return res.status(404).json({ error: 'No force-issued certificate found for this student.' });
-    }
-
-    const certIds = certResult.rows.map((cert) => cert.id);
-    await client.query('DELETE FROM certificates WHERE id = ANY($1::int[])', [certIds]);
-
-    for (const cert of certResult.rows) {
-      try {
-        await cloudinary.uploader.destroy(cert.cloudinary_public_id, { resource_type: 'raw' });
-      } catch (cloudinaryErr) {
-        console.error('Cloudinary delete failed:', cloudinaryErr);
-      }
-    }
-
-    res.json({ message: 'Certificate removed successfully.' });
-  } catch (err) {
-    console.error('undoForceIssue error:', err);
-    res.status(500).json({ error: 'Server error.' });
-  } finally {
-    client.release();
+    res.status(500).json({ error: 'Could not save the certificate design.' });
   }
 };
 
@@ -943,10 +665,7 @@ module.exports = {
   downloadMyCertificate,
   getMyCertificateTemplate,
   saveMyCertificateTemplate,
-  // Exported so the schema bootstrap, design resolution and the PDF renderer
-  // can be exercised directly by verification scripts without going through
-  // HTTP or Cloudinary.
-  ensureBatchTemplateSchema,
+  ensureCertificateSchema,
   resolveTemplate,
   buildFullName,
   buildCertificatePdf,

@@ -18,6 +18,14 @@ export async function getMyPartnerInstitutions(token) {
   return res.data;
 }
 
+export async function getTeacherInstitutionOverview(institutionId, token, signal) {
+  const res = await axios.get(`${API_BASE}/coordinator/teacher-partner-institutions/${institutionId}/overview`, {
+    headers: authHeaders(token),
+    signal,
+  });
+  return res.data;
+}
+
 export async function getPartnerInstitutionStudents(institutionId, token) {
   const res = await axios.get(`${API_BASE}/coordinator/partner-institutions/${institutionId}/students`, {
     headers: authHeaders(token),

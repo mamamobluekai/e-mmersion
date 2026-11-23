@@ -2,19 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { getSupervisorPartnerInstitutions, getSupervisorPartnerInstitutionStudents } from '../../../api/supervisorApi';
 import Feedback from '../../../components/Feedback';
 import StudentDetailModal from '../../../components/shared/StudentDetailModal';
-import PersonDrawer from '../../../components/shared/PersonDrawer';
 import { getStudentName } from '../../../components/shared/studentFields';
+import { SupervisorApprovedDeployments } from '../PartnerDeployments';
 import styles from './SupervisorPartnerInstitutions.module.css';
-
-const joinName = (first, last) => `${first || ''} ${last || ''}`.trim() || 'Not provided';
 
 function SupervisorPartnerInstitutions() {
   const [institutions, setInstitutions] = useState([]);
-  const [activePerson, setActivePerson] = useState(null);
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [query, setQuery] = useState('');
   const [term, setTerm] = useState('');
 
   useEffect(() => {
@@ -43,72 +39,29 @@ function SupervisorPartnerInstitutions() {
     setSelectedStudent(null);
   };
 
-  // Teacher / coordinator profile opens in the shared side drawer.
-  const openPerson = (role, institution) => {
-    if (role === 'teacher') {
-      setActivePerson({
-        role: 'Teacher',
-        firstName: institution.teacher_first_name,
-        lastName: institution.teacher_last_name,
-        institutionName: institution.name,
-        fields: [
-          { label: 'Full Name', value: joinName(institution.teacher_first_name, institution.teacher_last_name) },
-          { label: 'Employee ID', value: institution.teacher_employee_id },
-          { label: 'Department', value: institution.teacher_department },
-          { label: 'Designation', value: institution.teacher_designation },
-          { label: 'School', value: institution.teacher_school },
-          { label: 'Email', value: institution.teacher_email },
-          { label: 'Phone', value: institution.teacher_phone },
-          { label: 'Partner Institution', value: institution.name },
-        ],
-      });
-      return;
-    }
-
-    setActivePerson({
-      role: 'Coordinator',
-      firstName: institution.coordinator_first_name,
-      lastName: institution.coordinator_last_name,
-      institutionName: institution.name,
-      fields: [
-        { label: 'Full Name', value: joinName(institution.coordinator_first_name, institution.coordinator_last_name) },
-        { label: 'Employee ID', value: institution.coordinator_employee_id },
-        { label: 'Department', value: institution.coordinator_department },
-        { label: 'Designation', value: institution.coordinator_designation },
-        { label: 'School', value: institution.coordinator_school },
-        { label: 'Email', value: institution.coordinator_email },
-        { label: 'Phone', value: institution.coordinator_phone },
-        { label: 'Partner Institution', value: institution.name },
-      ],
-    });
-  };
-
   const filteredInstitutions = useMemo(() => {
     if (!term.trim()) return institutions;
-    const t = term.toLowerCase();
+    const t = term.trim().toLowerCase();
     return institutions.filter((inst) =>
       inst.name.toLowerCase().includes(t) ||
-      inst.industry.toLowerCase().includes(t)
+      inst.industry?.toLowerCase().includes(t)
     );
   }, [institutions, term]);
 
   const openInstitutionStudents = async (institution) => {
-    if (institution.students) return;
+    const updateStudents = (students) => setInstitutions((current) =>
+      current.map((item) => item.id === institution.id ? { ...item, students } : item));
+    if (institution.students) {
+      updateStudents(undefined);
+      return;
+    }
     try {
       const data = await getSupervisorPartnerInstitutionStudents(institution.id);
-      institution.students = data.students || [];
+      updateStudents(data.students || []);
     } catch (e) {
       setError(e.message);
     }
   };
-
-  if (loading) {
-    return <Feedback busy>Loading partner institutions…</Feedback>;
-  }
-
-  if (error) {
-    return <Feedback error={error} />;
-  }
 
   return (
     <div className={styles.page}>
@@ -127,7 +80,9 @@ function SupervisorPartnerInstitutions() {
         />
       </div>
 
-      <div className={styles.grid}>
+      {loading && <Feedback busy>Loading partner institutions…</Feedback>}
+      {error && <Feedback error={error} />}
+      {filteredInstitutions.length > 0 && <div className={styles.grid}>
         {filteredInstitutions.map((inst) => (
           <section key={inst.id} className={styles.card}>
             <div className={styles.cardHeader}>
@@ -135,7 +90,7 @@ function SupervisorPartnerInstitutions() {
                 <h3 className={styles.instName}>{inst.name}</h3>
                 <p className={styles.instMeta}>
                   <span>{inst.industry}</span>
-                  {inst.batch_count && <span> · {inst.batch_count} deployment{batch_count !== 1 ? 's' : ''}</span>}
+                  {Number(inst.batch_count) > 0 && <span> · {inst.batch_count} deployment{Number(inst.batch_count) !== 1 ? 's' : ''}</span>}
                   {inst.deployment_start && <span> · {new Date(inst.deployment_start).toLocaleDateString()}</span>}
                 </p>
               </div>
@@ -159,12 +114,12 @@ function SupervisorPartnerInstitutions() {
                       {student.photo_url ? (
                         <img src={student.photo_url} alt="" />
                       ) : (
-                        <span>{getStudentName(student.first_name, student.last_name).charAt(0)}</span>
+                        <span>{getStudentName(student).charAt(0)}</span>
                       )}
                     </div>
                     <div className={styles.studentInfo}>
                       <span className={styles.studentName}>
-                        {getStudentName(student.first_name, student.last_name)}
+                        {getStudentName(student)}
                       </span>
                       <span className={styles.studentMeta}>
                         {student.student_number} · {student.track_strand}
@@ -181,9 +136,9 @@ function SupervisorPartnerInstitutions() {
             )}
           </section>
         ))}
-      </div>
+      </div>}
 
-      {filteredInstitutions.length === 0 && (
+      {!loading && !error && filteredInstitutions.length === 0 && (
         <Feedback empty>
           <p>No partner institutions found</p>
           <p className={styles.subText}>
@@ -192,18 +147,16 @@ function SupervisorPartnerInstitutions() {
         </Feedback>
       )}
 
-      <StudentDetailModal
-        student={selectedStudent?.student}
-        institution={selectedStudent?.institution}
-        onClose={closeStudent}
-      />
+      <div className={styles.approvedDeployments}>
+        <SupervisorApprovedDeployments search={term} />
+      </div>
 
-      {activePerson && (
-        <PersonDrawer
-          person={activePerson}
-          onClose={() => setActivePerson(null)}
-        />
-      )}
+      {selectedStudent && <StudentDetailModal
+        student={selectedStudent.student}
+        batch={selectedStudent.institution}
+        onClose={closeStudent}
+      />}
+
     </div>
   );
 }

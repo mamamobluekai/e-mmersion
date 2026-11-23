@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   Building2,
@@ -64,7 +65,13 @@ function statusLabel(status) {
   return status || 'Unknown status';
 }
 
+function revealInstitution(card) {
+  card?.scrollIntoView({ block: 'nearest' });
+}
+
 export default function Supervisors() {
+  const [params, setParams] = useSearchParams();
+  const linkedInstitutionId = params.get('institution');
   const [institutions, setInstitutions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -123,7 +130,7 @@ export default function Supervisors() {
   const filteredInstitutions = useMemo(() => {
     const query = search.trim().toLowerCase();
     return institutions.filter((institution) => {
-      if (!showInactive && !institution.is_active) return false;
+      if (!showInactive && !institution.is_active && String(institution.id) !== linkedInstitutionId) return false;
       if (!query) return true;
       const supervisor = institution.current_supervisor;
       return [
@@ -135,7 +142,7 @@ export default function Supervisors() {
         supervisor?.email,
       ].some((value) => String(value || '').toLowerCase().includes(query));
     });
-  }, [institutions, search, showInactive]);
+  }, [institutions, search, showInactive, linkedInstitutionId]);
 
   const openNewInstitution = () => {
     setInstitutionForm({ ...EMPTY_INSTITUTION, supervisor: { ...EMPTY_SUPERVISOR } });
@@ -143,7 +150,7 @@ export default function Supervisors() {
     setFormError('');
   };
 
-  const openEditInstitution = (institution) => {
+  const openEditInstitution = useCallback((institution, focusAddress = false) => {
     setInstitutionForm({
       name: institution.name || '',
       industry: institution.industry || 'Other',
@@ -151,9 +158,19 @@ export default function Supervisors() {
       address: institution.address || '',
       supervisor: { ...EMPTY_SUPERVISOR },
     });
-    setInstitutionModal({ mode: 'edit', institution });
+    setInstitutionModal({ mode: 'edit', institution, focusAddress });
     setFormError('');
-  };
+  }, []);
+
+  useEffect(() => {
+    if (params.get('edit') !== 'address' || !linkedInstitutionId || loading) return;
+    const institution = institutions.find(({ id }) => String(id) === linkedInstitutionId);
+    if (!institution) return;
+    openEditInstitution(institution, true);
+    const next = new URLSearchParams(params);
+    next.delete('edit');
+    setParams(next, { replace: true, preventScrollReset: true });
+  }, [institutions, linkedInstitutionId, loading, openEditInstitution, params, setParams]);
 
   const closeInstitutionModal = () => {
     if (!saving) {
@@ -399,8 +416,10 @@ export default function Supervisors() {
             const previousAssignmentCount = (institution.supervisor_history || [])
               .filter((entry) => Boolean(entry.ended_at)).length;
             const menuOpen = openActionMenu === institution.id;
+            const linked = String(institution.id) === linkedInstitutionId;
             return (
-              <article className={styles.institutionCard} key={institution.id}>
+              <article className={styles.institutionCard} key={institution.id}
+                ref={linked ? revealInstitution : undefined} aria-current={linked ? 'location' : undefined}>
                 <div className={styles.cardHeader}>
                   <div className={styles.companyHeading}>
                     <div className={styles.companyTitleRow}>
@@ -567,7 +586,8 @@ export default function Supervisors() {
                   </label>
                   <label className={`${styles.field} ${styles.fieldWide}`}>
                     <span>Company Address *</span>
-                    <textarea value={institutionForm.address} onChange={(event) => setInstitutionForm((form) => ({ ...form, address: event.target.value }))} maxLength={2000} rows={2} required />
+                    <textarea value={institutionForm.address} onChange={(event) => setInstitutionForm((form) => ({ ...form, address: event.target.value }))}
+                      maxLength={2000} rows={2} required autoFocus={institutionModal.focusAddress} />
                   </label>
                   <label className={`${styles.field} ${styles.fieldWide}`}>
                     <span>Short Description</span>

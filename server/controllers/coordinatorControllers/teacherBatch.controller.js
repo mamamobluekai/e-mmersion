@@ -1,4 +1,5 @@
 const pool = require('../../db/');
+const { nowInManilaDateOnly } = require('../../utils/manilaDate');
 
 const getMyTeacherBatches = async (req, res) => {
   try {
@@ -58,14 +59,16 @@ const getMyTeacherPartnerInstitutions = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT DISTINCT ON (pi.id)
-              pi.id, pi.name, pi.industry, pi.description, pi.address,
+      `SELECT pi.id, pi.name, pi.industry, pi.description, pi.address,
               MIN(dr.confirmed_schedule->>'start') AS deployment_start,
               MAX(dr.confirmed_schedule->>'end') AS deployment_end,
+              string_agg(DISTINCT staff.name, ', ' ORDER BY staff.name) AS supervisor_name,
               COUNT(DISTINCT tb.id) AS batch_count
        FROM teacher_batches tb
        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
        JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
+       LEFT JOIN supervisors sv ON sv.user_id = dr.supervisor_id
+       CROSS JOIN LATERAL (SELECT NULLIF(concat_ws(' ', sv.first_name, sv.last_name), '') AS name) staff
        WHERE tb.archived_at IS NULL AND (tb.teacher_id = $1 OR EXISTS (
          SELECT 1 FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id AND link.teacher_id = $1
        ))
@@ -78,6 +81,59 @@ const getMyTeacherPartnerInstitutions = async (req, res) => {
   } catch (err) {
     console.error('getMyTeacherPartnerInstitutions error:', err);
     res.status(500).json({ error: 'Server error.' });
+  }
+};
+
+const getTeacherInstitutionOverview = async (req, res) => {
+  const institutionId = Number(req.params.institutionId);
+  if (!Number.isInteger(institutionId) || institutionId < 1 || institutionId > 2147483647) {
+    return res.status(400).json({ error: 'Invalid partner institution.' });
+  }
+
+  try {
+    const { rows } = await pool.query(`
+      WITH deployments AS (
+        SELECT tb.id, dr.confirmed_schedule
+        FROM deployment_requests dr
+        JOIN teacher_batches tb ON tb.id = dr.teacher_batch_id AND tb.archived_at IS NULL
+        JOIN teachers t ON t.user_id = $2
+        WHERE dr.partner_institution_id = $1 AND dr.workflow_version = 2 AND dr.status = 'approved'
+          AND (tb.teacher_id = t.id OR EXISTS (
+            SELECT 1 FROM partner_deployment_teachers link
+            WHERE link.deployment_request_id = dr.id AND link.teacher_id = t.id
+          ))
+      ), roster AS (
+        SELECT d.id AS placement_id, member.student_id, member.deployment_started_on,
+          d.confirmed_schedule->'dates' AS agreed_dates
+        FROM deployments d
+        JOIN teacher_batch_students member ON member.teacher_batch_id = d.id
+        WHERE member.deployment_ended_on IS NULL
+      ), attendance AS (
+        SELECT COUNT(DISTINCT roster.student_id)::int AS present_count
+        FROM roster
+        JOIN student_attendance sa ON sa.student_id = roster.student_id AND sa.teacher_batch_id = roster.placement_id
+        WHERE sa.date = ($3::text)::date AND roster.agreed_dates ? $3::text
+          AND (roster.deployment_started_on IS NULL OR sa.date >= roster.deployment_started_on)
+          AND (sa.status = 'present' OR (sa.status <> 'absent' AND sa.check_in_time IS NOT NULL))
+      ), documentation AS (
+        SELECT roster.student_id, COUNT(doc.id)::int AS total_docs,
+          COUNT(doc.id) FILTER (WHERE doc.status = 'graded')::int AS graded_count,
+          COUNT(doc.id) FILTER (WHERE doc.status IN ('pending', 'submitted'))::int AS pending_count
+        FROM roster
+        LEFT JOIN student_daily_documentation doc ON doc.student_id = roster.student_id
+          AND doc.teacher_batch_id = roster.placement_id AND roster.agreed_dates ? doc.date::text
+          AND (roster.deployment_started_on IS NULL OR doc.date >= roster.deployment_started_on)
+        GROUP BY roster.student_id
+      )
+      SELECT (SELECT COUNT(*)::int FROM documentation) AS student_count, attendance.present_count,
+        COALESCE((SELECT json_agg(documentation) FROM documentation), '[]'::json) AS documentation
+      FROM attendance
+      WHERE EXISTS (SELECT 1 FROM deployments)`, [institutionId, req.user.id, nowInManilaDateOnly()]);
+    if (!rows.length) return res.status(403).json({ error: 'This partner institution is not assigned to you.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('getTeacherInstitutionOverview error:', err);
+    res.status(500).json({ error: 'Could not load the partner institution overview.' });
   }
 };
 
@@ -275,4 +331,4 @@ const getTeacherBatchStudents = async (req, res) => {
   }
 };
 
-module.exports = { getMyTeacherBatches, getTeacherBatchStudents, getMyTeacherPartnerInstitutions, getPartnerInstitutionStudents };
+module.exports = { getMyTeacherBatches, getTeacherBatchStudents, getMyTeacherPartnerInstitutions, getTeacherInstitutionOverview, getPartnerInstitutionStudents };

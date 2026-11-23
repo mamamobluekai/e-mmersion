@@ -75,7 +75,7 @@ export default function GroupChatButton({ user }) {
               </button>
             </div>
             <div className={styles.modalBody}>
-              <BatchChat user={user} inModal />
+              <PartnerChat user={user} inModal />
             </div>
           </div>
         </div>,

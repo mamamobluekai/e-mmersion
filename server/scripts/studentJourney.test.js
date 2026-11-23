@@ -13,11 +13,13 @@ const timed = {
   check_out_time: '2026-08-03T16:00:00+08:00',
 };
 
-test('individual approvals require coordinator signoff before Immersion Proper opens', () => {
+test('Immersion Proper requires approved requirements and a published schedule', () => {
   assert.deepEqual(summarizeJourney({ ...approved, complete: false }, [], {}).stages,
     { pre: 'active', immersion: 'locked', post: 'locked' });
   assert.deepEqual(summarizeJourney(approved, [], {}).stages,
-    { pre: 'completed', immersion: 'active', post: 'locked' });
+    { pre: 'completed', immersion: 'locked', post: 'locked' });
+  const days = progressForDays([first], [], [], [], today);
+  assert.equal(summarizeJourney(approved, days, {}).stages.immersion, 'active');
 });
 
 test('a completed day, unmatched records, and submitted or pending work cannot unlock Post-Immersion', () => {

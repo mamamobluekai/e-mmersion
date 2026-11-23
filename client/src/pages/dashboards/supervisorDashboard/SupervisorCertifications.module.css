@@ -345,23 +345,21 @@
   min-width: 180px;
 }
 
-.batchCard {
+.institutionCard {
   margin-bottom: 16px;
   padding: 16px 18px;
   background: #fff;
   border: 1px solid var(--about-border);
   border-radius: 16px;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
-.batchCard:last-child {
+.institutionCard:last-child {
   margin-bottom: 0;
 }
 
-.batchCard:hover {
-  transform: translateY(-2px);
-  border-color: #d7b8be;
-  box-shadow: 0 12px 26px rgb(23 32 51 / 7%);
+.institutionCard h3 {
+  margin: 0 0 12px;
+  font-size: 1rem;
 }
 
 .batchLabel {

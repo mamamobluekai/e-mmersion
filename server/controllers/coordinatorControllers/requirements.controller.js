@@ -189,6 +189,14 @@ const summarizeEmailNotification = (result) => ({
     : 'Review was saved, but the student notification email could not be sent. Check the server mail logs.',
 });
 
+async function availablePartnerPreference(client, value) {
+  if (value == null || normalize(value) === '') return true;
+  if (typeof value !== 'number' && typeof value !== 'string') return false;
+  const id = String(value).trim();
+  if (!/^[1-9]\d{0,9}$/.test(id) || Number(id) > 2147483647) return false;
+  return (await client.query('SELECT 1 FROM partner_institutions WHERE id = $1 AND is_active FOR SHARE', [id])).rowCount > 0;
+}
+
 const upsertRequirements = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -212,6 +220,7 @@ const upsertRequirements = async (req, res) => {
       'has_special_needs',
       'contact_number','email','home_address','grade_level','section','track_strand','school',
       'preferred_industry','preferred_company','career_goal','industry_reason','guardian_name',
+      'preferred_partner_institution_id',
       'guardian_relationship','guardian_contact','guardian_email','guardian_address',
       'emergency_contact','emergency_contact_number','academic_notes',
     ];
@@ -219,6 +228,11 @@ const upsertRequirements = async (req, res) => {
       Object.prototype.hasOwnProperty.call(payload, field) &&
       String(normalize(payload[field]) || '') !== String(normalize(student[field]) || '')
     ));
+    if (updates.includes('preferred_partner_institution_id') &&
+      !await availablePartnerPreference(client, payload.preferred_partner_institution_id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Choose an available preferred partner institution.' });
+    }
     let changedFormCodes = [];
     if (req.user.role === 'student' && submission.submitted_at && updates.length) {
       const formCodes = ['personal_information', 'guardian_emergency'];
@@ -240,9 +254,10 @@ const upsertRequirements = async (req, res) => {
           ))
           .map((type) => type.code)
       );
-      const blockedFields = updates.filter((field) => !formCodes.some((code) => (
-        editableFormCodes.has(code) && formFieldsFor(code).some((entry) => entry.key === field)
-      )));
+      const belongsToForm = (code, field) => formFieldsFor(code).some((entry) => entry.key === field) ||
+        (code === 'personal_information' && field === 'preferred_partner_institution_id');
+      const blockedFields = updates.filter((field) => !formCodes.some((code) =>
+        editableFormCodes.has(code) && belongsToForm(code, field)));
       if (blockedFields.length) {
         await client.query('ROLLBACK');
         return res.status(409).json({
@@ -251,7 +266,7 @@ const upsertRequirements = async (req, res) => {
         });
       }
       changedFormCodes = formCodes.filter((code) => (
-        editableFormCodes.has(code) && formFieldsFor(code).some((entry) => updates.includes(entry.key))
+        editableFormCodes.has(code) && updates.some((field) => belongsToForm(code, field))
       ));
     }
 
@@ -414,10 +429,44 @@ const getRequirements = async (req, res) => {
       student = result.rows[0];
     }
     await getOrCreateSubmission(client, student, student.user_id);
-    res.json(await serializeRequirements(client, student.id));
+    const data = await serializeRequirements(client, student.id);
+    if (req.user.role === 'student') {
+      const { rows } = await client.query(`SELECT id, name, is_active FROM partner_institutions
+        WHERE is_active OR id = $1 ORDER BY name, id`, [student.preferred_partner_institution_id ?? null]);
+      data.partnerInstitutions = rows;
+    }
+    res.json(data);
   } catch (err) {
     console.error('getRequirements error:', err);
     res.status(500).json({ error: 'Server error.' });
+  } finally {
+    client.release();
+  }
+};
+
+const updatePartnerPreference = async (req, res) => {
+  if (!Object.hasOwn(req.body || {}, 'preferred_partner_institution_id')) {
+    return res.status(400).json({ error: 'Provide a partner preference.' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const student = await getOrCreateStudent(client, req.user.id, {});
+    const value = normalize(req.body.preferred_partner_institution_id);
+    const unchanged = value === student.preferred_partner_institution_id ||
+      (typeof value === 'string' && value === String(student.preferred_partner_institution_id ?? ''));
+    if (!unchanged && !await availablePartnerPreference(client, value)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Choose an available preferred partner institution.' });
+    }
+    const { rows: [updated] } = await client.query(`UPDATE students SET preferred_partner_institution_id = $2, updated_at = now()
+      WHERE id = $1 RETURNING preferred_partner_institution_id`, [student.id, value === '' ? null : value]);
+    await client.query('COMMIT');
+    return res.json(updated);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('updatePartnerPreference error:', error.message);
+    return res.status(500).json({ error: 'Could not save your partner preference.' });
   } finally {
     client.release();
   }
@@ -1493,6 +1542,7 @@ const permanentDeleteDocumentType = async (req, res) => {
 
 module.exports = {
   upsertRequirements,
+  updatePartnerPreference,
   submitRequirements,
   getRequirements,
   uploadDocument,

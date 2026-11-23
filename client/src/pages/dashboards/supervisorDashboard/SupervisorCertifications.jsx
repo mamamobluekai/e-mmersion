@@ -7,13 +7,13 @@ import {
   X,
 } from 'lucide-react';
 import {
+  supervisorGetAllStudents,
   supervisorGenerateCertificate,
   supervisorForceGenerateCertificate,
   supervisorUndoForceIssue,
   supervisorGetCertificateTemplate,
   supervisorSaveCertificateTemplate,
 } from '../../../api/certificateApi';
-import { getSupervisorBatches } from '../../../api/supervisorApi';
 import styles from './SupervisorCertifications.module.css';
 
 const EMPTY_TEMPLATE = {
@@ -481,90 +481,55 @@ function CertificatePreview({
 }
 
 function SupervisorCertifications() {
-  const [batches, setBatches] = useState([]);
+  const [institutions, setInstitutions] = useState([]);
+  const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [generatingId, setGeneratingId] = useState(null);
-  const [confirmForceId, setConfirmForceId] = useState(null);
+  const [actionStudent, setActionStudent] = useState(null);
+  const [forceStudent, setForceStudent] = useState(null);
   const [filter, setFilter] = useState('all');
-  const [forcedIds, setForcedIds] = useState({});
-
-  const [template, setTemplate] = useState({
-    school_name: 'Work Immersion Program',
-    company_name: 'Host Company',
-    program_name: 'Work Immersion',
-    footer_text: 'Verify this certificate at the issuing institution. This is an official record of work immersion completion.',
-    // Maroon, matching the rest of the supervisor UI. The certificate's own
-    // accent stays user-editable from the design modal.
-    border_color: '#8b1e2d',
-    title_text: 'CERTIFICATE OF COMPLETION',
-  });
+  const [templates, setTemplates] = useState({});
+  const [draft, setDraft] = useState(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
-  const [designModalOpen, setDesignModalOpen] = useState(false);
-  // 'default' = the supervisor-wide design; a number = that batch's own design.
-  const [designScope, setDesignScope] = useState('default');
-  const [templatesByBatch, setTemplatesByBatch] = useState({});
-
-  // Every batch can hold its own design. Load them all once so switching scope
-  // is instant and the preview always reflects the selected batch.
-  const loadAll = async () => {
-    setLoading(true);
-    setError('');
-    setMessage('');
-    try {
-      const [batchesData, templateData] = await Promise.all([
-        getSupervisorBatches(),
-        supervisorGetCertificateTemplate('default'),
-      ]);
-      const rawBatches = batchesData.batches || [];
-      setBatches(rawBatches);
-
-      const teacherBatches = rawBatches.filter((b) => b.source === 'teacher');
-      const perBatch = await Promise.all(
-        teacherBatches.map((b) =>
-          supervisorGetCertificateTemplate(b.request_id).catch(() => null)
-        )
-      );
-      const byBatch = { default: templateData || {} };
-      teacherBatches.forEach((b, i) => {
-        if (perBatch[i]) byBatch[b.request_id] = perBatch[i];
-      });
-      setTemplatesByBatch(byBatch);
-
-      // Editing or previewing a batch's design shows that batch's values.
-      const active =
-        designScope !== 'default' ? byBatch[designScope] : null;
-      setTemplate({ ...EMPTY_TEMPLATE, ...(templateData || {}), ...(active || {}) });
-
-      const forced = {};
-      for (const batch of rawBatches) {
-        for (const s of batch.students || []) {
-          if (s.certificate_number && String(s.certificate_number).startsWith('CERT-FORCE-')) {
-            forced[s.user_id] = s.certificate_number;
-          }
-        }
-      }
-      setForcedIds(forced);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [designError, setDesignError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [designScope, setDesignScope] = useState('');
+  const previewTemplate = templates[designScope] || EMPTY_TEMPLATE;
 
   useEffect(() => {
-    loadAll();
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await supervisorGetAllStudents();
+        const assigned = data.institutions || [];
+        const scopes = assigned.length ? assigned.map(({ id }) => String(id)) : [''];
+        const designs = await Promise.allSettled(scopes.map((id) => supervisorGetCertificateTemplate(id || null)));
+        if (cancelled) return;
+        setInstitutions(assigned);
+        setStudents(data.eligible || []);
+        setDesignScope(scopes[0]);
+        setTemplates(Object.fromEntries(scopes.flatMap((id, index) => {
+          const result = designs[index];
+          return result.status === 'fulfilled' ? [[id, result.value]] : [];
+        })));
+        if (designs.some(({ status }) => status === 'rejected')) setError('Some certificate designs could not be loaded.');
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
   }, []);
 
-  // Escape closes whichever modal is open and locks page scroll behind it.
   useEffect(() => {
-    const anyOpen = designModalOpen || Boolean(confirmForceId);
-    if (!anyOpen) return undefined;
+    if (!draft && !forceStudent) return undefined;
     const onKey = (e) => {
-      if (e.key !== 'Escape') return;
-      if (confirmForceId) setConfirmForceId(null);
-      else setDesignModalOpen(false);
+      if (e.key !== 'Escape' || savingTemplate || actionStudent) return;
+      if (forceStudent) setForceStudent(null);
+      else setDraft(null);
     };
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -573,125 +538,63 @@ function SupervisorCertifications() {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [designModalOpen, confirmForceId]);
+  }, [draft, forceStudent, savingTemplate, actionStudent]);
 
-  const handleGenerate = async (studentId) => {
-    setGeneratingId(studentId);
+  const studentKey = (student) => `${student.user_id}:${student.deployment_request_id}`;
+  const visibleStudents = students.filter(({ completed }) =>
+    filter === 'all' || (filter === 'completed' ? completed : !completed));
+  const groups = institutions.map((institution) => ({
+    ...institution,
+    students: visibleStudents.filter(({ partner_institution_id }) => partner_institution_id === institution.id),
+  })).filter((group) => group.students.length);
+
+  async function handleCertificate(student, action) {
+    const key = studentKey(student);
+    setActionStudent(key);
+    setActionError('');
     setError('');
     setMessage('');
     try {
-      const data = await supervisorGenerateCertificate(studentId);
-      if (data?.certificate) {
-        setMessage(`Certificate ${data.certificate.certificate_number} generated successfully.`);
-        loadAll();
-      } else {
-        setMessage(data?.message || 'Certificate already existed.');
-      }
+      const result = await action(student.user_id, student.deployment_request_id);
+      const certificateNumber = result.certificate?.certificate_number ?? null;
+      setStudents((prev) => prev.map((row) => studentKey(row) === key
+        ? { ...row, certificate_number: certificateNumber, forced: result.forced === true,
+          can_undo: result.forced === true && !result.message }
+        : row));
+      setForceStudent(null);
+      setMessage(result.message || `Certificate ${certificateNumber} issued.`);
     } catch (e) {
-      setError(e.message);
+      if (action === supervisorForceGenerateCertificate) setActionError(e.message);
+      else setError(e.message);
     } finally {
-      setGeneratingId(null);
+      setActionStudent(null);
     }
-  };
-
-  const handleForceGenerate = async (studentId) => {
-    setGeneratingId(studentId);
-    setError('');
-    setMessage('');
-    try {
-      const data = await supervisorForceGenerateCertificate(studentId);
-      if (data?.certificate) {
-        setMessage(`Force-issued certificate ${data.certificate.certificate_number} for student.`);
-        setConfirmForceId(null);
-        loadAll();
-      } else {
-        setMessage(data?.message || 'Certificate action completed.');
-      }
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setGeneratingId(null);
-    }
-  };
-
-  const handleUndoForce = async (studentId) => {
-    setGeneratingId(studentId);
-    setError('');
-    setMessage('');
-    try {
-      await supervisorUndoForceIssue(studentId);
-      setMessage('Force-issued certificate removed.');
-      setForcedIds((prev) => {
-        const next = { ...prev };
-        delete next[studentId];
-        return next;
-      });
-      setBatches((prev) =>
-        prev.map((batch) => ({
-          ...batch,
-          students: batch.students
-            ? batch.students.map((s) =>
-                s.user_id === studentId
-                  ? { ...s, certificate_number: null, certificate_url: null }
-                  : s
-              )
-            : batch.students,
-        }))
-      );
-      await loadAll();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setGeneratingId(null);
-    }
-  };
+  }
 
   const handleTemplateChange = (field, value) => {
-    setTemplate((prev) => ({ ...prev, [field]: value }));
+    setDraft((prev) => ({ ...prev, [field]: value }));
   };
 
-  const sanitizeText = (value) => {
-    if (typeof value !== 'string') return value;
-    return value.replace(/<[^>]*>/g, '').trim();
-  };
-
-  const handleSaveTemplate = async (e) => {
-    e.preventDefault();
+  async function handleSaveTemplate(event) {
+    event.preventDefault();
     setSavingTemplate(true);
+    setDesignError('');
     setError('');
     setMessage('');
     try {
-      const teacherBatchId = designScope === 'default' ? null : Number(designScope);
-      const payload = {
-        school_name: sanitizeText(template.school_name),
-        company_name: sanitizeText(template.company_name),
-        program_name: sanitizeText(template.program_name),
-        footer_text: sanitizeText(template.footer_text),
-        border_color: sanitizeText(template.border_color),
-        title_text: sanitizeText(template.title_text),
-        teacher_batch_id: teacherBatchId,
-      };
-      const saved = await supervisorSaveCertificateTemplate(payload);
-      setTemplatesByBatch((prev) =>
-        teacherBatchId == null
-          ? prev
-          : { ...prev, [teacherBatchId]: { ...template, ...saved } }
-      );
-      setTemplate({ ...template, ...saved });
-      setMessage(
-        teacherBatchId == null
-          ? 'Default certificate design saved.'
-          : 'Certificate design saved for that batch.'
-      );
-      setDesignModalOpen(false);
-      await loadAll();
+      const saved = await supervisorSaveCertificateTemplate({
+        ...draft,
+        partner_institution_id: designScope ? Number(designScope) : null,
+      });
+      setTemplates((prev) => ({ ...prev, [designScope]: saved }));
+      setMessage('Certificate design saved.');
+      setDraft(null);
     } catch (e) {
-      setError(e.message);
+      setDesignError(e.message);
     } finally {
       setSavingTemplate(false);
     }
-  };
-
+  }
   return (
     <div className={styles.page}>
       <style>{`
@@ -701,7 +604,7 @@ function SupervisorCertifications() {
       <div className={styles.pageHeader}>
         <div>
           <h1>Certifications</h1>
-          <p>Edit your certificate design, then generate signed PDF certificates for students assigned to your batches.</p>
+          <p>Design and issue completion certificates for students at your partner institutions.</p>
         </div>
       </div>
 
@@ -744,12 +647,13 @@ function SupervisorCertifications() {
         <div className={styles.cardHeader}>
           <div>
             <h2>Certificate Preview</h2>
-            <p>How every generated certificate will look.</p>
+            <p>Preview the design used when issuing a certificate.</p>
           </div>
           <button
             type="button"
             className={styles.btn}
-            onClick={() => setDesignModalOpen(true)}
+            disabled={loading || !templates[designScope]}
+            onClick={() => { setDesignError(''); setDraft(previewTemplate); }}
           >
             <Pencil size={15} />
             Edit Design
@@ -758,11 +662,19 @@ function SupervisorCertifications() {
 
         <div className={styles.cardBody}>
           <div className={styles.previewWrap}>
-            <CertificatePreview template={template} />
+            {institutions.length > 1 && (
+              <label className={styles.filterField}>
+                Certificate design for
+                <select className={styles.select} value={designScope} onChange={(event) => setDesignScope(event.target.value)}>
+                  {institutions.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+                </select>
+              </label>
+            )}
+            <CertificatePreview template={previewTemplate} />
           </div>
           <p className={styles.previewNote}>
             Sample names shown. Generated certificates carry the student&rsquo;s and
-            supervisor&rsquo;s real names, plus the host company from that batch&rsquo;s design.
+            supervisor&rsquo;s real names, along with the partner institution&rsquo;s name.
           </p>
         </div>
       </section>
@@ -777,100 +689,89 @@ function SupervisorCertifications() {
 
         <div className={styles.cardBody}>
           <div className={styles.filterRow}>
-            <select className={styles.select} value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <select aria-label="Filter students by completion" className={styles.select} value={filter} onChange={(e) => setFilter(e.target.value)}>
               <option value="all">All Students</option>
               <option value="completed">Completed</option>
               <option value="incomplete">Incomplete</option>
             </select>
             <span className={styles.muted}>
-              {batches.reduce((sum, b) => sum + (b.students?.length || 0), 0)} total
+              {visibleStudents.length} shown
             </span>
           </div>
           {loading ? (
             <p className={styles.loading}>Loading students...</p>
-          ) : batches.length === 0 ? (
-            <p className={styles.loading}>No batches assigned to you yet.</p>
-          ) : (
-            batches.map((b) => {
-              const batchStudents = (b.students || []).filter((s) =>
-                filter === 'completed' ? s.completed : filter === 'incomplete' ? !s.completed : true
-              );
-              if (batchStudents.length === 0) return null;
-              return (
-                <div key={`${b.source}-${b.request_id}`} className={styles.batchCard}>
-                  <div className={styles.tableWrap}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Student ID</th>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Status</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batchStudents.map((s) => (
-                        <tr key={s.user_id}>
-                          <td>{s.student_number}</td>
-                          <td>{s.first_name} {s.last_name}</td>
-                          <td>{s.email}</td>
+          ) : groups.length === 0 ? (
+            <p className={styles.loading}>
+              {students.length ? 'No students match this filter.' : 'No students assigned to your partner institutions yet.'}
+            </p>
+          ) : groups.map((group) => (
+            <div key={group.id} className={styles.institutionCard}>
+              <h3>{group.name}</h3>
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Student ID</th>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.students.map((student) => {
+                      const busy = actionStudent === studentKey(student);
+                      return (
+                        <tr key={studentKey(student)}>
+                          <td>{student.student_number || '—'}</td>
+                          <td>{student.first_name} {student.last_name}</td>
+                          <td>{student.email}</td>
                           <td>
-                            <span className={`${styles.badge} ${s.completed ? styles.badgeApproved : styles.badgePending}`}>
-                              {s.completed ? 'Completed' : 'Incomplete'}
+                            <span className={`${styles.badge} ${student.completed ? styles.badgeApproved : styles.badgePending}`}>
+                              {student.completed ? 'Completed' : 'Incomplete'}
                             </span>
                           </td>
                           <td>
-                            {s.certificate_number ? (
-                              <span className={styles.certifiedText}>Certified</span>
-                            ) : forcedIds[s.user_id] ? (
-                              <button
-                                className={styles.btnSecondary}
-                                type="button"
-                                onClick={() => handleUndoForce(s.user_id)}
-                                disabled={generatingId === s.user_id}
-                              >
-                                {generatingId === s.user_id ? 'Undoing...' : 'Undo Deploy'}
-                              </button>
-                            ) : s.completed ? (
-                              <button
-                                className={styles.btn}
-                                onClick={() => handleGenerate(s.user_id)}
-                                disabled={generatingId === s.user_id}
-                              >
-                                {generatingId === s.user_id ? 'Generating...' : 'Generate Certificate'}
-                              </button>
-                            ) : (
-                              <button
-                                className={styles.btnSecondary}
-                                type="button"
-                                onClick={() => setConfirmForceId(s.user_id)}
-                                disabled={generatingId === s.user_id}
-                              >
-                                Deploy Certificate
+                            {student.certificate_number && (
+                              <span className={styles.certifiedText}>{student.forced ? 'Force-issued' : 'Certified'}</span>
+                            )}
+                            {student.can_undo && (
+                              <button className={styles.btnSecondary} type="button" disabled={Boolean(actionStudent)}
+                                onClick={() => handleCertificate(student, supervisorUndoForceIssue)}>
+                                {busy ? 'Removing…' : 'Undo Force Issue'}
                               </button>
                             )}
+                            {!student.certificate_number && (student.completed ? (
+                              <button className={styles.btn} type="button" disabled={Boolean(actionStudent)}
+                                onClick={() => handleCertificate(student, supervisorGenerateCertificate)}>
+                                {busy ? 'Generating…' : 'Generate Certificate'}
+                              </button>
+                            ) : (
+                              <button className={styles.btnSecondary} type="button" disabled={Boolean(actionStudent)}
+                                onClick={() => { setActionError(''); setForceStudent(student); }}>
+                                Force Issue Certificate
+                              </button>
+                            ))}
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            );
-          })
-          )}
+            </div>
+          ))}
         </div>
       </section>
 
       {/* Certificate design editor - a modal so the preview above stays put
           and the page never reflows while editing. */}
-      {designModalOpen && (
+      {draft && (
         <div
           className={styles.modalOverlay}
           role="presentation"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setDesignModalOpen(false);
+            if (e.target === e.currentTarget && !savingTemplate) setDraft(null);
           }}
         >
           <div
@@ -882,59 +783,26 @@ function SupervisorCertifications() {
             <div className={styles.modalHeader}>
               <div>
                 <h3 id="design-modal-title">Certificate Design</h3>
-                <p>These values appear on every generated certificate.</p>
+                <p>{institutions.find(({ id }) => String(id) === designScope)?.name || 'Default design'}</p>
               </div>
               <button
                 type="button"
                 className={styles.modalClose}
                 aria-label="Close"
-                onClick={() => setDesignModalOpen(false)}
+                disabled={savingTemplate} onClick={() => setDraft(null)}
               >
                 <X size={16} />
               </button>
             </div>
 
             <form onSubmit={handleSaveTemplate} className={styles.modalBody}>
-              <label className={styles.filterField}>
-                Applies to
-                <select
-                  className={styles.select}
-                  value={designScope}
-                  onChange={(e) => {
-                    const next = e.target.value;
-                    setDesignScope(next);
-                    // Switch the form to that scope's saved values, falling
-                    // back to the shared default for a batch with none yet.
-                    const nextTemplate =
-                      next === 'default'
-                        ? templatesByBatch.default
-                        : templatesByBatch[next] || templatesByBatch.default;
-                    setTemplate({ ...EMPTY_TEMPLATE, ...(nextTemplate || {}) });
-                  }}
-                >
-                  <option value="default">Default (all batches without their own)</option>
-                  {batches
-                    .filter((b) => b.source === 'teacher')
-                    .map((b) => (
-                      <option key={b.request_id} value={b.request_id}>
-                        {b.batch_label}
-                      </option>
-                    ))}
-                </select>
-              </label>
-
-              <p className={styles.scopeNote}>
-                {designScope === 'default'
-                  ? 'Used by any of your batches that does not have a design of its own.'
-                  : 'This design is used for every certificate issued in that batch.'}
-              </p>
-
+              {designError && <p role="alert">{designError}</p>}
               <div className={styles.row}>
                 <label className={styles.filterField}>
                   Program
                   <input
                     className={styles.input}
-                    value={template.program_name}
+                    value={draft.program_name}
                     onChange={(e) => handleTemplateChange('program_name', e.target.value)}
                     required
                   />
@@ -943,7 +811,7 @@ function SupervisorCertifications() {
                   School / Issuer
                   <input
                     className={styles.input}
-                    value={template.school_name}
+                    value={draft.school_name}
                     onChange={(e) => handleTemplateChange('school_name', e.target.value)}
                     required
                   />
@@ -952,20 +820,11 @@ function SupervisorCertifications() {
 
               <div className={styles.row}>
                 <label className={styles.filterField}>
-                  Company / Host
-                  <input
-                    className={styles.input}
-                    value={template.company_name}
-                    onChange={(e) => handleTemplateChange('company_name', e.target.value)}
-                    required
-                  />
-                </label>
-                <label className={styles.filterField}>
                   Accent Color
                   <input
                     className={styles.input}
                     type="color"
-                    value={template.border_color}
+                    value={draft.border_color}
                     onChange={(e) => handleTemplateChange('border_color', e.target.value)}
                   />
                 </label>
@@ -975,7 +834,7 @@ function SupervisorCertifications() {
                 Footer Text
                 <textarea
                   className={styles.textarea}
-                  value={template.footer_text}
+                  value={draft.footer_text}
                   onChange={(e) => handleTemplateChange('footer_text', e.target.value)}
                   required
                 />
@@ -985,7 +844,7 @@ function SupervisorCertifications() {
                 <button
                   type="button"
                   className={styles.btnSecondary}
-                  onClick={() => setDesignModalOpen(false)}
+                  disabled={savingTemplate} onClick={() => setDraft(null)}
                 >
                   Cancel
                 </button>
@@ -999,12 +858,12 @@ function SupervisorCertifications() {
         </div>
       )}
 
-      {confirmForceId && (
+      {forceStudent && (
         <div
           className={styles.modalOverlay}
           role="presentation"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setConfirmForceId(null);
+            if (e.target === e.currentTarget && !actionStudent) setForceStudent(null);
           }}
         >
           <div
@@ -1019,25 +878,25 @@ function SupervisorCertifications() {
             </div>
             <div className={styles.modalBody}>
               <p className={styles.confirmText} id="force-issue-body">
-                This will generate a completion certificate even though this student has not yet
-                completed all milestones. Are you sure you want to continue?
+                Issue a completion certificate to {forceStudent.first_name} {forceStudent.last_name} at {forceStudent.partner_institution_name} with immersion milestones still incomplete?
               </p>
+              {actionError && <p role="alert">{actionError}</p>}
               <div className={styles.modalActions}>
                 <button
                   className={styles.btnSecondary}
                   type="button"
-                  onClick={() => setConfirmForceId(null)}
-                  disabled={generatingId === confirmForceId}
+                  onClick={() => setForceStudent(null)}
+                  disabled={Boolean(actionStudent)}
                 >
                   Cancel
                 </button>
                 <button
                   className={styles.btn}
                   type="button"
-                  onClick={() => handleForceGenerate(confirmForceId)}
-                  disabled={generatingId === confirmForceId}
+                  onClick={() => handleCertificate(forceStudent, supervisorForceGenerateCertificate)}
+                  disabled={Boolean(actionStudent)}
                 >
-                  {generatingId === confirmForceId ? 'Issuing...' : 'Yes, Issue Certificate'}
+                  {actionStudent ? 'Issuing...' : 'Yes, Issue Certificate'}
                 </button>
               </div>
             </div>

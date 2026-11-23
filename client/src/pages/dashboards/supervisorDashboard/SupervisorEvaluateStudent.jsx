@@ -16,6 +16,7 @@ import {
   getStudentEvaluation,
   getSupervisorEvaluationStudents,
 } from '../../../api/evaluationApi';
+import { restoreEvaluationRatings } from '../../../utils/evaluationCategories';
 import styles from './SupervisorEvaluateStudent.module.css';
 
 // The rating scale, reused by the star control and the legend below it so the
@@ -36,7 +37,7 @@ const RATING_SCALE = [
 // dropdown. "N/A" stays a separate toggle because it is not a star count.
 function StarRating({ value, onChange, name }) {
   const numeric = Number(value);
-  const current = Number.isFinite(numeric) && value !== '' && value != null ? numeric : 0;
+  const current = Number.isInteger(numeric) && numeric >= 1 && numeric <= RATING_SCALE.length ? numeric : 0;
   const isNA = value === 'N/A';
 
   return (
@@ -98,16 +99,27 @@ function formatEvaluatedDate(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '-';
   return d.toLocaleDateString('en-US', {
+    timeZone: 'Asia/Manila',
     year: 'numeric',
     month: 'long',
     day: 'numeric',
   });
 }
 
+const canEvaluate = (student) => Number(student.required_attendance_days) > 0 &&
+  Number(student.attendance_days) >= Number(student.required_attendance_days);
+const institutionName = (student) => student.partner_institution_name || student.batch_label || 'Partner institution';
+const attendanceLabel = (student) => student.required_attendance_days ?
+  `${student.attendance_days ?? 0} / ${student.required_attendance_days}` : 'Schedule unavailable';
+const isRated = (rating) => rating === 'N/A' || (['number', 'string'].includes(typeof rating) && /^[1-5]$/.test(String(rating)));
+
 function SupervisorEvaluateStudent() {
   const [criteria, setCriteria] = useState([]);
+  const [criteriaVersion, setCriteriaVersion] = useState('');
+  const [draftCriteria, setDraftCriteria] = useState([]);
   const [criteriaSaving, setCriteriaSaving] = useState(false);
   const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -119,6 +131,8 @@ function SupervisorEvaluateStudent() {
   const [ratings, setRatings] = useState({});
   const [comments, setComments] = useState('');
   const [existingEvaluation, setExistingEvaluation] = useState(null);
+  const [evaluationLoading, setEvaluationLoading] = useState(false);
+  const [evaluationError, setEvaluationError] = useState('');
 
   const activeStudent = useMemo(
     () => students.find((s) => s.student_id === activeStudentId && s.batch_id === activeBatchId) || null,
@@ -130,62 +144,43 @@ function SupervisorEvaluateStudent() {
     async function init() {
       setError('');
       setMessage('');
-      try {
-        const [criteriaData, studentsData] = await Promise.all([
-          getEvaluationCriteria(),
-          getSupervisorEvaluationStudents(),
-        ]);
-        if (!cancelled) {
-          setCriteria(criteriaData.criteria || []);
-          setStudents(studentsData.students || []);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e.message);
+      const [rubric, roster] = await Promise.allSettled([
+        getEvaluationCriteria(),
+        getSupervisorEvaluationStudents(),
+      ]);
+      if (cancelled) return;
+      if (rubric.status === 'fulfilled') {
+        setCriteria(rubric.value.criteria || []);
+        setCriteriaVersion(rubric.value.criteria_version || '');
       }
+      if (roster.status === 'fulfilled') setStudents(roster.value.students || []);
+      const failure = [rubric, roster].find((result) => result.status === 'rejected');
+      if (failure) setError(failure.reason.message);
+      setLoading(false);
     }
     init();
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!activeStudentId) {
-      setExistingEvaluation(null);
-      setRatings({});
-      setComments('');
-      return;
-    }
+    if (!evalModalOpen || !activeStudentId) return;
     let cancelled = false;
     async function loadEvaluation() {
       try {
         const data = await getStudentEvaluation(activeStudentId, activeBatchId);
-        if (!cancelled && data.evaluation) {
-          setExistingEvaluation(data.evaluation);
-          setComments(data.evaluation.comments || '');
-          const loaded = {};
-          if (data.evaluation.category_scores) {
-            for (const [catId, catData] of Object.entries(data.evaluation.category_scores)) {
-              if (catData && Array.isArray(catData.indicators)) {
-                loaded[catId] = catData.indicators;
-              }
-            }
-          }
-          setRatings(loaded);
-        } else if (!cancelled) {
-          setExistingEvaluation(null);
-          setRatings({});
-          setComments('');
-        }
-      } catch {
-        if (!cancelled) {
-          setExistingEvaluation(null);
-          setRatings({});
-          setComments('');
-        }
+        if (cancelled) return;
+        setExistingEvaluation(data.evaluation);
+        setComments(data.evaluation?.comments || '');
+        setRatings(restoreEvaluationRatings(data.evaluation?.category_scores, criteria));
+      } catch (failure) {
+        if (!cancelled) setEvaluationError(failure.message);
+      } finally {
+        if (!cancelled) setEvaluationLoading(false);
       }
     }
     loadEvaluation();
     return () => { cancelled = true; };
-  }, [activeStudentId, activeBatchId]);
+  }, [evalModalOpen, activeStudentId, activeBatchId, criteria]);
 
   function handleRatingChange(categoryId, indicatorIndex, value) {
     setRatings((prev) => {
@@ -196,8 +191,6 @@ function SupervisorEvaluateStudent() {
   }
 
   const computedScores = useMemo(() => {
-    const ratingValues = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 'N/A': 0 };
-
     let totalWeighted = 0;
     let totalCounted = 0;
 
@@ -211,7 +204,7 @@ function SupervisorEvaluateStudent() {
       for (let i = 0; i < indicators.length; i++) {
         const r = catRatings[i];
         if (r === 'N/A') naCount++;
-        else sum += Number(ratingValues[r] || 0);
+        else if (isRated(r)) sum += Number(r);
       }
 
       const counted = indicators.length - naCount;
@@ -241,12 +234,12 @@ function SupervisorEvaluateStudent() {
   }, [criteria, ratings]);
 
   const isComplete = useMemo(() => {
-    if (!activeStudentId) return false;
+    if (!activeStudentId || !criteria.length) return false;
     for (const cat of criteria) {
       const catRatings = ratings[String(cat.id)] || [];
       const indicators = cat.indicators || [];
       for (let i = 0; i < indicators.length; i++) {
-        if (!catRatings[i]) return false;
+        if (!isRated(catRatings[i])) return false;
       }
     }
     return true;
@@ -258,6 +251,7 @@ function SupervisorEvaluateStudent() {
     if (!anyOpen) return undefined;
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
+      if (saving || criteriaSaving) return;
       if (criteriaModalOpen) setCriteriaModalOpen(false);
       else setEvalModalOpen(false);
     };
@@ -268,7 +262,7 @@ function SupervisorEvaluateStudent() {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [evalModalOpen, criteriaModalOpen]);
+  }, [evalModalOpen, criteriaModalOpen, saving, criteriaSaving]);
 
   // -----------------------------
   // Criteria editing
@@ -279,13 +273,13 @@ function SupervisorEvaluateStudent() {
   // -----------------------------
 
   function renameCategory(categoryId, name) {
-    setCriteria((current) =>
+    setDraftCriteria((current) =>
       current.map((c) => (c.id === categoryId ? { ...c, category_name: name } : c))
     );
   }
 
   function setIndicator(categoryId, indicatorIndex, value) {
-    setCriteria((current) =>
+    setDraftCriteria((current) =>
       current.map((c) => {
         if (c.id !== categoryId) return c;
         const indicators = [...(c.indicators || [])];
@@ -296,7 +290,7 @@ function SupervisorEvaluateStudent() {
   }
 
   function addIndicator(categoryId) {
-    setCriteria((current) =>
+    setDraftCriteria((current) =>
       current.map((c) =>
         c.id === categoryId
           ? { ...c, indicators: [...(c.indicators || []), 'New indicator'] }
@@ -306,7 +300,7 @@ function SupervisorEvaluateStudent() {
   }
 
   function removeIndicator(categoryId, indicatorIndex) {
-    setCriteria((current) =>
+    setDraftCriteria((current) =>
       current.map((c) => {
         if (c.id !== categoryId) return c;
         const indicators = [...(c.indicators || [])];
@@ -317,23 +311,27 @@ function SupervisorEvaluateStudent() {
   }
 
   function addCategory() {
-    setCriteria((current) => [
+    setDraftCriteria((current) => [
       ...current,
       { id: `new-${Date.now()}`, category_name: 'New Category', indicators: ['New indicator'] },
     ]);
   }
 
   function removeCategory(categoryId) {
-    setCriteria((current) => current.filter((c) => c.id !== categoryId));
+    setDraftCriteria((current) => current.filter((c) => c.id !== categoryId));
   }
 
   async function handleSaveCriteria(e) {
     e.preventDefault();
+    if (criteriaSaving) return;
     setCriteriaSaving(true);
     setError('');
     setMessage('');
     try {
-      await saveEvaluationCriteria(criteria);
+      const saved = await saveEvaluationCriteria(draftCriteria, criteriaVersion);
+      setCriteria(saved.criteria);
+      setCriteriaVersion(saved.criteria_version);
+      setCriteriaModalOpen(false);
       setMessage('Evaluation criteria updated successfully.');
     } catch (err) {
       setError(err.message);
@@ -344,8 +342,13 @@ function SupervisorEvaluateStudent() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!activeStudentId) {
+    if (saving || evaluationLoading || evaluationError) return;
+    if (!activeStudent) {
       setError('Please select a student to evaluate.');
+      return;
+    }
+    if (!canEvaluate(activeStudent)) {
+      setError('The student must complete their required workdays before an evaluation can be saved.');
       return;
     }
     if (!isComplete) {
@@ -357,25 +360,26 @@ function SupervisorEvaluateStudent() {
     setMessage('');
     try {
       const formattedScores = {};
-      for (const [catId, catRatings] of Object.entries(ratings)) {
-        formattedScores[catId] = { indicators: catRatings };
+      for (const { id } of criteria) {
+        formattedScores[id] = { indicators: ratings[id] };
       }
 
       const payload = {
         studentId: Number(activeStudentId),
-        batchId: activeStudent ? Number(activeStudent.batch_id) : null,
+        batchId: Number(activeStudent.batch_id),
+        partnerInstitutionId: activeStudent.partner_institution_id,
+        criteriaVersion,
         categoryScores: formattedScores,
         comments: comments || null,
       };
       const data = await submitStudentEvaluation(payload);
       setMessage(existingEvaluation ? 'Evaluation updated successfully.' : 'Evaluation submitted successfully.');
       setExistingEvaluation(data.evaluation);
-      const updatedStudents = students.map((s) =>
-        s.student_id === Number(activeStudentId) && s.batch_id === activeBatchId
-          ? { ...s, evaluation: { ...data.evaluation, overall_score: data.evaluation.overall_score } }
+      setStudents((current) => current.map((s) =>
+        s.student_id === activeStudentId && s.batch_id === activeBatchId
+          ? { ...s, evaluation: data.evaluation }
           : s
-      );
-      setStudents(updatedStudents);
+      ));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -384,6 +388,11 @@ function SupervisorEvaluateStudent() {
   }
 
   function openEvaluation(student) {
+    setExistingEvaluation(null);
+    setRatings({});
+    setComments('');
+    setEvaluationError('');
+    setEvaluationLoading(true);
     setActiveStudentId(student.student_id);
     setActiveBatchId(student.batch_id);
     setEvalModalOpen(true);
@@ -394,7 +403,7 @@ function SupervisorEvaluateStudent() {
   // Closing keeps activeStudentId so the table row stays highlighted, but the
   // modal goes away. Escape and backdrop clicks route here too.
   function closeEvaluation() {
-    setEvalModalOpen(false);
+    if (!saving) setEvalModalOpen(false);
   }
 
   const evaluatedCount = students.filter((s) => s.evaluation).length;
@@ -411,7 +420,9 @@ function SupervisorEvaluateStudent() {
           <button
             type="button"
             className={styles.btn}
-            onClick={() => setCriteriaModalOpen(true)}
+            disabled={!criteriaVersion}
+            aria-haspopup="dialog"
+            onClick={() => { setDraftCriteria(criteria); setError(''); setMessage(''); setCriteriaModalOpen(true); }}
           >
             <ListChecks size={15} />
             Grading Criteria
@@ -468,8 +479,8 @@ function SupervisorEvaluateStudent() {
         </div>
 
         <div className={styles.cardBody}>
-          {students.length === 0 ? (
-            <div className={styles.empty}>No students assigned to you yet.</div>
+          {loading ? <p role="status">Loading deployed students…</p> : students.length === 0 ? (
+            <div className={styles.empty}>No students deployed at your partner institutions yet.</div>
           ) : (
             <div className={styles.tableWrap}>
               <table className={styles.table}>
@@ -477,7 +488,7 @@ function SupervisorEvaluateStudent() {
                   <tr>
                     <th>Student ID</th>
                     <th>Name</th>
-                    <th>Batch</th>
+                    <th>Partner institution</th>
                     <th>Attendance Days</th>
                     <th>Overall Rating</th>
                     <th>Date Evaluated</th>
@@ -488,17 +499,15 @@ function SupervisorEvaluateStudent() {
                   {students.map((s) => {
                     const evaluation = s.evaluation;
                     const isEvaluated = Boolean(evaluation);
-                    const percentage =
-                      evaluation?.overall_percentage ||
-                      (evaluation?.overall_score
-                        ? Math.round((evaluation.overall_score / 5) * 10000) / 100
-                        : null);
+                    const percentage = evaluation?.overall_percentage ?? (evaluation?.overall_score != null ?
+                      Math.round((Number(evaluation.overall_score) / 5) * 10000) / 100 : null);
+                    const mayOpen = canEvaluate(s) || isEvaluated;
                     return (
                       <tr
                         key={s.batch_id + ":" + s.student_id}
                         className={s.student_id === activeStudentId && s.batch_id === activeBatchId ? styles.rowActive : ''}
-                        onClick={() => (s.attendance_days >= s.required_attendance_days ? openEvaluation(s) : undefined)}
-                        title={(s.attendance_days || 0) >= s.required_attendance_days ? `Evaluate ${s.first_name} ${s.last_name}` : 'Student must complete the required workdays before evaluation.'}
+                        onClick={() => { if (mayOpen) openEvaluation(s); }}
+                        title={mayOpen ? `Open evaluation for ${s.first_name} ${s.last_name}` : 'Student must complete the required workdays before evaluation.'}
                       >
                         <td>{s.student_number}</td>
                         <td>
@@ -516,10 +525,10 @@ function SupervisorEvaluateStudent() {
                             </span>
                           </span>
                         </td>
-                        <td>{s.batch_label}</td>
-                        <td>{s.attendance_days ?? '-'}</td>
+                        <td>{institutionName(s)}</td>
+                        <td>{attendanceLabel(s)}</td>
                         <td>
-                          {percentage ? (
+                          {percentage != null ? (
                             <>
                               <span className={styles.ratingCell}>{percentage}%</span>
                               <span className={styles.scoreBarTrack}>
@@ -553,7 +562,7 @@ function SupervisorEvaluateStudent() {
         </div>
       </section>
 
-      {!activeStudentId ? (
+      {students.length > 0 && (
         <section className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
@@ -576,19 +585,19 @@ function SupervisorEvaluateStudent() {
                           {s.first_name} {s.last_name}
                         </div>
                     <div className={styles.studentCardMeta}>
-                      {s.student_number} · {s.batch_label} · Grade {s.grade_level || '-'}
+                      {s.student_number} · {institutionName(s)} · Grade {s.grade_level || '-'}
                     </div>
                     <div className={styles.studentCardMeta}>
                       {s.track_strand || '-'} · {s.email}
                     </div>
                     <div className={styles.studentCardMeta}>
-                      Attendance days: {s.attendance_days ?? '-'}
+                      Attendance days: {attendanceLabel(s)}
                     </div>
                       </div>
                       {s.evaluation && (
                         <span className={`${styles.badge} ${styles.badgeApproved}`}>
                           Score:{' '}
-                          {s.evaluation.overall_percentage
+                          {s.evaluation.overall_percentage != null
                             ? `${s.evaluation.overall_percentage}%`
                             : s.evaluation.overall_score}
                         </span>
@@ -598,10 +607,11 @@ function SupervisorEvaluateStudent() {
                       type="button"
                       className={styles.btn}
                       onClick={() => openEvaluation(s)}
-                      disabled={(s.attendance_days || 0) < s.required_attendance_days}
-                      title={(s.attendance_days || 0) < s.required_attendance_days ? 'Student must complete the required workdays before evaluation.' : `Evaluate ${s.first_name} ${s.last_name}`}
+                      disabled={!canEvaluate(s) && !s.evaluation}
+                      aria-haspopup="dialog"
+                      title={!canEvaluate(s) && !s.evaluation ? 'Student must complete the required workdays before evaluation.' : `Open evaluation for ${s.first_name} ${s.last_name}`}
                     >
-                      {s.evaluation ? 'Re-evaluate' : 'Evaluate'}
+                      {s.evaluation ? (canEvaluate(s) ? 'Re-evaluate' : 'View evaluation') : 'Evaluate'}
                     </button>
                   </div>
                 ))}
@@ -609,7 +619,7 @@ function SupervisorEvaluateStudent() {
             )}
           </div>
         </section>
-      ) : null}
+      )}
 
       {evalModalOpen && activeStudent ? (
         <div
@@ -632,13 +642,13 @@ function SupervisorEvaluateStudent() {
                   {activeStudent.first_name} {activeStudent.last_name}
                 </h2>
                 <p>
-                  {activeStudent.student_number} · {activeStudent.batch_label} · Grade{' '}
+                  {activeStudent.student_number} · {institutionName(activeStudent)} · Grade{' '}
                   {activeStudent.grade_level || '-'} · {activeStudent.track_strand || '-'} ·{' '}
                   {activeStudent.email}
                 </p>
-                {(activeStudent.attendance_days || 0) < activeStudent.required_attendance_days && (
+                {!canEvaluate(activeStudent) && (
                   <p style={{ color: '#b45309', marginTop: 6, fontSize: 13 }}>
-                    This student has completed {activeStudent.attendance_days || 0} of {activeStudent.required_attendance_days} required workdays.
+                    Attendance days: {attendanceLabel(activeStudent)}
                   </p>
                 )}
               </div>
@@ -646,6 +656,7 @@ function SupervisorEvaluateStudent() {
                 type="button"
                 className={styles.modalClose}
                 aria-label="Close"
+                disabled={saving}
                 onClick={closeEvaluation}
               >
                 <X size={16} />
@@ -653,6 +664,9 @@ function SupervisorEvaluateStudent() {
             </div>
 
             <div className={styles.modalBody}>
+              {evaluationLoading && <p role="status">Loading evaluation…</p>}
+              {evaluationError && <p role="alert">{evaluationError}</p>}
+              {!evaluationLoading && !evaluationError && <>
               {existingEvaluation && (
                 <div className={styles.existingBadge}>
                   <CheckCircle2 size={15} />
@@ -716,7 +730,7 @@ function SupervisorEvaluateStudent() {
                     <div className={styles.categoryScore}>
                       <span>Category Score</span>
                       <strong>
-                        {catRatings.length === (cat.indicators || []).length
+                        {(cat.indicators || []).every((_, index) => isRated(catRatings[index]))
                           ? `${
                               computedScores.category_scores.find((cs) => cs.category_id === cat.id)
                                 ?.category_percentage || 0
@@ -732,7 +746,7 @@ function SupervisorEvaluateStudent() {
                 <div className={styles.summaryItem}>
                   <span className={styles.summaryLabel}>Overall Score</span>
                   <span className={styles.summaryValue}>
-                    {computedScores.overall_percentage
+                    {isComplete
                       ? `${computedScores.overall_percentage}%`
                       : '-'}
                   </span>
@@ -755,15 +769,16 @@ function SupervisorEvaluateStudent() {
               </label>
 
               <div className={styles.actions}>
-                <button type="submit" className={styles.btn} disabled={saving || !isComplete}>
+                <button type="submit" className={styles.btn} disabled={saving || !isComplete || !canEvaluate(activeStudent)}>
                   <Save size={15} />
                   {saving ? 'Saving...' : existingEvaluation ? 'Update Evaluation' : 'Submit Evaluation'}
                 </button>
-                <button type="button" className={styles.btnSecondary} onClick={closeEvaluation}>
+                <button type="button" className={styles.btnSecondary} onClick={closeEvaluation} disabled={saving}>
                   Cancel
                 </button>
               </div>
             </form>
+            </>}
             </div>
           </div>
         </div>
@@ -774,7 +789,7 @@ function SupervisorEvaluateStudent() {
           className={styles.modalOverlay}
           role="presentation"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setCriteriaModalOpen(false);
+            if (!criteriaSaving && e.target === e.currentTarget) setCriteriaModalOpen(false);
           }}
         >
           <div
@@ -786,12 +801,13 @@ function SupervisorEvaluateStudent() {
             <div className={styles.cardHeader}>
               <div>
                 <h2 id="criteria-modal-title">Grading Criteria</h2>
-                <p>Categories and indicators used for every evaluation.</p>
+                <p>Shared categories and indicators for work immersion evaluations.</p>
               </div>
               <button
                 type="button"
                 className={styles.modalClose}
                 aria-label="Close"
+                disabled={criteriaSaving}
                 onClick={() => setCriteriaModalOpen(false)}
               >
                 <X size={16} />
@@ -815,10 +831,10 @@ function SupervisorEvaluateStudent() {
                 </div>
               </div>
 
-              {criteria.length === 0 ? (
+              {draftCriteria.length === 0 ? (
                 <div className={styles.empty}>No criteria yet. Add a category to begin.</div>
               ) : (
-                criteria.map((cat) => (
+                draftCriteria.map((cat) => (
                   <div key={cat.id} className={styles.categoryCard}>
                     <div className={styles.criteriaCatHeader}>
                       <input
@@ -887,6 +903,7 @@ function SupervisorEvaluateStudent() {
                   type="button"
                   className={styles.btnSecondary}
                   onClick={() => setCriteriaModalOpen(false)}
+                  disabled={criteriaSaving}
                 >
                   Close
                 </button>

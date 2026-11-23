@@ -1,9 +1,20 @@
 const pool = require('../../db');
-const { createNotification, getStudentUserId } = require('../../services/notification.service');
-const { getDeploymentAttendance, requiredAttendanceDays } = require('../../services/deploymentAttendance');
+const { createHash } = require('node:crypto');
+const { createNotification } = require('../../services/notification.service');
+const { getDeploymentAttendance, listDeploymentAttendance } = require('../../services/deploymentAttendance');
 const { assertBatchAccess } = require('../../utils/batchAccess');
 
-async function ensureEvaluationTables() {
+let schemaReady;
+
+function ensureEvaluationTables() {
+  schemaReady ??= initializeEvaluationTables().catch((error) => {
+    schemaReady = null;
+    throw error;
+  });
+  return schemaReady;
+}
+
+async function initializeEvaluationTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS evaluation_criteria (
       id SERIAL PRIMARY KEY,
@@ -32,22 +43,13 @@ async function ensureEvaluationTables() {
     CREATE INDEX IF NOT EXISTS idx_student_evaluations_batch ON student_evaluations(batch_id);
 
     ALTER TABLE student_evaluations ADD COLUMN IF NOT EXISTS overall_percentage NUMERIC(5,2);
+    ALTER TABLE evaluation_criteria ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+    DROP INDEX IF EXISTS idx_evaluation_criteria_category_name;
   `);
 
   await pool.query(`
-    DELETE FROM evaluation_criteria a
-    USING evaluation_criteria b
-    WHERE a.id > b.id
-      AND a.category_name = b.category_name;
-  `);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_evaluation_criteria_category_name
-      ON evaluation_criteria(category_name);
-  `);
-
-  await pool.query(`
-    INSERT INTO evaluation_criteria (id, category_name, indicators, sort_order) VALUES
+    INSERT INTO evaluation_criteria (id, category_name, indicators, sort_order)
+    SELECT seed.id, seed.category_name, seed.indicators::jsonb, seed.sort_order FROM (VALUES
       (1, 'Teamwork', '["Works cooperatively with team members","Contributes to team goals","Shares information and resources","Respects team members'' ideas and opinions","Resolves conflicts constructively"]', 1),
       (2, 'Communication', '["Expresses ideas clearly","Listens actively to others","Follows instructions accurately","Asks for clarification when needed"]', 2),
       (3, 'Attendance and Punctuality', '["Arrives on time for work","Attends all scheduled activities","Notifies supervisor of absences promptly"]', 3),
@@ -57,29 +59,31 @@ async function ensureEvaluationTables() {
       (7, 'Dependability/Reliability', '["Completes assigned tasks consistently","Follows through on commitments","Can be trusted with confidential information","Takes responsibility for actions"]', 7),
       (8, 'Attitude', '["Demonstrates positive outlook","Shows enthusiasm for work","Accepts constructive feedback","Treats others with respect","Maintains professional demeanor"]', 8),
       (9, 'Professionalism', '["Maintains appropriate appearance","Uses professional language","Adheres to company policies","Demonstrates ethical behavior"]', 9)
-    ON CONFLICT (id) DO UPDATE SET
-      category_name = EXCLUDED.category_name,
-      indicators = EXCLUDED.indicators,
-      sort_order = EXCLUDED.sort_order,
-      updated_at = CURRENT_TIMESTAMP;
+    ) AS seed(id, category_name, indicators, sort_order)
+    WHERE NOT EXISTS (SELECT 1 FROM evaluation_criteria)
+    ON CONFLICT (id) DO NOTHING;
   `);
 }
+
+async function readCriteria(db, { includeInactive = false } = {}) {
+  const { rows } = await db.query(`SELECT id, category_name, indicators, sort_order
+    FROM evaluation_criteria ${includeInactive ? '' : 'WHERE is_active'}
+    ORDER BY sort_order, id`);
+  return rows.map((row) => ({ ...row, indicators: Array.isArray(row.indicators) ? row.indicators : [] }));
+}
+
+function criteriaVersion(criteria) {
+  return createHash('sha256').update(JSON.stringify(criteria)).digest('hex');
+}
+
+const validId = (value) => ['number', 'string'].includes(typeof value) &&
+  Number.isInteger(Number(value)) && Number(value) > 0 && Number(value) <= 2147483647;
 
 async function getCriteria(req, res) {
   try {
     await ensureEvaluationTables();
-    const result = await pool.query(
-      `SELECT id, category_name, indicators, sort_order
-       FROM evaluation_criteria
-       ORDER BY sort_order ASC, id ASC`
-    );
-    const criteria = result.rows.map((row) => ({
-      id: row.id,
-      category_name: row.category_name,
-      indicators: Array.isArray(row.indicators) ? row.indicators : [],
-      sort_order: row.sort_order,
-    }));
-    res.json({ criteria });
+    const criteria = await readCriteria(pool, { includeInactive: req.user.role === 'student' });
+    res.json({ criteria, criteria_version: criteriaVersion(criteria) });
   } catch (err) {
     console.error('getCriteria error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -87,41 +91,64 @@ async function getCriteria(req, res) {
 }
 
 async function saveCriteria(req, res) {
-  const client = await pool.connect();
+  let client;
+  let inTransaction = false;
   try {
-    await ensureEvaluationTables();
     const { criteria } = req.body || {};
-    if (!Array.isArray(criteria) || criteria.length === 0) {
-      return res.status(400).json({ error: 'Invalid criteria payload.' });
+    if (!Array.isArray(criteria) || !criteria.length || criteria.some((item) =>
+      typeof item?.category_name !== 'string' || !item.category_name.trim() || item.category_name.trim().length > 255 ||
+      !Array.isArray(item.indicators) || !item.indicators.length ||
+      item.indicators.some((indicator) => typeof indicator !== 'string' || !indicator.trim()))) {
+      return res.status(400).json({ error: 'Enter a name and at least one indicator for every category.' });
+    }
+    const draft = criteria.map((item) => ({
+      id: validId(item.id) ? Number(item.id) : null,
+      category_name: item.category_name.trim(),
+      indicators: item.indicators.map((indicator) => indicator.trim()),
+    }));
+    const ids = draft.flatMap(({ id }) => id ? [id] : []);
+    if (new Set(ids).size !== ids.length ||
+        new Set(draft.map(({ category_name }) => category_name.toLowerCase())).size !== draft.length) {
+      return res.status(400).json({ error: 'Each category must have a unique name.' });
     }
 
+    await ensureEvaluationTables();
+    client = await pool.connect();
     await client.query('BEGIN');
-
-    for (const c of criteria) {
-      if (!c.category_name || !Array.isArray(c.indicators)) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Each criteria item must include category_name and indicators.' });
+    inTransaction = true;
+    await client.query('LOCK TABLE evaluation_criteria IN SHARE ROW EXCLUSIVE MODE');
+    const current = await readCriteria(client);
+    if (req.body.criteriaVersion && req.body.criteriaVersion !== criteriaVersion(current)) {
+      return res.status(409).json({ error: 'The grading criteria changed. Reload them before saving.' });
+    }
+    await client.query('UPDATE evaluation_criteria SET is_active = false WHERE is_active AND NOT (id = ANY($1::int[]))', [ids]);
+    if (draft.some(({ id }) => id === null)) {
+      await client.query(`SELECT setval(pg_get_serial_sequence('evaluation_criteria', 'id'),
+        GREATEST(COALESCE(MAX(id), 1), nextval(pg_get_serial_sequence('evaluation_criteria', 'id'))))
+        FROM evaluation_criteria`);
+    }
+    for (const [index, category] of draft.entries()) {
+      const values = [category.category_name, JSON.stringify(category.indicators), index + 1];
+      if (category.id) {
+        const updated = await client.query(`UPDATE evaluation_criteria SET category_name = $1, indicators = $2::jsonb,
+          sort_order = $3, is_active = true, updated_at = CURRENT_TIMESTAMP WHERE id = $4`, [...values, category.id]);
+        if (!updated.rowCount) return res.status(409).json({ error: 'A grading category changed. Reload before saving.' });
+      } else {
+        await client.query(`INSERT INTO evaluation_criteria (category_name, indicators, sort_order)
+          VALUES ($1, $2::jsonb, $3)`, values);
       }
-      await client.query(
-        `INSERT INTO evaluation_criteria (id, category_name, indicators, sort_order, updated_at)
-         VALUES ($1, $2, $3::jsonb, $4, CURRENT_TIMESTAMP)
-         ON CONFLICT (id) DO UPDATE SET
-           category_name = EXCLUDED.category_name,
-           indicators = EXCLUDED.indicators,
-           sort_order = EXCLUDED.sort_order,
-           updated_at = CURRENT_TIMESTAMP`,
-        [c.id, c.category_name, JSON.stringify(c.indicators), c.sort_order || 0]
-      );
     }
 
+    const saved = await readCriteria(client);
     await client.query('COMMIT');
-    res.json({ message: 'Criteria saved.' });
+    inTransaction = false;
+    res.json({ message: 'Criteria saved.', criteria: saved, criteria_version: criteriaVersion(saved) });
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
     console.error('saveCriteria error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    client.release();
+    if (inTransaction) await client.query('ROLLBACK').catch(() => {});
+    client?.release();
   }
 }
 
@@ -154,6 +181,7 @@ function computeScores(criteria, categoryScores) {
     return {
       category_id: cat.id,
       category_name: cat.category_name,
+      indicator_labels: indicators,
       ratings,
       category_score: counted > 0 ? Math.round(categoryScore * 100) / 100 : 0,
       category_percentage: counted > 0 ? Math.round((categoryScore / 5) * 10000) / 100 : 0,
@@ -168,29 +196,47 @@ function computeScores(criteria, categoryScores) {
 }
 
 async function submitEvaluation(req, res) {
-  const client = await pool.connect();
+  let client;
+  let inTransaction = false;
   try {
-    await ensureEvaluationTables();
-    const { studentId, batchId, categoryScores, comments } = req.body || {};
-    if (!studentId || !categoryScores) {
-      return res.status(400).json({ error: 'studentId and categoryScores are required.' });
+    const { studentId, batchId, partnerInstitutionId, categoryScores, comments } = req.body || {};
+    if (!validId(studentId) || (batchId != null && !validId(batchId)) ||
+        (partnerInstitutionId != null && !validId(partnerInstitutionId)) ||
+        !categoryScores || typeof categoryScores !== 'object' || Array.isArray(categoryScores) ||
+        (comments != null && typeof comments !== 'string')) {
+      return res.status(400).json({ error: 'Choose a student and provide valid evaluation ratings.' });
     }
-
-    const placement = await getDeploymentAttendance(client, studentId, req.user.id, batchId || null);
+    await ensureEvaluationTables();
+    client = await pool.connect();
+    await client.query('BEGIN');
+    inTransaction = true;
+    await client.query('SELECT id FROM students WHERE id = $1 FOR UPDATE', [studentId]);
+    const placement = await getDeploymentAttendance(client, studentId, req.user.id, batchId ?? null, partnerInstitutionId ?? null);
     if (!placement) return res.status(403).json({ error: 'This student is not assigned to your deployment.' });
+    if (!Number.isFinite(placement.required_attendance_days)) {
+      return res.status(409).json({ error: 'An agreed attendance schedule is required before evaluation.' });
+    }
     if (placement.attendance_days < placement.required_attendance_days) {
       return res.status(400).json({ error: `Complete ${placement.required_attendance_days} agreed workdays before evaluation. Recorded days: ${placement.attendance_days}.` });
     }
 
-    const criteriaResult = await client.query(
-      'SELECT id, category_name, indicators FROM evaluation_criteria ORDER BY sort_order ASC, id ASC'
-    );
-    const criteria = criteriaResult.rows;
+    const criteria = await readCriteria(client);
+    if (req.body.criteriaVersion && req.body.criteriaVersion !== criteriaVersion(criteria)) {
+      return res.status(409).json({ error: 'The grading criteria changed. Reload them before submitting.' });
+    }
+    const validRating = (rating) => rating === 'N/A' ||
+      (['number', 'string'].includes(typeof rating) && /^[1-5]$/.test(String(rating)));
+    if (!criteria.length || Object.keys(categoryScores).length !== criteria.length || criteria.some((category) => {
+      const ratings = categoryScores[category.id]?.indicators;
+      return !Array.isArray(ratings) || ratings.length !== category.indicators.length || !ratings.every(validRating);
+    })) {
+      return res.status(400).json({ error: 'Rate every indicator using 1–5 stars or N/A.' });
+    }
 
     const { category_scores, overall_score, overall_percentage } = computeScores(criteria, categoryScores);
 
     const existing = await client.query(
-      'SELECT id FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 AND batch_id = $3 LIMIT 1',
+      'SELECT id FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 AND batch_id = $3 ORDER BY id DESC LIMIT 1',
       [studentId, req.user.id, placement.batch_id]
     );
 
@@ -212,9 +258,10 @@ async function submitEvaluation(req, res) {
       );
     }
 
-    const studentUserId = await getStudentUserId(studentId);
+    await client.query('COMMIT');
+    inTransaction = false;
     void createNotification({
-      userId: studentUserId,
+      userId: placement.user_id,
       title: 'Evaluation updated',
       message: 'Your work immersion evaluation is now available to review.',
       type: 'evaluation',
@@ -232,7 +279,8 @@ async function submitEvaluation(req, res) {
     console.error('submitEvaluation error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    client.release();
+    if (inTransaction) await client.query('ROLLBACK').catch(() => {});
+    client?.release();
   }
 }
 
@@ -241,6 +289,9 @@ async function getStudentEvaluation(req, res) {
     await ensureEvaluationTables();
     const { studentId } = req.params;
     const { batchId } = req.query;
+    if (!validId(studentId) || (batchId != null && !validId(batchId))) {
+      return res.status(400).json({ error: 'Invalid deployment or student.' });
+    }
     if (batchId && req.user.role !== 'admin') {
       const gate = await assertBatchAccess(req.user, batchId);
       if (!gate.ok) return res.status(gate.denied.status).json({ error: gate.denied.error });
@@ -254,7 +305,7 @@ async function getStudentEvaluation(req, res) {
        JOIN students s ON s.id = se.student_id
        WHERE se.student_id = $1 AND ($2::int IS NULL OR se.batch_id = $2)
          AND ($3::int IS NULL OR se.evaluator_id = $3)
-       ORDER BY se.created_at DESC
+       ORDER BY se.created_at DESC, se.id DESC
        LIMIT 1`,
       [studentId, batchId || null, req.user.role === 'supervisor' ? req.user.id : null]
     );
@@ -296,46 +347,18 @@ async function listMyStudents(req, res) {
   try {
     await ensureEvaluationTables();
     const supervisorUserId = req.user.id;
-
-    const batchesResult = await pool.query(
-      `SELECT tb.id AS request_id, tb.batch_label, dr.confirmed_schedule
-       FROM teacher_batches tb
-       JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
-       WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL`, [supervisorUserId]);
-
-    const enriched = [];
-    for (const b of batchesResult.rows) {
-      const { rows: students } = await pool.query(
-        `SELECT s.id AS student_id, s.user_id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email
-         FROM teacher_batch_students tbs
-         JOIN students s ON s.id = tbs.student_id
-         JOIN users u ON u.id = s.user_id
-         WHERE tbs.teacher_batch_id = $1 AND tbs.deployment_ended_on IS NULL
-         ORDER BY s.last_name, s.first_name`, [b.request_id]);
-      for (const s of students) {
-        const evResult = await pool.query(
-          'SELECT id, overall_score, overall_percentage, created_at FROM student_evaluations WHERE student_id = $1 AND evaluator_id = $2 AND batch_id = $3 LIMIT 1',
-          [s.student_id, supervisorUserId, b.request_id]
-        );
-        const attendanceResult = await pool.query(
-          `SELECT COUNT(DISTINCT date)::int AS days
-           FROM student_attendance
-           WHERE student_id = $1 AND teacher_batch_id = $2 AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL`,
-          [s.student_id, b.request_id]
-        );
-        enriched.push({
-          ...s,
-          batch_id: b.request_id,
-          batch_label: b.batch_label,
-          attendance_days: Number(attendanceResult.rows[0]?.days || 0),
-          required_attendance_days: requiredAttendanceDays(b.confirmed_schedule),
-          evaluation: evResult.rows[0] || null,
-        });
-      }
-    }
-
-    enriched.sort((a, b) => `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`));
-    res.json({ students: enriched });
+    const placements = await listDeploymentAttendance(pool, { supervisorId: supervisorUserId });
+    const batchIds = [...new Set(placements.map(({ batch_id }) => batch_id))];
+    const { rows } = await pool.query(`SELECT DISTINCT ON (batch_id, student_id)
+      id, batch_id, student_id, overall_score, overall_percentage, created_at, updated_at
+      FROM student_evaluations WHERE evaluator_id = $1 AND batch_id = ANY($2::int[])
+      ORDER BY batch_id, student_id, id DESC`, [supervisorUserId, batchIds]);
+    const evaluations = new Map(rows.map((row) => [`${row.batch_id}:${row.student_id}`, row]));
+    const students = placements.map(({ confirmed_schedule, ...student }) => ({
+      ...student, evaluation: evaluations.get(`${student.batch_id}:${student.student_id}`) || null,
+    })).sort((a, b) => a.partner_institution_name.localeCompare(b.partner_institution_name) ||
+      a.last_name.localeCompare(b.last_name) || a.first_name.localeCompare(b.first_name));
+    res.json({ students });
   } catch (err) {
     console.error('listMyStudents error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -360,11 +383,15 @@ async function getMyEvaluation(req, res) {
       `SELECT se.*, u.email AS evaluator_email,
               sv.first_name AS evaluator_first_name,
               sv.last_name AS evaluator_last_name,
-              s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand
+              s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
+              pi.id AS partner_institution_id, pi.name AS partner_institution_name
        FROM student_evaluations se
        JOIN users u ON u.id = se.evaluator_id
        LEFT JOIN supervisors sv ON sv.user_id = se.evaluator_id
        JOIN students s ON s.id = se.student_id
+       LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = se.batch_id
+         AND dr.workflow_version = 2 AND dr.supervisor_id = se.evaluator_id
+       LEFT JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
        WHERE se.student_id = $1
          AND (se.overall_score IS NOT NULL OR se.overall_percentage IS NOT NULL)
          AND (se.batch_id IS NULL OR EXISTS (
@@ -401,20 +428,20 @@ async function getTeacherBatchEvaluations(req, res) {
 
     // Evaluation criteria (category names + their indicators) so the teacher
     // dashboard can show a per-criterion breakdown for each student.
-    const criteriaResult = await pool.query(
-      'SELECT id, category_name, indicators, sort_order FROM evaluation_criteria ORDER BY sort_order ASC, id ASC'
-    );
+    const criteria = await readCriteria(pool, { includeInactive: true });
 
     const batchesResult = await pool.query(
       `SELECT tb.id AS batch_id, tb.batch_label, tb.supervisor_id,
+              pi.id AS partner_institution_id, pi.name AS partner_institution_name,
               sv.first_name AS supervisor_first_name, sv.last_name AS supervisor_last_name
        FROM teacher_batches tb
        JOIN supervisors sv ON sv.user_id = tb.supervisor_id
        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+       JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
        WHERE tb.archived_at IS NULL AND (tb.teacher_id = $1 OR EXISTS (
          SELECT 1 FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id AND link.teacher_id = $1
        ))
-       ORDER BY tb.batch_label ASC`,
+       ORDER BY pi.name, tb.id DESC`,
       [teacherId]
     );
 
@@ -438,7 +465,7 @@ async function getTeacherBatchEvaluations(req, res) {
              FROM student_evaluations se
              JOIN users u ON u.id = se.evaluator_id
              WHERE se.student_id = $1 AND (se.batch_id = $2 OR se.batch_id IS NULL)
-             ORDER BY se.created_at DESC
+             ORDER BY (se.batch_id IS NOT NULL) DESC, se.created_at DESC, se.id DESC
              LIMIT 1`,
             [s.student_id, batch.batch_id]
           );
@@ -452,13 +479,15 @@ async function getTeacherBatchEvaluations(req, res) {
       grouped.push({
         batch_id: batch.batch_id,
         batch_label: batch.batch_label,
+        partner_institution_id: batch.partner_institution_id,
+        partner_institution_name: batch.partner_institution_name,
         supervisor_id: batch.supervisor_id,
         supervisor_name: `${batch.supervisor_first_name || ''} ${batch.supervisor_last_name || ''}`.trim() || 'Supervisor',
         students,
       });
     }
 
-    res.json({ groups: grouped, criteria: criteriaResult.rows });
+    res.json({ groups: grouped, criteria });
   } catch (err) {
     console.error('getTeacherBatchEvaluations error:', err);
     res.status(500).json({ error: 'Server error.' });

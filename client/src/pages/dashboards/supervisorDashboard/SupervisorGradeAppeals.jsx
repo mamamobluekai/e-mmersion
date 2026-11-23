@@ -20,6 +20,7 @@ function formatDateTime(value) {
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone: 'Asia/Manila',
   });
 }
 
@@ -70,7 +71,7 @@ function SupervisorGradeAppeals() {
   useEffect(() => {
     if (!openAppealId) return undefined;
     const onKey = (e) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || responding) return;
       if (respondingAppeal) setRespondingAppeal(null);
       else setOpenAppealId(null);
     };
@@ -81,7 +82,7 @@ function SupervisorGradeAppeals() {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [openAppealId, respondingAppeal]);
+  }, [openAppealId, respondingAppeal, responding]);
 
   const openAppeal = appeals.find((a) => a.id === openAppealId) || null;
 
@@ -97,7 +98,7 @@ function SupervisorGradeAppeals() {
     setResponseError('');
     setResponseMessage('');
     try {
-      await respondToAppeal(respondingAppeal.id, {
+      const { appeal } = await respondToAppeal(respondingAppeal.id, {
         status: responseStatus,
         response: responseText.trim(),
       });
@@ -106,7 +107,7 @@ function SupervisorGradeAppeals() {
       setAppeals((prev) =>
         prev.map((a) =>
           a.id === respondingAppeal.id
-            ? { ...a, status: responseStatus, supervisor_response: responseText.trim(), reviewed_at: new Date().toISOString() }
+            ? { ...a, ...appeal }
             : a
         )
       );
@@ -146,6 +147,7 @@ function SupervisorGradeAppeals() {
         </div>
 
         {error && <div className={styles.error}>{error}</div>}
+        {responseMessage && <div className={styles.formSuccess} role="status">{responseMessage}</div>}
 
       {/* Stats */}
       <div className={styles.statsGrid}>
@@ -246,8 +248,7 @@ function SupervisorGradeAppeals() {
                   {openAppeal.first_name} {openAppeal.last_name}
                 </h2>
                 <p>
-                  {openAppeal.student_number}
-                  {[openAppeal.grade_level, openAppeal.track_strand].filter(Boolean).join(' · ')}
+                  {[openAppeal.student_number, openAppeal.grade_level, openAppeal.track_strand].filter(Boolean).join(' · ')}
                 </p>
               </div>
               <button
@@ -272,11 +273,15 @@ function SupervisorGradeAppeals() {
 
               <dl className={styles.drawerMeta}>
                 <div className={styles.drawerMetaRow}>
-                  <dt>Original Grade</dt>
+                  <dt>Partner Institution</dt>
+                  <dd>{openAppeal.partner_institution_name}</dd>
+                </div>
+                <div className={styles.drawerMetaRow}>
+                  <dt>Current Overall Grade</dt>
                   <dd>
-                    {openAppeal.overall_percentage
+                    {openAppeal.overall_percentage != null
                       ? `${openAppeal.overall_percentage}%`
-                      : openAppeal.overall_score || 'N/A'}
+                      : openAppeal.overall_score ?? 'N/A'}
                   </dd>
                 </div>
                 <div className={styles.drawerMetaRow}>
@@ -324,16 +329,16 @@ function SupervisorGradeAppeals() {
 
       {/* Response Modal */}
       {respondingAppeal && (
-        <div className={styles.modalOverlay} onClick={() => setRespondingAppeal(null)}>
+        <div className={styles.modalOverlay} onClick={() => { if (!responding) setRespondingAppeal(null); }}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
               <h3>Respond to Appeal</h3>
-              <button type="button" className={styles.closeButton} onClick={() => setRespondingAppeal(null)}>×</button>
+              <button type="button" className={styles.closeButton} aria-label="Close" disabled={responding} onClick={() => setRespondingAppeal(null)}>×</button>
             </div>
             <div className={styles.modalSubtitle}>
               <strong>{respondingAppeal.first_name} {respondingAppeal.last_name}</strong> ({respondingAppeal.student_number})
               · {respondingAppeal.category_name || 'Overall Grade'}
-              · Submitted {new Date(respondingAppeal.created_at).toLocaleDateString()}
+              · {respondingAppeal.partner_institution_name} · Submitted {formatDateTime(respondingAppeal.created_at)}
             </div>
             <div className={styles.modalReason}>
               <strong>Student's Reason:</strong>
@@ -341,7 +346,7 @@ function SupervisorGradeAppeals() {
             </div>
             <div className={styles.modalEvaluation}>
               <strong>Original Grade:</strong>
-              <span>{respondingAppeal.overall_percentage ? `${respondingAppeal.overall_percentage}%` : respondingAppeal.overall_score || 'N/A'}</span>
+              <span>{respondingAppeal.overall_percentage != null ? `${respondingAppeal.overall_percentage}%` : respondingAppeal.overall_score ?? 'N/A'}</span>
             </div>
             <form onSubmit={handleRespond}>
               <div className={styles.modalStatusSelect}>
@@ -361,6 +366,7 @@ function SupervisorGradeAppeals() {
               <label className={styles.modalTextareaLabel}>
                 Response to Student (Required)
                 <textarea
+                  maxLength={5000}
                   className={styles.modalTextarea}
                   value={responseText}
                   onChange={(e) => setResponseText(e.target.value)}
@@ -370,12 +376,12 @@ function SupervisorGradeAppeals() {
                 />
               </label>
               {responseError && <div className={styles.formError}>{responseError}</div>}
-              {responseMessage && <div className={styles.formSuccess}>{responseMessage}</div>}
               <div className={styles.modalActions}>
                 <button
                   type="button"
                   className={styles.btnSecondary}
                   onClick={() => setRespondingAppeal(null)}
+                  disabled={responding}
                 >
                   Cancel
                 </button>
@@ -434,8 +440,7 @@ function AppealCard({ appeal, onOpen }) {
               {appeal.first_name} {appeal.last_name}
             </span>
             <span className={styles.studentMeta}>
-              {appeal.student_number} · {appeal.grade_level || ''} ·{' '}
-              {appeal.track_strand || ''}
+              {[appeal.student_number, appeal.grade_level, appeal.track_strand, appeal.partner_institution_name].filter(Boolean).join(' · ')}
             </span>
           </div>
           <div className={styles.appealCategory}>

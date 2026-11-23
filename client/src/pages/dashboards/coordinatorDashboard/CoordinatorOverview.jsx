@@ -17,7 +17,7 @@ import styles from './CoordinatorOverview.module.css';
 const ROUTES = {
   students: '/dashboard/coordinator/students',
   requirements: '/dashboard/coordinator/requirements',
-  batches: '/dashboard/coordinator/deployment',
+  batches: '/dashboard/coordinator/batches',
   supervisors: '/dashboard/coordinator/supervisors',
 };
 

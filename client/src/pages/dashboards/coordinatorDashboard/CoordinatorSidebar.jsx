@@ -11,6 +11,7 @@ import {
   Send,
   Info,
   List,
+  Layers,
 } from 'lucide-react';
 
 const links = [
@@ -48,6 +49,11 @@ const links = [
     to: '/dashboard/coordinator/deployment',
     label: 'Deployment Requests',
     icon: Send,
+  },
+  {
+    to: '/dashboard/coordinator/batches',
+    label: 'Batches',
+    icon: Layers,
   },
   {
     to: '/dashboard/coordinator/announcements',

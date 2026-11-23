@@ -30,6 +30,7 @@ const {
   getTeacherBatchStudents,
   getMyTeacherPartnerInstitutions,
   getPartnerInstitutionStudents,
+  getTeacherInstitutionOverview,
   listPartnerInstitutions,
   createPartnerInstitution,
   updatePartnerInstitution,
@@ -115,6 +116,7 @@ router.delete('/document-types/:id/permanent', authorize('coordinator', 'admin')
 
 router.get('/teacher-batches/me', authorize('teacher'), getMyTeacherBatches);
 router.get('/teacher-partner-institutions/me', authorize('teacher'), getMyTeacherPartnerInstitutions);
+router.get('/teacher-partner-institutions/:institutionId/overview', authorize('teacher'), getTeacherInstitutionOverview);
 router.get('/partner-institutions/:institutionId/students', authorize('teacher', 'coordinator', 'admin'), getPartnerInstitutionStudents);
 router.get('/teacher-batches/:batchId/students', authorize('teacher', 'coordinator', 'admin'), getTeacherBatchStudents);
 router.get('/teacher/reports-concerns', authorize('teacher', 'coordinator', 'admin'), getTeacherReportsConcerns);
@@ -135,12 +137,18 @@ router.get('/partner-deployments/options', schoolRoles, partnerDeployment.option
 router.get('/partner-deployments/partners', schoolRoles, partnerDeployment.partners);
 router.get('/partner-deployments/partners/:partnerId', schoolRoles, partnerDeployment.partnerDetail);
 router.get('/partner-deployments/proposal-candidates', coordinatorOnly, partnerDeployment.proposalCandidates);
+router.get('/partner-deployments/student-approvals', coordinatorOnly, partnerDeployment.studentAssignments);
+router.get('/partner-deployments/batches', coordinatorOnly, partnerDeployment.listDeploymentBatches);
+router.post('/partner-deployments/batches', coordinatorOnly, partnerDeployment.createDeploymentBatch);
+router.get('/partner-deployments/batches/:batchId/roster', coordinatorOnly, partnerDeployment.deploymentBatchRoster);
 router.get('/partner-deployments', schoolRoles, partnerDeployment.list);
 router.post('/partner-deployments', coordinatorOnly, partnerDeployment.create);
 router.get('/partner-deployments/:id', schoolRoles, partnerDeployment.detail);
 router.put('/partner-deployments/:id/resubmit', coordinatorOnly, partnerDeployment.resubmit);
 router.put('/partner-deployments/:id/counterproposal-decision', coordinatorOnly, partnerDeployment.decideCounterproposal);
-router.put('/partner-deployments/:id/finalize', coordinatorOnly, partnerDeployment.finalize);
+router.put('/partner-deployments/:id/finalize', coordinatorOnly, partnerDeployment.submitStudentAssignments);
+router.get('/partner-deployments/:id/assignment-candidates', coordinatorOnly, partnerDeployment.assignmentCandidates);
+router.put('/partner-deployments/:id/submit-students', coordinatorOnly, partnerDeployment.submitStudentAssignments);
 router.put('/partner-deployments/:id/amendment', coordinatorOnly, partnerDeployment.proposeAmendment);
 router.put('/partner-deployments/:id/amendment-decision', coordinatorOnly, partnerDeployment.decideAmendment);
 router.put('/partner-deployments/:id/cancel', coordinatorOnly, partnerDeployment.cancel);

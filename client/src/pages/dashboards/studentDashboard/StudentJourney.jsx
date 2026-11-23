@@ -12,7 +12,7 @@ const STAGES = [
   {
     key: 'immersion', path: 'immersion-proper', title: 'Immersion Proper', icon: Route,
     description: 'Check your placement and complete the attendance and documentation missions for each workday.',
-    locked: 'Unlocks after your coordinator approves all requirements.',
+    locked: 'Unlocks after your requirements are approved and your coordinator deploys your batch.',
   },
   {
     key: 'post', path: 'post-immersion', title: 'Post-Immersion', icon: MapPinned,
@@ -84,7 +84,9 @@ export function Roadmap({ journey }) {
                     {status === 'locked'
                       ? stage.key === 'post' && journey.awaitingEvaluation
                         ? 'Waiting for the supervisor’s evaluation.'
-                        : stage.locked
+                        : stage.key === 'immersion' && journey.requirements.complete
+                          ? 'Waiting for your coordinator to deploy your batch.'
+                          : stage.locked
                       : total > 0
                         ? `${completed} of ${total} missions completed`
                         : 'Waiting for your schedule.'}

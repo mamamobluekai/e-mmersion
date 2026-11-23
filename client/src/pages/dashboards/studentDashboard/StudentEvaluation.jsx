@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getMyEvaluation, getEvaluationCriteria } from '../../../api/evaluationApi';
 import { getMyAppeals, submitAppeal } from '../../../api/appealApi';
 import { Star } from 'lucide-react';
+import { evaluationCategories } from '../../../utils/evaluationCategories';
 import styles from './StudentEvaluation.module.css';
 
 const RATING_SCALE = [
@@ -48,6 +49,7 @@ function StudentEvaluation() {
   const [appealSubmitting, setAppealSubmitting] = useState(false);
   const [appealMessage, setAppealMessage] = useState('');
   const [appealError, setAppealError] = useState('');
+  const [appealHistoryError, setAppealHistoryError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -60,18 +62,6 @@ function StudentEvaluation() {
           getEvaluationCriteria(),
         ]);
         if (!cancelled) {
-          // Handle the evaluation response
-          if (evalData.evaluation) {
-            // Convert category_scores array to object keyed by category_id if needed
-            const ev = evalData.evaluation;
-            if (Array.isArray(ev.category_scores)) {
-              const scoresByCategory = {};
-              ev.category_scores.forEach(cat => {
-                scoresByCategory[String(cat.category_id)] = cat;
-              });
-              ev.category_scores = scoresByCategory;
-            }
-          }
           setEvaluation(evalData.evaluation);
           setCriteria(criteriaData.criteria || []);
         }
@@ -91,17 +81,27 @@ function StudentEvaluation() {
       .then((data) => {
         if (!cancelled) setAppeals(data.appeals || []);
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (!cancelled) setAppealHistoryError(err.message || 'Could not load your appeals.');
+      });
     return () => { cancelled = true; };
   }, []);
 
-  const hasAppealForCategory = (categoryId) =>
-    appeals.some(
+  const appealForCategory = (categoryId) =>
+    appeals.find(
       (appeal) =>
         String(appeal.category_id) === String(categoryId)
-        && appeal.status !== 'rejected'
-        && (!evaluation?.id || String(appeal.evaluation_id) === String(evaluation.id)),
+        && String(appeal.evaluation_id) === String(evaluation?.id),
     );
+  const selectedAppeal = selectedCategory ? appealForCategory(selectedCategory.id) : null;
+
+  const openCategory = (category) => {
+    setSelectedCategory(category);
+    setAppealOpen(false);
+    setAppealReason('');
+    setAppealError('');
+    setAppealMessage('');
+  };
 
   const handleSubmitAppeal = async (event) => {
     event.preventDefault();
@@ -113,13 +113,12 @@ function StudentEvaluation() {
     setAppealError('');
     setAppealMessage('');
     try {
-      await submitAppeal({
+      const { appeal } = await submitAppeal({
         evaluationId: evaluation.id,
         categoryId: selectedCategory?.id || null,
         reason: appealReason.trim(),
       });
-      const appealsData = await getMyAppeals();
-      setAppeals(appealsData.appeals || []);
+      setAppeals((prev) => [{ ...appeal, category_name: selectedCategory.name }, ...prev]);
       setAppealReason('');
       setAppealOpen(false);
       setAppealMessage('Appeal submitted successfully.');
@@ -158,7 +157,6 @@ function StudentEvaluation() {
     );
   }
 
-  const categoryScores = evaluation.category_scores || {};
   const overallPercentage = evaluation.overall_percentage || (evaluation.overall_score ? Math.round((evaluation.overall_score / 5) * 10000) / 100 : 0);
   const safeOverallPercentage = Math.min(100, Math.max(0, Number(overallPercentage) || 0));
 
@@ -175,15 +173,11 @@ function StudentEvaluation() {
     return '#ef4444';
   };
 
-  const categoryEntries = criteria.map((cat) => {
-    const catData = categoryScores[String(cat.id)] || {};
-    const categoryPercentage = Math.min(100, Math.max(0, Number(catData.category_percentage || 0)));
+  const categoryEntries = evaluationCategories(evaluation.category_scores, criteria).map((category) => {
+    const categoryPercentage = Math.min(100, Math.max(0, category.percentage));
     return {
-      id: cat.id,
-      name: cat.category_name,
+      ...category,
       percentage: categoryPercentage,
-      ratings: Array.isArray(catData.ratings) ? catData.ratings : [],
-      indicators: cat.indicators || [],
       stars: Math.max(1, Math.round((categoryPercentage / 100) * 5)),
       level:
         categoryPercentage >= 90 ? 'Outstanding'
@@ -237,6 +231,12 @@ function StudentEvaluation() {
                   : 'N/A'}
               </span>
             </div>
+            {evaluation.partner_institution_name && (
+              <div className={styles.summaryItem}>
+                <span className={styles.summaryLabel}>Partner Institution</span>
+                <span className={styles.summaryValue}>{evaluation.partner_institution_name}</span>
+              </div>
+            )}
             <div className={styles.summaryItem}>
               <span className={styles.summaryLabel}>Evaluated by</span>
               <span className={styles.summaryValue}>
@@ -259,11 +259,11 @@ function StudentEvaluation() {
               className={styles.categoryCard}
               role="button"
               tabIndex={0}
-              onClick={() => setSelectedCategory(category)}
+              onClick={() => openCategory(category)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
-                  setSelectedCategory(category);
+                  openCategory(category);
                 }
               }}
             >
@@ -283,6 +283,19 @@ function StudentEvaluation() {
           ))}
         </div>
       </div>
+
+      {(appeals.length > 0 || appealHistoryError) && (
+        <div className={styles.section}>
+          <h3 className={styles.sectionTitle}>Grade Appeals</h3>
+          {appealHistoryError && <p role="alert">{appealHistoryError}</p>}
+          {appeals.map((appeal) => (
+            <div key={appeal.id} className={styles.summaryItem}>
+              <strong>{appeal.category_name || 'Overall Grade'} · {appeal.status[0].toUpperCase() + appeal.status.slice(1)}</strong>
+              {appeal.supervisor_response && <p>{appeal.supervisor_response}</p>}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className={styles.section}>
         <div className={styles.sectionHeaderRow}>
@@ -344,7 +357,7 @@ function StudentEvaluation() {
           className={styles.modalOverlay}
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setSelectedCategory(null);
+            if (event.target === event.currentTarget && !appealSubmitting) setSelectedCategory(null);
           }}
         >
           <section className={styles.modal} role="dialog" aria-modal="true" aria-label={selectedCategory.name}>
@@ -360,6 +373,7 @@ function StudentEvaluation() {
                 type="button"
                 className={styles.modalClose}
                 onClick={() => setSelectedCategory(null)}
+                disabled={appealSubmitting}
                 aria-label="Close"
               >
                 ✕
@@ -380,14 +394,15 @@ function StudentEvaluation() {
                 </ul>
               )}
             </div>
-            <div className={styles.modalFooter}>
-              {hasAppealForCategory(selectedCategory.id) ? (
-                <p className={styles.appealStatus}>
-                  An appeal for this category is already under review.
-                </p>
-              ) : appealMessage ? (
+            {(selectedAppeal || evaluation.partner_institution_id) && <div className={styles.modalFooter}>
+              {appealMessage ? (
                 <p className={styles.appealSuccess}>{appealMessage}</p>
-              ) : (
+              ) : selectedAppeal ? (
+                <p className={styles.appealStatus}>
+                  Appeal {selectedAppeal.status}.
+                  {selectedAppeal.supervisor_response && ` ${selectedAppeal.supervisor_response}`}
+                </p>
+              ) : !appealOpen && (
                 <button
                   type="button"
                   className={styles.appealButton}
@@ -396,7 +411,7 @@ function StudentEvaluation() {
                   Appeal this rating
                 </button>
               )}
-            </div>
+            </div>}
 
             {appealOpen && (
               <form className={styles.appealForm} onSubmit={handleSubmitAppeal}>
@@ -404,6 +419,7 @@ function StudentEvaluation() {
                 <textarea
                   id="appeal-reason"
                   rows={4}
+                  maxLength={5000}
                   value={appealReason}
                   onChange={(event) => setAppealReason(event.target.value)}
                   placeholder="Explain why you believe this rating should be reconsidered..."

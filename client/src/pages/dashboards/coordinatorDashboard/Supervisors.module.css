@@ -171,6 +171,10 @@
   box-shadow: 0 2px 8px rgb(23 32 51 / 3%);
 }
 
+.institutionCard[aria-current='location'] {
+  border-color: var(--maroon);
+}
+
 .cardHeader { display: flex; align-items: flex-start; gap: 9px; }
 .companyHeading { min-width: 0; flex: 1; }
 .companyTitleRow { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px 8px; }

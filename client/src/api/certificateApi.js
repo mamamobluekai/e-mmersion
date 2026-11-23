@@ -30,29 +30,28 @@ export async function supervisorGetAllStudents() {
   return apiFetch('/supervisor/certificate/eligible?all=true');
 }
 
-export async function supervisorGenerateCertificate(studentId) {
-  return apiFetch(`/supervisor/certificate/generate/${studentId}`, { method: 'POST' });
+function certificateAction(action, studentId, deploymentRequestId, method) {
+  const query = deploymentRequestId == null ? '' : `?deploymentRequestId=${encodeURIComponent(deploymentRequestId)}`;
+  return apiFetch(`/supervisor/certificate/${action}/${studentId}${query}`, { method });
 }
 
-export async function supervisorForceGenerateCertificate(studentId) {
-  return apiFetch(`/supervisor/certificate/force/${studentId}`, { method: 'POST' });
+export function supervisorGenerateCertificate(studentId, deploymentRequestId) {
+  return certificateAction('generate', studentId, deploymentRequestId, 'POST');
 }
 
-export async function supervisorUndoForceIssue(studentId) {
-  return apiFetch(`/supervisor/certificate/undo/${studentId}`, { method: 'DELETE' });
+export function supervisorForceGenerateCertificate(studentId, deploymentRequestId) {
+  return certificateAction('force', studentId, deploymentRequestId, 'POST');
 }
 
-// Each batch can have its own design. Omit batchId (or pass 'default') for the
-// supervisor-wide default used by any batch without a design of its own.
-export async function supervisorGetCertificateTemplate(batchId) {
-  const qs =
-    batchId === undefined || batchId === null || batchId === 'default'
-      ? ''
-      : `?batchId=${encodeURIComponent(batchId)}`;
+export function supervisorUndoForceIssue(studentId, deploymentRequestId) {
+  return certificateAction('undo', studentId, deploymentRequestId, 'DELETE');
+}
+
+export async function supervisorGetCertificateTemplate(institutionId) {
+  const qs = institutionId == null ? '' : `?institutionId=${encodeURIComponent(institutionId)}`;
   return apiFetch(`/supervisor/certificate/template/me${qs}`);
 }
 
-// Pass teacher_batch_id: null to save the supervisor default.
 export async function supervisorSaveCertificateTemplate(data) {
   return apiFetch('/supervisor/certificate/template/me', {
     method: 'PUT',

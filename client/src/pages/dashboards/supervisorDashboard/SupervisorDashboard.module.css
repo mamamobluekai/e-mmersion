@@ -16,12 +16,6 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* =========================================================
-   OVERVIEW SPLIT
-   Calendar and student list share the row evenly (50/50) so
-   neither panel dominates the overview.
-   ========================================================= */
-
 .overviewSplit {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -29,8 +23,6 @@
   align-items: stretch;
 }
 
-/* Both columns are flex columns so the shorter one (the student list)
-   can scroll internally instead of leaving a gap under the calendar. */
 .overviewLeft,
 .overviewRight {
   display: flex;
@@ -39,60 +31,113 @@
   min-height: 0;
 }
 
-/* Let the Student Progress wrapper fill the column height. */
-.overviewRight > * {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-
-/* Let the calendar card fill the column height so both panels line up. */
 .overviewLeft > * {
   flex: 1;
 }
 
-.roleSection {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  width: 100%;
-  margin-top: 20px;
-}
-
-.roleCard {
+.reminders {
+  flex: 1;
   min-width: 0;
-  padding: 22px;
+  padding: clamp(16px, 2.4vw, 24px);
   border: 1px solid var(--about-border);
   border-radius: 16px;
   background: #fff;
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
-.roleCard:hover {
-  transform: translateY(-2px);
-  border-color: #d7b8be;
-  box-shadow: 0 12px 26px rgb(23 32 51 / 7%);
-}
-
-.roleCard p:last-child {
+.reminders h2,
+.overviewShortcuts h2 {
   margin: 0;
+  color: var(--about-ink);
+  font-size: 1.15rem;
+}
+
+.reminderMessage {
+  margin: 12px 0 0;
   color: var(--about-muted);
   font-size: 0.88rem;
   line-height: 1.65;
 }
 
-.roleEyebrow {
-  margin: 0 0 10px;
-  color: var(--about-maroon);
-  font-size: 0.74rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  line-height: 1.4;
+.reminderList,
+.overviewShortcuts ul {
+  display: grid;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
 }
 
-/* Single column on narrow screens. The list stacks UNDER the calendar
-   because the student list is the primary content. */
+.reminderList li + li {
+  border-top: 1px solid var(--about-border);
+}
+
+.reminderLink,
+.shortcutLink {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--about-ink);
+  text-decoration: none;
+}
+
+.reminderLink {
+  min-height: 62px;
+  padding: 10px 4px;
+}
+
+.reminderLink small {
+  display: block;
+  margin-top: 3px;
+  color: var(--about-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.reminderIcon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--about-blush);
+  color: var(--about-maroon);
+}
+
+.reminderLink > svg,
+.shortcutLink > svg {
+  color: var(--about-maroon);
+}
+
+.reminderLink:hover,
+.shortcutLink:hover {
+  background: var(--about-blush);
+}
+
+.reminderLink:focus-visible,
+.shortcutLink:focus-visible {
+  outline: 2px solid var(--about-maroon);
+  outline-offset: 2px;
+}
+
+.overviewShortcuts {
+  margin-top: 24px;
+}
+
+.overviewShortcuts ul {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 10px;
+}
+
+.shortcutLink {
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid var(--about-border);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
 @media (max-width: 1000px) {
   .overviewSplit {
     grid-template-columns: minmax(0, 1fr);
@@ -101,12 +146,6 @@
   .overviewRight > *,
   .overviewLeft > * {
     flex: initial;
-  }
-}
-
-@media (max-width: 720px) {
-  .roleSection {
-    grid-template-columns: minmax(0, 1fr);
   }
 }
 

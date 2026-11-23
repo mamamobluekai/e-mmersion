@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
+import { CalendarDays, ChevronRight, ClipboardList, ClipboardPenLine, UsersRound } from 'lucide-react';
 
 import DashboardLayout from '../sharedSidebar/DashboardLayout';
 import DashboardTopNav from '../sharedSidebar/DashboardTopNav';
@@ -19,9 +20,17 @@ import UserProfileSettings from '../UserProfileSettings';
 
 import SupervisorCalendar from './SupervisorCalendar';
 import SupervisorStudentProgress from './SupervisorStudentProgress';
+import SupervisorReminders from './SupervisorReminders';
 import About from '../About';
 import aboutStyles from '../About.module.css';
 import styles from './SupervisorDashboard.module.css';
+
+const overviewShortcuts = [
+  { path: 'deployment-requests', label: 'Deployment Requests', icon: ClipboardList },
+  { path: 'attendance', label: 'Student Attendance', icon: CalendarDays },
+  { path: 'student-progress', label: 'Student Progress', icon: UsersRound },
+  { path: 'evaluate', label: 'Evaluate Student', icon: ClipboardPenLine },
+];
 
 function SupervisorDashboard({ user, onLogout }) {
   return (
@@ -47,6 +56,8 @@ function SupervisorDashboard({ user, onLogout }) {
         <Route path="partner-institutions" element={<SupervisorPartnerInstitutions />} />
 
         <Route path="attendance" element={<SupervisorAttendance />} />
+
+        <Route path="student-progress" element={<SupervisorStudentProgress />} />
 
         <Route path="attendance-schedule" element={<SupervisorSchedule />} />
 
@@ -76,7 +87,7 @@ function SupervisorDashboard({ user, onLogout }) {
 
         <Route
           path="group-chat"
-          element={<BatchChat user={user} />}
+          element={<PartnerChat user={user} />}
         />
 
         <Route
@@ -122,24 +133,22 @@ function SupervisorOverview({ user }) {
           <SupervisorCalendar compact />
         </div>
         <div className={styles.overviewRight}>
-          <SupervisorStudentProgress />
+          <SupervisorReminders />
         </div>
       </div>
 
-      <section className={styles.roleSection} aria-label="Supervisor responsibilities">
-        <article className={styles.roleCard}>
-          <p className={styles.roleEyebrow}>STUDENT DEPLOYMENT</p>
-          <p>Review deployment requests, manage assigned student batches, and coordinate student placements.</p>
-        </article>
-        <article className={styles.roleCard}>
-          <p className={styles.roleEyebrow}>STUDENT ATTENDANCE</p>
-          <p>Track daily attendance, monitor student participation, and follow up on attendance throughout immersion.</p>
-        </article>
-        <article className={styles.roleCard}>
-          <p className={styles.roleEyebrow}>STUDENT EVALUATIONS</p>
-          <p>Evaluate student performance, review submitted requirements, and record progress during work immersion.</p>
-        </article>
-      </section>
+      <nav className={styles.overviewShortcuts} aria-labelledby="supervisor-shortcuts-title">
+        <h2 id="supervisor-shortcuts-title">Shortcuts</h2>
+        <ul>
+          {overviewShortcuts.map(({ path, label, icon: Icon }) => <li key={path}>
+            <Link className={styles.shortcutLink} to={`/dashboard/supervisor/${path}`}>
+              <Icon size={18} aria-hidden="true" />
+              <span>{label}</span>
+              <ChevronRight size={16} aria-hidden="true" />
+            </Link>
+          </li>)}
+        </ul>
+      </nav>
 
       <footer className={aboutStyles.footer} aria-hidden="true" />
 

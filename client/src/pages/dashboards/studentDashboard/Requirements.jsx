@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   getMyRequirements,
   updateMyRequirements,
+  updateMyPartnerPreference,
   submitMyRequirements,
   uploadMyDocument,
   deleteMyDocument,
@@ -133,11 +134,13 @@ function Requirements({ checklistOnly = false }) {
   const requestedSection = searchParams.get('section');
   const requestedRequirement = searchParams.get('requirement');
   const [data, setData] = useState(null);
+  const [partnerInstitutions, setPartnerInstitutions] = useState([]);
   const [docTypes, setDocTypes] = useState(FALLBACK_DOCS);
   const [activeTab, setActiveTab] = useState(() =>
     Object.hasOwn(SECTION_META, requestedSection) ? requestedSection : 'personal'
   );
   const [saving, setSaving] = useState(false);
+  const [savingPreference, setSavingPreference] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -181,6 +184,7 @@ function Requirements({ checklistOnly = false }) {
         ]);
         if (!cancelled) {
           setData(reqResult);
+          setPartnerInstitutions(reqResult.partnerInstitutions || []);
           if (typesResult?.documentTypes && typesResult.documentTypes.length > 0) {
             setDocTypes(typesResult.documentTypes.map((dt) => ({
               code: dt.code,
@@ -711,6 +715,21 @@ function Requirements({ checklistOnly = false }) {
     );
   };
 
+  const savePreference = async () => {
+    setSavingPreference(true);
+    setError('');
+    setMessage('');
+    try {
+      const saved = await updateMyPartnerPreference(student.preferred_partner_institution_id || null);
+      setData((current) => ({ ...current, student: { ...current.student, ...saved } }));
+      setMessage('Preferred partner institution saved.');
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setSavingPreference(false);
+    }
+  };
+
   const renderPersonalForm = () => {
     const lockFields = !canEditFormRequirement('personal_information');
     return (
@@ -859,24 +878,17 @@ function Requirements({ checklistOnly = false }) {
         />
       </div>
       <div className={styles.field}>
-        <label>Preferred Industry <span className={styles.requiredDiamond}>*</span></label>
-        <input
-          className={styles.input}
-          value={student.preferred_industry || ''}
-          onChange={(e) => handleFieldChange('preferred_industry', e.target.value)}
-          placeholder="e.g., Information Technology"
-          readOnly={lockFields}
-        />
-      </div>
-      <div className={styles.field}>
-        <label>Preferred Company</label>
-        <input
-          className={styles.input}
-          value={student.preferred_company || ''}
-          onChange={(e) => handleFieldChange('preferred_company', e.target.value)}
-          placeholder="e.g., ABC Corporation"
-          readOnly={lockFields}
-        />
+        <label htmlFor="preferred-partner">Preferred Partner Institution</label>
+        <select id="preferred-partner" className={styles.input}
+          value={student.preferred_partner_institution_id || ''}
+          onChange={(event) => handleFieldChange('preferred_partner_institution_id', event.target.value)}
+          disabled={savingPreference}>
+          <option value="">No preference</option>
+          {partnerInstitutions.map(({ id, name, is_active }) =>
+            <option key={id} value={id} disabled={!is_active}>{name}</option>)}
+        </select>
+        {lockFields && <button type="button" className={styles.btn} disabled={savingPreference}
+          onClick={savePreference}>{savingPreference ? 'Saving…' : 'Save preference'}</button>}
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
         <label>Career Goal <span className={styles.requiredDiamond}>*</span></label>
@@ -890,12 +902,12 @@ function Requirements({ checklistOnly = false }) {
         />
       </div>
       <div className={styles.field} style={{ gridColumn: '1 / -1' }}>
-        <label>Why this Industry? <span className={styles.requiredDiamond}>*</span></label>
+        <label>Reason for your preference <span className={styles.requiredDiamond}>*</span></label>
         <textarea
           className={styles.textarea}
           value={student.industry_reason || ''}
           onChange={(e) => handleFieldChange('industry_reason', e.target.value)}
-          placeholder="Why are you interested in your preferred industry..."
+          placeholder="Explain what you are looking for in your work immersion placement"
           rows={3}
           readOnly={lockFields}
         />

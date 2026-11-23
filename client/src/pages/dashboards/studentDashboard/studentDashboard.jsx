@@ -113,7 +113,7 @@ function StudentDashboard({ user, onLogout }) {
         <Route path="post-immersion/evaluation" element={stagePage('post', <StudentEvaluation />)} />
         <Route path="post-immersion/documents" element={stagePage('post', journey && <Progress journey={journey} documents />)} />
 
-        <Route path="group-chat" element={<StageAccess stage="immersion" journey={journey}><BatchChat user={user} /></StageAccess>} />
+        <Route path="group-chat" element={<StageAccess stage="immersion" journey={journey}><PartnerChat user={user} /></StageAccess>} />
         <Route path="announcements" element={<><Announcements user={user} /><StudentSettingsBackButton /></>} />
         <Route path="guide" element={<><Guide /><StudentSettingsBackButton /></>} />
         <Route path="about" element={<><About user={user} /><StudentSettingsBackButton /></>} />

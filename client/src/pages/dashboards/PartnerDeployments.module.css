@@ -12,11 +12,6 @@
   column-gap: 0;
 }
 
-.page.supervisorPage {
-  max-width: 100%;
-  margin: 0;
-}
-
 .coordinatorPage > * {
   grid-column: 2;
 }
@@ -37,31 +32,31 @@
 }
 
 .page .header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   margin-bottom: 0;
 }
 
 .supervisorHeader {
-  composes: pageHeader from './supervisorDashboard/Deployment.module.css';
+  composes: hero from './About.module.css';
 }
 
 .page .supervisorHeader {
-  --header-padding-inline: clamp(18px, 3vw, 24px);
-  position: relative;
-  display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0 12px;
-  align-items: center;
-  margin-bottom: 0;
-  padding-inline: var(--header-padding-inline);
+  gap: 16px;
+  align-items: start;
+  padding: clamp(22px, 4vw, 38px);
 }
 
-.supervisorHeaderDescription {
-  grid-column: 1 / -1;
+.page .supervisorHeader h1 {
+  font-size: clamp(1.65rem, 4vw, 2.65rem);
 }
 
-.cardIcon {
-  composes: cardIcon from './About.module.css';
-  flex: 0 0 auto;
+.supervisorHeader p {
+  margin-top: 10px;
+  color: var(--about-muted);
+  line-height: 1.6;
 }
 
 .page :where(p:not(.headerEyebrow), dl) {
@@ -152,6 +147,18 @@
   border-bottom: 1px solid var(--about-border);
 }
 
+.deploymentStage {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+}
+
+.stageArrow {
+  flex: none;
+  align-self: center;
+  color: var(--about-muted);
+}
+
 .tabs button,
 .back {
   background: transparent;
@@ -171,6 +178,14 @@
 .tabs button:hover,
 .tabs button[aria-pressed="true"] {
   background: var(--about-blush);
+}
+
+.requestingNavigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .tabs button[aria-pressed="true"] {
@@ -255,6 +270,114 @@
   box-shadow: 0 4px 14px rgb(23 32 51 / 5%);
 }
 
+.interactivePartnerCard {
+  position: relative;
+}
+
+.partnerCard > .partnerCardTrigger {
+  position: absolute;
+  inset: 0;
+  justify-self: stretch;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.partnerCardTrigger:focus-visible {
+  outline: 2px solid var(--partner-accent);
+  outline-offset: 3px;
+}
+
+.batchToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.page .deploymentSelection {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  cursor: pointer;
+}
+
+.page .deploymentSelection input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+}
+
+.partnerCard .deploymentSelection {
+  position: relative;
+  z-index: 1;
+  justify-self: center;
+}
+
+.batchHeaderActions {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.batchHeaderFilter {
+  width: 9rem;
+}
+
+.page .batchHeaderFilter select {
+  min-height: 48px;
+}
+
+.batchHeaderActions .primary {
+  white-space: nowrap;
+}
+
+@container partner-layout (max-width: 40rem) {
+  .page .batchPageHeader {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .batchHeaderFilter {
+    width: 7.5rem;
+  }
+}
+
+.batchGroup {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+
+.batchGroupHeader {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--about-maroon);
+}
+
+.batchGroupHeader p {
+  color: var(--about-muted);
+  font-size: 0.86rem;
+}
+
+.batchRosterAction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--partner-accent);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
 @supports (grid-template-rows: subgrid) {
   @media (min-width: 640px) {
     .partnerCard {
@@ -305,12 +428,11 @@
 
 .partnerTitleLink {
   color: inherit;
-  text-decoration: none;
+  text-underline-offset: 3px;
 }
 
 .partnerTitleLink:hover {
-  color: var(--partner-accent);
-  text-decoration: underline;
+  color: var(--partner-accent-dark);
 }
 
 .partnerMeta {
@@ -488,20 +610,17 @@
     transition: none;
   }
 
-  .skeletonBlock,
-  .handshakeIcon,
-  .connectionSuccess {
+  .skeletonBlock {
     animation: none;
   }
 }
 
 .panel,
-.filterPanel,
-.inboxGroup {
+.filterPanel {
   composes: systemContent from './About.module.css';
 }
 
-.page :is(.panel, .filterPanel, .inboxGroup) {
+.page :is(.panel, .filterPanel) {
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
   align-content: start;
@@ -515,8 +634,7 @@
   line-height: 1.65;
 }
 
-.panel > h3,
-.inboxGroup > h3 {
+.panel > h3 {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -525,25 +643,6 @@
 
 .panel h3 svg {
   color: var(--about-maroon);
-}
-
-.inboxGroup .cardIcon {
-  margin: 0;
-}
-
-.inboxRoleLabel {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  padding: 4px 8px;
-  border: 1px solid #eadde0;
-  border-radius: 999px;
-  background: #f8f2f4;
-  color: var(--about-maroon);
-  font-size: 0.64rem;
-  font-weight: 750;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .headingLabel {
@@ -561,7 +660,7 @@
   padding: clamp(18px, 2.5vw, 28px);
 }
 
-.page.supervisorPage :is(.filterPanel, .inboxGroup) {
+.page.supervisorPage .panel {
   padding: clamp(16px, 2vw, 24px);
 }
 
@@ -619,6 +718,151 @@
 }
 
 .scheduleDetails .scheduleDetailsWide { grid-column: 1 / -1; }
+
+.scheduleDetails .revisedField {
+  border-color: #d9b979;
+  background: #fffaf0;
+}
+
+.revisedField small {
+  display: block;
+  margin-top: 4px;
+  color: var(--about-muted);
+  font-weight: 450;
+}
+
+.supervisorCards {
+  display: grid;
+  gap: 14px;
+}
+
+.supervisorQueues,
+.supervisorApprovedGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.supervisorApprovedGrid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  align-items: stretch;
+}
+
+.supervisorFeatureCard {
+  composes: featureCard from './About.module.css';
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.supervisorCardHeading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.supervisorCardIcon {
+  composes: cardIcon from './About.module.css';
+  flex: none;
+  margin: 0;
+}
+
+.page .supervisorCardHeading h3 {
+  margin: 0 0 4px;
+  font-size: 1.15rem;
+}
+
+.supervisorProposalFields {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+}
+
+.supervisorCardActions {
+  margin-top: auto;
+}
+
+.supervisorFeatureCard > .badge {
+  align-self: flex-start;
+}
+
+.page .supervisorEmpty {
+  padding: 16px 18px;
+  border: 1px solid var(--about-border);
+  border-radius: 14px;
+  background: var(--about-blush);
+  color: var(--about-muted);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.supervisorCards article > button {
+  justify-self: start;
+}
+
+.assignmentCandidates {
+  max-height: min(420px, 45vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.studentChoices {
+  width: 100%;
+}
+
+@container partner-layout (max-width: 480px) {
+  .page .studentSelectionHeader {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .studentSelectionHeader a {
+    justify-self: start;
+  }
+}
+
+.page .studentChoice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  cursor: pointer;
+}
+
+.studentSummary {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.proposalChanges {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--about-border);
+  border-radius: 10px;
+  background: var(--about-blush);
+  overflow-wrap: anywhere;
+}
+
+.proposalChanges dl {
+  display: grid;
+  gap: 6px;
+}
+
+.proposalChanges dt {
+  color: var(--about-muted);
+  font-size: 0.8rem;
+}
+
+.proposalChanges dd {
+  margin: 0;
+}
+
+.proposalChanges p,
+.scheduleDetails dd {
+  white-space: pre-wrap;
+}
 
 .requestArea {
   grid-template-columns: minmax(0, 1fr);
@@ -741,6 +985,22 @@
   background: rgb(23 32 51 / 52%);
 }
 
+.settingsDialog {
+  width: min(32rem, calc(100% - 24px));
+}
+
+.supervisorDetailDialog {
+  width: min(64rem, calc(100% - 24px));
+}
+
+.supervisorDetailDialog .compare {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+}
+
+.settingsDialog .standardSchedule dl {
+  margin-top: 0;
+}
+
 .proposalDialogHeader {
   position: sticky;
   z-index: 1;
@@ -779,6 +1039,18 @@
   display: grid;
   gap: 12px;
   padding: clamp(16px, 3vw, 24px);
+}
+
+.requestDialogFooter {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 12px clamp(16px, 3vw, 24px);
+  border-top: 1px solid var(--about-border);
+  background: #fff;
 }
 
 .proposalDialogBody .formGrid {
@@ -883,17 +1155,6 @@
   transform: rotate(90deg);
 }
 
-.inlineRequestDetail {
-  display: grid;
-  gap: 12px;
-  margin: 8px 0 14px;
-}
-
-.page .inlineRequestDetail > .panel,
-.page .inlineRequestDetail > .compare > .panel {
-  padding: clamp(12px, 2.5vw, 22px);
-}
-
 .requestRow small,
 .roster small {
   display: block;
@@ -915,32 +1176,11 @@
   text-transform: capitalize;
 }
 
-.page .historyButton {
-  min-height: 40px;
-  padding-inline: 12px;
-  list-style: none;
-}
-
-.historyButton::-webkit-details-marker {
-  display: none;
-}
-
-.historyDisclosure[open] .historyChevron {
-  transform: rotate(90deg);
-}
-
-.page .historyDisclosure > .panel {
-  position: absolute;
-  z-index: 2;
-  inset-block-start: 100%;
-  inset-inline-end: var(--header-padding-inline);
-  width: min(28rem, calc(100% - 2 * var(--header-padding-inline)));
-  max-height: min(24rem, 60vh);
-  margin-top: 8px;
-  padding: 8px 16px;
-  overflow: auto;
+.historyPanel {
+  border: 1px solid var(--about-border);
+  border-radius: 10px;
+  padding: 12px 14px;
   overflow-wrap: anywhere;
-  box-shadow: 0 8px 18px rgb(23 32 51 / 12%);
 }
 
 .dateList {
@@ -996,56 +1236,16 @@
 
 .approvalDialog .actions { justify-content: flex-end; }
 
-.connectionSuccess {
-  display: grid;
-  justify-items: center;
-  gap: 9px;
-  padding: 22px 16px;
-  margin-top: 16px;
-  border: 1px solid #bfe6cc;
-  border-radius: 14px;
-  background: #f0fbf3;
-  color: #235638;
-  text-align: center;
-  animation: connectionSuccessReveal 360ms ease-out both;
+@media (prefers-reduced-motion: no-preference) {
+  .approveHand {
+    animation: approveHandshake 650ms ease-in-out;
+  }
 }
 
-.handshakeIcon {
-  display: grid;
-  width: 64px;
-  height: 64px;
-  place-items: center;
-  border-radius: 50%;
-  background: #e2f2e8;
-  color: #176b34;
-  animation: handshakeCelebrate 900ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-
-.page .connectionSuccess h3 {
-  margin: 0;
-  color: #235638;
-  font-size: 1.1rem;
-}
-
-.connectionSuccess p {
-  max-width: 34rem;
-  margin: 0 0 4px;
-  color: #3e614b;
-  font-size: 0.84rem;
-  line-height: 1.5;
-}
-
-@keyframes connectionSuccessReveal {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes handshakeCelebrate {
-  0% { opacity: 0; transform: scale(0.55) rotate(-14deg); }
-  45% { opacity: 1; transform: scale(1.16) rotate(9deg); }
-  68% { transform: scale(0.96) rotate(-5deg); }
-  85% { transform: scale(1.07) rotate(3deg); }
-  100% { transform: scale(1) rotate(0); }
+@keyframes approveHandshake {
+  30% { transform: rotate(-12deg); }
+  65% { transform: rotate(9deg); }
+  85% { transform: rotate(-4deg); }
 }
 
 .error {

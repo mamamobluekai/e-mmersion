@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Trophy, X } from 'lucide-react';
 import { getTeacherBatchEvaluations } from '../../../api/teacherApi';
 import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
+import { evaluationCategories } from '../../../utils/evaluationCategories';
 import styles from './TeacherStudentEvaluations.module.css';
 
 function percentageOf(ev) {
@@ -54,16 +55,22 @@ function TeacherStudentEvaluations() {
   }, []);
 
   // Only the selected institution is shown; the sidebar switcher controls it.
-  const group = useMemo(
-    () => groups.find((g) => Number(g.batch_id) === Number(institutionId)) || null,
-    [groups, institutionId]
-  );
+  const group = useMemo(() => {
+    const placements = groups.filter((entry) => Number(entry.partner_institution_id) === Number(institutionId));
+    if (!placements.length) return null;
+    return {
+      batch_label: placements[0].partner_institution_name || placements[0].batch_label,
+      supervisor_name: [...new Set(placements.map((entry) => entry.supervisor_name))].join(', '),
+      students: placements.flatMap((entry) => entry.students.map((student) => ({ ...student, batch_id: entry.batch_id }))),
+    };
+  }, [groups, institutionId]);
 
   const ranked = useMemo(() => {
     const rows = (group?.students || []).map((s) => {
       const percentage = percentageOf(s.evaluation);
       return {
         student_id: s.student_id,
+        batch_id: s.batch_id,
         student_number: s.student_number,
         name: `${s.first_name} ${s.last_name}`.trim(),
         email: s.email,
@@ -91,8 +98,9 @@ function TeacherStudentEvaluations() {
         const percentage = percentageOf(s.evaluation);
         return {
           student_id: s.student_id,
+          batch_id: g.batch_id,
           name: `${s.first_name} ${s.last_name}`.trim(),
-          batch_label: g.batch_label,
+          batch_label: g.partner_institution_name || g.batch_label,
           percentage,
           grade: gradeFor(percentage),
           evaluated: Boolean(s.evaluation),
@@ -110,21 +118,10 @@ function TeacherStudentEvaluations() {
   // which criterion is their strongest and which is weakest.
   const breakdown = useMemo(() => {
     if (!selected?.evaluation?.category_scores) return [];
-    const scores = selected.evaluation.category_scores || {};
-
-    return criteria
-      .map((cat) => {
-        const entry = scores[String(cat.id)] || {};
-        const indicators = cat.indicators || [];
-        const ratings = Array.isArray(entry.indicators) ? entry.indicators : [];
-        const percentage = Number(entry.category_percentage) || 0;
-        return {
-          id: cat.id,
-          name: cat.category_name,
-          percentage,
-          items: indicators.map((label, i) => ({ label, rating: ratings[i] })).filter((x) => x.label),
-        };
-      })
+    return evaluationCategories(selected.evaluation.category_scores, criteria)
+      .map(({ id, name, percentage, indicators, ratings }) => ({
+        id, name, percentage, items: indicators.map((label, index) => ({ label, rating: ratings[index] })),
+      }))
       .filter((c) => c.items.length > 0)
       .sort((a, b) => b.percentage - a.percentage);
   }, [selected, criteria]);
@@ -298,7 +295,7 @@ function TeacherStudentEvaluations() {
               ) : (
                 <ol className={styles.rankModalList}>
                   {overallRanked.map((s) => (
-                    <li key={`${s.batch_label}-${s.student_id}`} className={styles.rankModalRow}>
+                    <li key={`${s.batch_id}-${s.student_id}`} className={styles.rankModalRow}>
                       <span
                         className={`${styles.rankModalRank} ${
                           s.rank === 1
@@ -365,7 +362,7 @@ function TeacherStudentEvaluations() {
                 <tbody>
                   {ranked.map((s) => (
                     <tr
-                      key={s.student_id}
+                      key={`${s.batch_id}-${s.student_id}`}
                       className={styles.clickableRow}
                       role="button"
                       tabIndex={0}
@@ -438,7 +435,7 @@ function TeacherStudentEvaluations() {
                     .filter((s) => s.evaluated)
                     .map((s) => (
                       <li
-                        key={s.student_id}
+                        key={`${s.batch_id}-${s.student_id}`}
                         className={`${styles.drawerRow} ${
                           s.rank === 1 ? styles.drawerRowTop : ''
                         }`}

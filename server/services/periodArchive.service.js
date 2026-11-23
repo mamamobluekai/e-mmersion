@@ -26,6 +26,7 @@ async function loadUsersForPeriod(periodId, role, client) {
             s.suffix, s.gender, s.birthdate, s.age, s.contact_number, s.email AS student_email,
             s.home_address, s.grade_level, s.section, s.track_strand, s.school,
             s.preferred_industry, s.preferred_company, s.career_goal, s.industry_reason,
+            s.preferred_partner_institution_id, preference.name AS preferred_partner_name,
             s.guardian_name, s.guardian_relationship, s.guardian_contact, s.guardian_email,
             s.guardian_address, s.emergency_contact, s.emergency_contact_number,
             s.academic_notes, s.photo_url,
@@ -40,6 +41,7 @@ async function loadUsersForPeriod(periodId, role, client) {
             c.designation AS c_designation, c.school AS c_school
      FROM users u
      LEFT JOIN students s ON s.user_id = u.id AND u.role = 'student'
+     LEFT JOIN partner_institutions preference ON preference.id = s.preferred_partner_institution_id
      LEFT JOIN teachers t ON t.user_id = u.id AND u.role = 'teacher'
      LEFT JOIN supervisors sup ON sup.user_id = u.id AND u.role = 'supervisor'
      LEFT JOIN coordinators c ON c.user_id = u.id AND u.role = 'coordinator'
@@ -103,6 +105,8 @@ function profileFor(role, row) {
       school: row.school,
       preferred_industry: row.preferred_industry,
       preferred_company: row.preferred_company,
+      preferred_partner_institution_id: row.preferred_partner_institution_id,
+      preferred_partner_name: row.preferred_partner_name,
       career_goal: row.career_goal,
       industry_reason: row.industry_reason,
       guardian_name: row.guardian_name,
@@ -329,11 +333,18 @@ async function archivePeriod(periodId, archivedBy) {
               dr.status, dr.responded_at, dr.created_at, dr.teacher_batch_id, dr.workflow_version,
               CASE WHEN dr.workflow_version = 2 THEN jsonb_build_object(
                 'partner_id', dr.partner_institution_id, 'teacher_id', dr.teacher_id, 'batch_id', dr.teacher_batch_id,
+                'coordinator_batch_id', dr.coordinator_batch_id,
+                'teacher_name', (SELECT string_agg(concat_ws(' ', t.first_name, t.last_name), ', ' ORDER BY t.id)
+                  FROM teachers t WHERE t.id = dr.teacher_id OR EXISTS (
+                    SELECT 1 FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id AND link.teacher_id = t.id)),
+                'attendance_count', (SELECT count(*) FROM student_attendance attendance WHERE attendance.teacher_batch_id = dr.teacher_batch_id),
                 'proposal', dr.proposal, 'confirmed_schedule', dr.confirmed_schedule, 'school_clearance', dr.school_clearance,
                 'original_proposal', dr.original_proposal, 'counterproposal', dr.counterproposal, 'agreement', dr.agreement,
                 'teacher_ids', COALESCE((SELECT jsonb_agg(link.teacher_id ORDER BY link.teacher_id)
                   FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id), '[]'::jsonb),
                 'pending_amendment', dr.schedule_amendment,
+                'student_assignments', COALESCE((SELECT jsonb_agg(to_jsonb(assignment) ORDER BY assignment.student_id)
+                  FROM partner_student_assignments assignment WHERE assignment.deployment_request_id = dr.id), '[]'::jsonb),
                 'history', COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id)
                   FROM partner_deployment_events e WHERE e.deployment_request_id = dr.id), '[]'::jsonb)
               ) END AS partner_deployment,
@@ -349,6 +360,7 @@ async function archivePeriod(periodId, archivedBy) {
     for (const dr of deploymentsRes.rows) {
       const studentsRes = dr.workflow_version === 2 ? await client.query(
         `SELECT s.id AS student_id, u.email, s.first_name, s.last_name,
+                s.student_number, s.track_strand, s.section,
                 tbs.deployment_started_on, tbs.deployment_ended_on
          FROM teacher_batch_students tbs JOIN students s ON s.id = tbs.student_id
          JOIN users u ON u.id = s.user_id WHERE tbs.teacher_batch_id = $1`,

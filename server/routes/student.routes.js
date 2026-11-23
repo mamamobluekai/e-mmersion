@@ -9,6 +9,7 @@ const {
 const {
   getRequirements,
   upsertRequirements,
+  updatePartnerPreference,
   submitRequirements,
   uploadDocument,
   deleteDocument,
@@ -36,6 +37,7 @@ router.get('/journey', authorize('student'), async (req, res) => {
 router.get('/progress', authorize('student'), requirePostImmersion, getProgress);
 router.get('/placement/me', authorize('student'), requireImmersion, getMyPlacementInfo);
 router.put('/requirements/me', authorize('student'), upsertRequirements);
+router.put('/requirements/me/partner-preference', authorize('student'), updatePartnerPreference);
 router.post('/requirements/me/submit', authorize('student'), submitRequirements);
 router.post('/documents/me/upload', authorize('student'), uploadMemory.single('file'), uploadDocument);
 router.delete('/documents/me/:id', authorize('student'), deleteDocument);

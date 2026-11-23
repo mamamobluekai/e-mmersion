@@ -34,7 +34,7 @@ const FIELD_LABELS = {
   preferred_industry: 'Preferred Industry',
   preferred_company: 'Preferred Company',
   career_goal: 'Career Goal',
-  industry_reason: 'Why this Industry?',
+  industry_reason: 'Reason for your preference',
   guardian_name: 'Guardian/Parent Name',
   guardian_relationship: 'Relationship',
   guardian_contact: 'Guardian Contact',

@@ -34,6 +34,14 @@ export async function updateMyRequirements(data) {
   });
 }
 
+export function updateMyPartnerPreference(preferred_partner_institution_id) {
+  return apiFetch('/requirements/me/partner-preference', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preferred_partner_institution_id }),
+  });
+}
+
 export async function submitMyRequirements() {
   return apiFetch('/requirements/me/submit', {
     method: 'POST',

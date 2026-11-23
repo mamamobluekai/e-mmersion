@@ -65,7 +65,7 @@ async function getSupervisorBatches(supervisorUserId) {
   return teacher.rows;
 }
 
-async function getSupervisorPartnerInstitutions(supervisorUserId) {
+async function getSupervisorPartnerInstitutions(req, res) {
   const result = await pool.query(
     `SELECT DISTINCT ON (pi.id)
             pi.id, pi.name, pi.industry, pi.description, pi.address,
@@ -75,12 +75,12 @@ async function getSupervisorPartnerInstitutions(supervisorUserId) {
      FROM teacher_batches tb
      JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
      JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
-     WHERE tb.supervisor_id = $1 AND tb.archived_at IS NULL
+     WHERE tb.supervisor_id = $1 AND dr.supervisor_id = $1 AND tb.archived_at IS NULL
      GROUP BY pi.id
      ORDER BY pi.id`,
-    [supervisorUserId]
+    [req.user.id]
   );
-  return result.rows;
+  return res.json({ institutions: result.rows });
 }
 
 const studentFields = `s.id AS student_id, s.user_id, s.student_number,
@@ -121,7 +121,11 @@ async function getTeacherBatchStudents(requestId, supervisorUserId) {
   });
 }
 
-async function getSupervisorPartnerInstitutionStudents(institutionId, supervisorUserId) {
+async function getSupervisorPartnerInstitutionStudents(req, res) {
+  const institutionId = Number(req.params.institutionId);
+  if (!Number.isInteger(institutionId) || institutionId <= 0 || institutionId > 2147483647) {
+    return res.status(400).json({ error: 'Invalid partner institution.' });
+  }
   const result = await pool.query(
     `SELECT ${studentFields}
      FROM teacher_batch_students tbs
@@ -137,24 +141,12 @@ async function getSupervisorPartnerInstitutionStudents(institutionId, supervisor
        ORDER BY c.created_at DESC
        LIMIT 1
      ) cert ON true
-     WHERE dr.partner_institution_id = $1 AND tb.supervisor_id = $2
+     WHERE dr.partner_institution_id = $1 AND tb.supervisor_id = $2 AND dr.supervisor_id = $2
        AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL
      ORDER BY s.last_name, s.first_name`,
-    [institutionId, supervisorUserId]
+    [institutionId, req.user.id]
   );
-  return result.rows;
-}
-
-async function getAssignedStudentForReport(supervisorUserId, studentId, batchId) {
-  const { rows: [assignment] } = await pool.query(
-    `SELECT tbs.student_id, tb.id AS batch_id, tb.teacher_id, 'teacher' AS batch_source
-     FROM teacher_batches tb
-     JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
-     JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-     WHERE tb.supervisor_id = $1 AND tbs.student_id = $2 AND tb.id = $3
-       AND tb.archived_at IS NULL AND tbs.deployment_ended_on IS NULL`,
-    [supervisorUserId, studentId, batchId]);
-  return assignment;
+  return res.json({ students: result.rows });
 }
 
 async function resolveImmersionDaysForStudent(studentId, batchId) {
@@ -521,75 +513,83 @@ const getBatchAttendance = async (req, res) => {
 
 const createReportConcern = async (req, res) => {
   try {
-    await ensureSupervisorReportsTable();
-
     const supervisorUserId = req.user.id;
     const studentId = Number(req.body.student_id);
-    const batchId = Number(req.body.batch_id);
+    const institutionId = req.body.partner_institution_id == null ? null : Number(req.body.partner_institution_id);
+    const batchId = req.body.batch_id == null ? null : Number(req.body.batch_id);
     const category = String(req.body.category || '').trim();
     const priority = String(req.body.priority || 'normal').trim().toLowerCase();
     const message = String(req.body.message || '').trim();
+    const validId = (id) => Number.isInteger(id) && id > 0 && id <= 2147483647;
 
-    if (!studentId || !batchId || !category || !message) {
-      return res.status(400).json({ error: 'Student, batch, category, and message are required.' });
+    if (!validId(studentId) || (institutionId === null && batchId === null) ||
+        (institutionId !== null && !validId(institutionId)) || (batchId !== null && !validId(batchId)) ||
+        !category || category.length > 80 || !message) {
+      return res.status(400).json({ error: 'Select a partner institution and student, and enter a category and report details.' });
     }
 
-    const assignment = await getAssignedStudentForReport(supervisorUserId, studentId, batchId);
+    await ensureSupervisorReportsTable();
+    const { rows: [created] } = await pool.query(`WITH assigned AS (
+      SELECT tb.id AS batch_id, teacher.id AS teacher_id, teacher.user_id AS teacher_user_id,
+        pi.id AS partner_institution_id, pi.name AS partner_institution_name
+      FROM teacher_batches tb
+      JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+      JOIN partner_institutions pi ON pi.id = dr.partner_institution_id
+      JOIN teacher_batch_students member ON member.teacher_batch_id = tb.id
+      JOIN teachers teacher ON teacher.id = tb.teacher_id
+      CROSS JOIN (SELECT to_char(now() AT TIME ZONE 'Asia/Manila', 'YYYY-MM-DD') AS today) calendar
+      WHERE tb.supervisor_id = $1 AND dr.supervisor_id = $1 AND member.student_id = $2
+        AND ($3::int IS NULL OR pi.id = $3) AND ($4::int IS NULL OR tb.id = $4)
+        AND tb.archived_at IS NULL AND member.deployment_ended_on IS NULL
+      ORDER BY CASE WHEN calendar.today BETWEEN
+        COALESCE(member.deployment_started_on::text, dr.confirmed_schedule->>'start')
+        AND dr.confirmed_schedule->>'end' THEN 0
+        WHEN calendar.today < COALESCE(member.deployment_started_on::text, dr.confirmed_schedule->>'start') THEN 1
+        ELSE 2 END,
+        CASE WHEN calendar.today < COALESCE(member.deployment_started_on::text, dr.confirmed_schedule->>'start')
+          THEN COALESCE(member.deployment_started_on::text, dr.confirmed_schedule->>'start') END,
+        tb.id DESC
+      LIMIT 1
+    ), report AS (
+      INSERT INTO supervisor_reports (supervisor_id, student_id, batch_id, batch_source, teacher_id, category, priority, message)
+      SELECT $1, $2, batch_id, 'teacher', teacher_id, $5, $6, $7 FROM assigned
+      RETURNING *
+    )
+    SELECT report.*, assigned.teacher_user_id, assigned.partner_institution_id, assigned.partner_institution_name
+    FROM report JOIN assigned ON assigned.batch_id = report.batch_id`,
+    [supervisorUserId, studentId, institutionId, batchId, category,
+      ['low', 'normal', 'high', 'urgent'].includes(priority) ? priority : 'normal', message]);
 
-    if (!assignment) {
-      return res.status(404).json({ error: 'Assigned student not found for this supervisor.' });
-    }
+    if (!created) return res.status(404).json({ error: 'This student has no deployment with an assigned teacher at the selected institution.' });
+    const { teacher_user_id: teacherUserId, ...report } = created;
 
-    const result = await pool.query(
-      `INSERT INTO supervisor_reports
-        (supervisor_id, student_id, batch_id, batch_source, teacher_id, category, priority, message)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        supervisorUserId,
-        assignment.student_id,
-        assignment.batch_id,
-        assignment.batch_source,
-        assignment.teacher_id,
-        category,
-        ['low', 'normal', 'high', 'urgent'].includes(priority) ? priority : 'normal',
-        message,
-      ]
-    );
-
-    res.status(201).json({ message: 'Report submitted.', report: result.rows[0] });
-
-    const report = result.rows[0];
-
-    // Notify the teacher (if assigned) that a supervisor report/concern was created.
-    if (report.teacher_id) {
-      const teacherUserRow = await pool.query(
-        `SELECT user_id FROM teachers WHERE id = $1`,
-        [report.teacher_id]
-      );
-      const teacherUserId = teacherUserRow.rows[0]?.user_id;
-      if (teacherUserId) {
-        const priorityText = report.priority || 'normal';
-        void createNotification({
-          userId: teacherUserId,
-          title: 'New report or concern from supervisor',
-          message: `A ${priorityText} priority ${report.category} report was submitted for a student in your batch.`,
-          type: 'report',
-          category: 'reports',
-          priority: priorityText,
-          actionUrl: '/dashboard/teacher/reports-concerns',
-          relatedUserId: supervisorUserId,
-          entityType: 'supervisor_report',
-          entityId: report.id,
-          eventKey: `supervisor-report:${report.id}:created`,
-        }).catch((err) => console.error('Teacher report-concern notification failed:', err.message));
-      }
-    }
+    res.status(201).json({ message: 'Report submitted.', report });
+    void createNotification({
+      userId: teacherUserId,
+      title: 'New report or concern from supervisor',
+      message: `A ${report.priority} priority ${report.category} report was submitted for a student at ${report.partner_institution_name}.`,
+      type: 'report',
+      category: 'reports',
+      priority: report.priority,
+      actionUrl: '/dashboard/teacher/reports-concerns',
+      relatedUserId: supervisorUserId,
+      entityType: 'supervisor_report',
+      entityId: report.id,
+      eventKey: `supervisor-report:${report.id}:created`,
+    }).catch((err) => console.error('Teacher report-concern notification failed:', err.message));
   } catch (err) {
     console.error('createReportConcern error:', err);
     res.status(500).json({ error: 'Failed to submit report.' });
   }
 };
+
+const reportInstitutionJoins = `
+  LEFT JOIN teacher_batches tb ON r.batch_source = 'teacher' AND tb.id = r.batch_id
+  LEFT JOIN deployment_requests placement ON placement.teacher_batch_id = tb.id AND placement.workflow_version = 2
+  LEFT JOIN retired_deployment_requests dr ON r.batch_source = 'deployment' AND dr.original_request_id = r.batch_id
+  LEFT JOIN partner_institutions pi ON pi.id = COALESCE(placement.partner_institution_id, tb.partner_institution_id,
+    (dr.snapshot->'request'->>'partner_institution_id')::int)
+`;
 
 const getReportsConcerns = async (req, res) => {
   try {
@@ -597,11 +597,11 @@ const getReportsConcerns = async (req, res) => {
 
     const result = await pool.query(
       `SELECT r.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
+              pi.id AS partner_institution_id, pi.name AS partner_institution_name,
               COALESCE(tb.batch_label, dr.snapshot->'request'->>'batch_label', 'Deployment') AS batch_label
        FROM supervisor_reports r
        JOIN students s ON s.id = r.student_id
-       LEFT JOIN teacher_batches tb ON r.batch_source = 'teacher' AND tb.id = r.batch_id
-       LEFT JOIN retired_deployment_requests dr ON r.batch_source = 'deployment' AND dr.original_request_id = r.batch_id
+       ${reportInstitutionJoins}
        WHERE r.supervisor_id = $1
        ORDER BY r.created_at DESC`,
       [req.user.id]
@@ -658,14 +658,14 @@ const getTeacherReportsConcerns = async (req, res) => {
 
     const result = await pool.query(
       `SELECT r.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
+              pi.id AS partner_institution_id, pi.name AS partner_institution_name,
               COALESCE(tb.batch_label, dr.snapshot->'request'->>'batch_label', 'Deployment') AS batch_label,
               tb.id AS teacher_batch_id,
               sup.first_name AS supervisor_first_name, sup.last_name AS supervisor_last_name,
               sup.employee_id AS supervisor_employee_id, sup.company_name AS supervisor_company
        FROM supervisor_reports r
        JOIN students s ON s.id = r.student_id
-       LEFT JOIN teacher_batches tb ON r.batch_source = 'teacher' AND tb.id = r.batch_id
-       LEFT JOIN retired_deployment_requests dr ON r.batch_source = 'deployment' AND dr.original_request_id = r.batch_id
+       ${reportInstitutionJoins}
        LEFT JOIN supervisors sup ON sup.user_id = r.supervisor_id
        WHERE r.teacher_id = $1
        ORDER BY r.created_at DESC`,

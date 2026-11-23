@@ -54,6 +54,7 @@ function PersonCard({ roleLabel, person, fallback, accent, onClick }) {
 function PlacementStatus() {
   const [submission, setSubmission] = useState(null);
   const [placements, setPlacements] = useState([]);
+  const [assignment, setAssignment] = useState(null);
   const [selectedId, setSelectedId] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -61,17 +62,18 @@ function PlacementStatus() {
 
   useEffect(() => {
     let cancelled = false;
-    async function init() {
-      setLoading(true);
-      setError('');
+    async function init(initialLoad = false) {
+      if (initialLoad) setLoading(true);
       try {
         const [statusResult, placementResult] = await Promise.all([
           getMySubmissionStatus(),
           getMyPlacementInfo(),
         ]);
         if (!cancelled) {
+          setError('');
           setSubmission(statusResult.submission || {});
           setPlacements(placementResult.placements || []);
+          setAssignment(placementResult.assignment || null);
         }
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -79,8 +81,9 @@ function PlacementStatus() {
         if (!cancelled) setLoading(false);
       }
     }
-    init();
-    return () => { cancelled = true; };
+    init(true);
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') init(); }, 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
   const statusMap = {
@@ -114,7 +117,7 @@ function PlacementStatus() {
         </div>
         {placement && (
           <div className={styles.batchPill}>
-            <span>{placement.status}</span>
+            <span>{placement.approval_date ? 'Accepted' : placement.status}</span>
           </div>
         )}
       </div>
@@ -135,6 +138,10 @@ function PlacementStatus() {
               <span className={styles.infoValue}>{placement.company_name || 'Awaiting company details'}</span>
               {placement.company_address && <span className={styles.infoValue}>{placement.company_address}</span>}
             </div>
+            {placement.approval_date && <div className={styles.infoRow}>
+              <span className={styles.infoLabel}>Supervisor approval</span>
+              <span className={styles.infoValue}>Accepted · {formatLongDate(placement.approval_date)}</span>
+            </div>}
             <div className={styles.infoRow}>
               <span className={styles.infoLabel}>Deployment schedule</span>
               <span className={styles.infoValue}>
@@ -227,8 +234,12 @@ function PlacementStatus() {
         <div className={styles.section}>
           <div className={styles.pendingNote}>
             <div>
-              <strong>Awaiting deployment assignment</strong>
-              <p>Your schedule and deployment contacts will appear here after your coordinator finalizes your placement.</p>
+              <strong>{assignment?.status === 'pending' ? 'Pending supervisor approval' :
+                assignment?.status === 'rejected' ? 'Assignment not accepted' :
+                  assignment?.status === 'accepted' ? 'Accepted · Awaiting batch deployment' : 'Awaiting deployment assignment'}</strong>
+              <p>{assignment ? assignment.partner_name :
+                'Your placement and schedule will appear here when your coordinator deploys your batch.'}</p>
+              {assignment?.rejection_reason && <p>{assignment.rejection_reason}</p>}
             </div>
           </div>
         </div>

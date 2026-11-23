@@ -25,11 +25,11 @@ export async function getEvaluationCriteria() {
   return apiFetch('/evaluation/criteria');
 }
 
-export async function saveEvaluationCriteria(criteria) {
+export async function saveEvaluationCriteria(criteria, criteriaVersion) {
   return apiFetch('/evaluation/criteria', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ criteria }),
+    body: JSON.stringify({ criteria, criteriaVersion }),
   });
 }
 

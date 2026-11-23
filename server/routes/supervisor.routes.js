@@ -12,6 +12,9 @@ router.use(authenticate);
 
 router.get('/dashboard', authorize('supervisor'), supervisorDashboard.getSupervisorDashboard);
 router.get('/partner-deployments', authorize('supervisor'), partnerDeployment.list);
+router.get('/partner-deployments/student-approvals', authorize('supervisor'), partnerDeployment.studentAssignments);
+router.put('/partner-deployments/:id/review-students', authorize('supervisor'), partnerDeployment.reviewStudentAssignments);
+router.get('/partner-deployments/:id/review-options', authorize('supervisor'), partnerDeployment.options);
 router.get('/partner-deployments/:id', authorize('supervisor'), partnerDeployment.detail);
 router.put('/partner-deployments/:id/review', authorize('supervisor'), partnerDeployment.review);
 router.put('/partner-deployments/:id/amendment', authorize('supervisor'), partnerDeployment.proposeAmendment);
