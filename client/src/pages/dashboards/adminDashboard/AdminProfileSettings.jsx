@@ -26,6 +26,7 @@ import { useToast } from '../../../components/admin/toastContext';
 import { useAuth } from '../../../context/AuthContext';
 import { useTheme } from '../../../context/themeContextValue';
 import { getPasswordFormProblem } from '../../../utils/passwordPolicy';
+import AccountDevices from '../AccountDevices';
 import styles from './AdminProfileSettings.module.css';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -38,7 +39,7 @@ const roleLabels = {
   admin: 'Administrator',
 };
 
-export default function AdminProfileSettings() {
+export default function AdminProfileSettings({ section }) {
   const { showToast } = useToast();
   const { user, updateUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -49,7 +50,7 @@ export default function AdminProfileSettings() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [pictureUploading, setPictureUploading] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [activeSection, setActiveSection] = useState('profile');
+  const [activeSection, setActiveSection] = useState(section || 'profile');
   const [skipSplashScreen, setSkipSplashScreen] = useState(true);
 
   const [form, setForm] = useState({
@@ -516,7 +517,8 @@ export default function AdminProfileSettings() {
           </form>
         </section>
 
-        <section className={`${styles.card} ${activeSection === 'security' ? styles.cardActiveMobile : ''}`}>
+        <section className={`${styles.card} ${activeSection === 'security' ? styles.cardActiveMobile : ''}`}
+          ref={section === 'security' ? (node) => { node?.scrollIntoView({ block: 'start' }); } : undefined}>
           <div className={styles.cardHeader}>
             <div className={styles.cardIcon}>
               <ShieldCheck size={18} />
@@ -617,6 +619,7 @@ export default function AdminProfileSettings() {
               <ChevronRight size={17} />
             </button>
           </form>
+          <AccountDevices />
         </section>
       </div>
 

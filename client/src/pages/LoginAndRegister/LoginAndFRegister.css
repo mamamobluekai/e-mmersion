@@ -23,7 +23,7 @@
 
   overflow: hidden;
 
-  background-image: url('/background.jpg');
+  background-image: url('../../assets/Coordinator_Student_TeacherBackground.jpg');
 
   background-size: cover;
 
@@ -32,6 +32,10 @@
   background-repeat: no-repeat;
 
   background-attachment: fixed;
+}
+
+.auth-shell[data-login-role='supervisor'] {
+  background-image: url('../../assets/SupervisorLoginBackground.jpg');
 }
 
 .auth-shell::before {
@@ -721,12 +725,16 @@ background:
 
 @media (max-width: 640px) {
   .auth-shell {
-    padding: 16px 12px;
+    min-height: 100svh;
+    padding: 16px 12px 32px;
 
     align-items: flex-start;
+
+    background-attachment: scroll;
   }
 
   .auth-layout {
+    margin-block: auto;
     border-radius: 18px;
   }
 
@@ -767,7 +775,7 @@ background:
 
 @media (max-width: 380px) {
   .auth-shell {
-    padding: 12px 8px;
+    padding: 12px 8px 28px;
   }
 
   .brand-name {
@@ -784,6 +792,14 @@ background:
 }
 
 @media (min-width: 981px) {
+  .auth-shell {
+    padding-bottom: clamp(52px, 8vh, 72px);
+  }
+
+  .auth-layout {
+    width: min(1200px, 100%);
+  }
+
   /* Desktop keeps the portal copy spaced below the wordmark. */
   .brand-tag {
     margin-top: clamp(40px, 12vh, 96px);

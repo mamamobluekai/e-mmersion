@@ -1,12 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const evaluation = require('../controllers/evaluationControllers/evaluation.controller');
+const immersionFeedback = require('../controllers/evaluationControllers/immersionFeedback.controller');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 
 const { requirePostImmersion } = require('../middleware/studentJourneyAccess');
 
 router.use(authenticate);
+
+router.get('/immersion-feedback/form', authorize('student'), requirePostImmersion, immersionFeedback.getMyFeedbackForm);
+router.post('/immersion-feedback/submit', authorize('student'), requirePostImmersion, immersionFeedback.submitMyFeedback);
+router.get('/immersion-feedback/criteria', authorize('coordinator'), immersionFeedback.getCriteria);
+router.put('/immersion-feedback/criteria', authorize('coordinator'), immersionFeedback.saveCriteria);
+router.get('/immersion-feedback/institutions', authorize('coordinator'), immersionFeedback.getInstitutionRatings);
+router.get('/immersion-feedback/supervisor', authorize('supervisor'), immersionFeedback.getMySupervisorRatings);
 
 router.get('/criteria', requirePostImmersion, evaluation.getCriteria);
 

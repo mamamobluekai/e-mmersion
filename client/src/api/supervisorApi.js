@@ -26,8 +26,8 @@ export async function getSupervisorDashboard() {
 }
 
 // Partner Institutions
-export async function getSupervisorPartnerInstitutions() {
-  return apiFetch('/partner-institutions');
+export async function getSupervisorPartnerInstitutions(signal) {
+  return apiFetch('/partner-institutions', { signal });
 }
 
 export async function getSupervisorPartnerInstitutionStudents(institutionId) {

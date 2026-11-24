@@ -14,6 +14,7 @@ import TeacherSettings from './TeacherSettings';
 import PartnerChat from '../../../components/social/PartnerChat';
 import Announcements from '../Announcements/Announcements';
 import UserProfileSettings from '../UserProfileSettings';
+import ActivityHistory from '../ActivityHistory';
 import { PartnerInstitutionProvider } from '../../../context/PartnerInstitutionProvider';
 import About from '../About';
 
@@ -39,6 +40,8 @@ function TeacherDashboard({ user, onLogout }) {
 
          <Route path="group-chat" element={<PartnerChat user={user} />} />
          <Route path="profile" element={<UserProfileSettings />} />
+         <Route path="settings/security" element={<UserProfileSettings section="security" />} />
+         <Route path="settings/history" element={<ActivityHistory settingsPath="/dashboard/teacher/profile" />} />
          <Route path="about" element={<About user={user} />} />
          <Route path="documents" element={<TeacherDocuments user={user} />} />
          <Route path="*" element={<Navigate to="overview" replace />} />

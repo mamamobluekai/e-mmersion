@@ -19,35 +19,19 @@ export function labelForStatus(status) {
 
 export function getAttendanceLabel(status, date) {
   if (status) return STATUS_LABELS[status] || status;
-  if (date && !isFutureDate(date)) return 'Absent';
-  return 'Not Started';
+  const today = manilaDate.format(new Date());
+  if (date > today) return 'Not Started';
+  if (date && date < today) return 'Absent';
+  return 'Not recorded';
 }
 
 export function isPresent(status) {
   return PRESENT_STATUSES.includes(status);
 }
 
-export function isAbsent(status) {
-  return !isPresent(status);
-}
-
-function parseISODate(value) {
-  const [y, m, d] = String(value).slice(0, 10).split('-').map(Number);
-  if (!y || !m || !d) return null;
-  return { y, m, d };
-}
-
-/**
- * True when the immersion date has not arrived yet. A date in the future with no
- * attendance row is "not started", not an absence.
- */
-export function isFutureDate(value) {
-  const parsed = parseISODate(value);
-  if (!parsed) return false;
-  const today = new Date();
-  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  return new Date(parsed.y, parsed.m - 1, parsed.d) > todayMidnight;
-}
+const manilaDate = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+});
 
 /**
  * Collapse flat records into one row per student with an attendance map.
@@ -71,14 +55,14 @@ export function reportRows(records = []) {
  * @returns {{date: string, present: number, absent: number, late: number, appeals: number, upcoming: boolean}[]}
  */
 export function byDate(records = [], dates = []) {
+  const today = manilaDate.format(new Date());
   return dates.map((date) => {
     const dayRecords = records.filter((record) => record.date === date);
-    const upcoming = isFutureDate(date);
+    const upcoming = date > today;
     return {
       date,
       present: dayRecords.filter((r) => isPresent(r.status)).length,
-      // An unrecorded upcoming day is not an absence.
-      absent: upcoming ? 0 : dayRecords.filter((r) => !r.status || isAbsent(r.status)).length,
+      absent: upcoming ? 0 : dayRecords.filter((r) => r.status === 'absent' || (!r.status && date < today)).length,
       late: dayRecords.filter((r) => r.status === 'late').length,
       appeals: dayRecords.filter(hasAppeal).length,
       upcoming,

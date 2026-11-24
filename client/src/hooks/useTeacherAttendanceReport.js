@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTeacherBatch } from './useTeacherBatch';
 import { getBatchAttendanceReport } from '../api/teacherApi';
@@ -6,12 +6,6 @@ import { reportRows } from '../utils/attendanceAnalytics';
 
 const EMPTY = { dates: [], records: [] };
 
-// Shared attendance report for the batch selected in the sidebar. Fetched once
-// per batch and reused by the records modal and the attendance insights, so the
-// data is not requested twice and a batch switch clears everything in one place.
-//
-// Pass `{ enabled: false }` to read the hook without triggering a fetch (when a
-// parent already owns the loaded report).
 export function useTeacherAttendanceReport({ batchId: batchIdOverride, enabled = true } = {}) {
   const { token } = useAuth();
   const { batchId: contextBatchId } = useTeacherBatch();
@@ -20,33 +14,38 @@ export function useTeacherAttendanceReport({ batchId: batchIdOverride, enabled =
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const activeRequest = useRef(null);
 
   const loadReport = useCallback(async () => {
-    if (!batchId || !enabled) {
-      setReport(EMPTY);
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
+    if (!batchId || !enabled || !token) return;
+    activeRequest.current?.abort();
+    const request = new AbortController();
+    activeRequest.current = request;
+    setRefreshing(true);
     setError('');
     try {
-      const data = await getBatchAttendanceReport(batchId, token);
-      setReport(data || EMPTY);
+      const data = await getBatchAttendanceReport(batchId, token, request.signal);
+      if (!request.signal.aborted) setReport(data || EMPTY);
     } catch (err) {
-      setError(err.message || 'Failed to load attendance report.');
+      if (!request.signal.aborted) {
+        setError(err.response?.data?.error || 'Could not load attendance records.');
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (!request.signal.aborted) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [batchId, enabled, token]);
 
   useEffect(() => {
-    // Clear the previous batch's table so a switch never shows stale rows.
     setReport(EMPTY);
+    setError('');
     setRefreshing(false);
-    setLoading(true);
+    setLoading(Boolean(batchId && enabled && token));
     loadReport();
-  }, [loadReport]);
+    return () => activeRequest.current?.abort();
+  }, [batchId, enabled, token, loadReport]);
 
   const rows = useMemo(() => reportRows(report.records || []), [report.records]);
 

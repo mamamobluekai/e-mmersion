@@ -1,0 +1,59 @@
+.panel { display: grid; gap: 16px; margin-block-start: 22px; min-width: 0; color: var(--wim-text); }
+.panel h4 { margin: 0; color: var(--wim-text-strong); font-size: 1rem; }
+.panel p { margin: 0; color: var(--wim-text-secondary); font-size: .82rem; line-height: 1.5; }
+.section { display: grid; min-width: 0; gap: 12px; border-block-start: 1px solid var(--wim-border-maroon); padding-block-start: 16px; }
+.devices, .events { margin: 0; padding: 0; list-style: none; }
+.devices { display: grid; gap: 9px; }
+.device {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--wim-border);
+  border-radius: 12px;
+  background: var(--wim-bg-sunken);
+}
+.deviceHeading, .actions, .badges, .toggle { display: flex; align-items: center; gap: 7px 9px; }
+.deviceHeading strong { color: var(--wim-text-strong); }
+.actions, .badges { flex-wrap: wrap; }
+.icon { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 9px; color: var(--wim-brand); background: var(--wim-brand-tint); }
+.badges span { padding: 4px 7px; background: var(--wim-bg-surface); border: 1px solid var(--wim-border); border-radius: 999px; font-size: .72rem; }
+.badges [data-current='true'] { background: var(--wim-success-bg); border-color: var(--wim-success-border); color: var(--wim-success-text); }
+.details { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 115px), 1fr)); gap: 6px 10px; margin: 0; }
+.details dt { color: var(--wim-text-secondary); font-size: .72rem; }
+.details dd { margin: 3px 0 0; font-size: .8rem; }
+.panel button, .panel :is(select, input:not([type='checkbox'])) {
+  min-width: 0;
+  min-height: 40px;
+  padding: 7px 9px;
+  border: 1px solid var(--wim-border-input);
+  border-radius: 8px;
+  background: var(--wim-bg-input);
+  color: var(--wim-text);
+  font: inherit;
+  font-size: .8rem;
+}
+.panel button { display: inline-flex; align-items: center; justify-self: start; gap: 6px; cursor: pointer; font-weight: 650; }
+.panel button:hover:not(:disabled) { background: var(--wim-bg-hover); }
+.panel button:disabled { opacity: .6; cursor: default; }
+.panel :is(button, input, select, .scroll):focus-visible { outline: 2px solid var(--wim-brand); outline-offset: 2px; }
+.filters, .verifyForm { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; }
+.filters label, .verifyForm label { display: grid; gap: 5px; min-width: 0; font-size: .75rem; color: var(--wim-text-secondary); }
+.verification { display: grid; gap: 8px; }
+.scroll { max-height: 270px; overflow-y: auto; scrollbar-width: thin; }
+.events li { display: grid; gap: 4px; padding: 9px 6px; border-block-start: 1px solid var(--wim-border); overflow-wrap: anywhere; }
+.eventTitle { font-size: .8rem; font-weight: 650; }
+.eventTitle[data-event='failed'] { color: var(--wim-danger-text); }
+.eventTitle[data-event='new_device'] { color: var(--wim-warning-text); }
+.events time, .events small { font-size: .73rem; color: var(--wim-text-secondary); }
+.toggle { gap: 8px; justify-content: flex-start; font-size: .82rem; }
+.toggle input { margin-inline-start: auto; accent-color: var(--wim-brand); width: 18px; height: 18px; }
+.panel .notice, .panel .error { padding: 8px 10px; border-radius: 8px; }
+.panel .notice { color: var(--wim-success-text); background: var(--wim-success-bg); }
+.panel .error { color: var(--wim-danger-text); background: var(--wim-danger-bg); }
+.confirmLayer { position: fixed; inset: 0; z-index: 100010; }
+
+@media (max-width: 420px) {
+  .filters, .verifyForm { grid-template-columns: minmax(0, 1fr); }
+}

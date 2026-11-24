@@ -4,9 +4,9 @@ import styles from './StudentSettings.module.css';
 
 const settingsItems = [
   {
-    to: '/dashboard/student/announcements',
-    label: 'Announcements',
-    description: 'Read the latest updates and notices.',
+    to: '/dashboard/student/settings/history',
+    label: 'Activity History',
+    description: 'Review your page visits and account activity.',
   },
   {
     to: '/dashboard/student/guide',
@@ -40,14 +40,7 @@ const settingsItems = [
   },
 ];
 
-const messenger = {
-  to: '/dashboard/student/group-chat',
-  label: 'Messenger',
-  description: 'Chat with your immersion batch.',
-};
-
-export default function StudentSettings({ immersionUnlocked }) {
-  const items = immersionUnlocked ? [...settingsItems, messenger] : settingsItems;
+export default function StudentSettings() {
   return (
     <main className={styles.page}>
       <header className={styles.header}>
@@ -56,7 +49,7 @@ export default function StudentSettings({ immersionUnlocked }) {
       </header>
 
       <nav className={styles.grid} aria-label="Student settings">
-        {items.map((item) => (
+        {settingsItems.map((item) => (
           <Link className={styles.card} to={item.to} key={item.to}>
             <span className={styles.cardCopy}>
               <span className={styles.cardTitle}>{item.label}</span>

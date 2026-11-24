@@ -69,6 +69,25 @@
   line-height: 1.6;
 }
 
+.deploymentPicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  font-weight: 650;
+}
+
+.deploymentPicker select {
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--about-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--about-ink);
+  font: inherit;
+}
+
 .batchTag {
   display: inline-flex;
   align-items: center;
@@ -477,7 +496,12 @@
     transform 0.15s ease;
 }
 
-.scheduleButton:hover {
+.scheduleButton:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.scheduleButton:hover:not(:disabled) {
   background: var(--about-blush);
   border-color: var(--about-maroon);
   box-shadow: 0 10px 24px -18px rgba(139, 30, 45, 0.45);

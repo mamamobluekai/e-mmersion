@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Plus,
   Save,
+  Star,
   X,
 } from 'lucide-react';
 import {
@@ -20,6 +21,7 @@ import {
   updatePartnerInstitution,
   updatePartnerSupervisor,
 } from '../../../api/coordinatorApi';
+import { getInstitutionFeedbackRatings } from '../../../api/evaluationApi';
 import styles from './Supervisors.module.css';
 
 const INDUSTRIES = [
@@ -73,6 +75,8 @@ export default function Supervisors() {
   const [params, setParams] = useSearchParams();
   const linkedInstitutionId = params.get('institution');
   const [institutions, setInstitutions] = useState([]);
+  const [ratings, setRatings] = useState(null);
+  const [ratingSort, setRatingSort] = useState('name');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -94,8 +98,12 @@ export default function Supervisors() {
     setLoading(true);
     setPageError('');
     try {
-      const data = await getPartnerInstitutions();
+      const [data, feedback] = await Promise.all([
+        getPartnerInstitutions(),
+        getInstitutionFeedbackRatings().catch(() => null),
+      ]);
       setInstitutions(data.institutions || []);
+      setRatings(feedback ? new Map(feedback.ratings.map((item) => [item.institution_id, item])) : null);
     } catch (err) {
       setPageError(err.message || 'Could not load partner institutions.');
     } finally {
@@ -129,7 +137,7 @@ export default function Supervisors() {
 
   const filteredInstitutions = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return institutions.filter((institution) => {
+    const filtered = institutions.filter((institution) => {
       if (!showInactive && !institution.is_active && String(institution.id) !== linkedInstitutionId) return false;
       if (!query) return true;
       const supervisor = institution.current_supervisor;
@@ -142,7 +150,15 @@ export default function Supervisors() {
         supervisor?.email,
       ].some((value) => String(value || '').toLowerCase().includes(query));
     });
-  }, [institutions, search, showInactive, linkedInstitutionId]);
+    if (!ratings || ratingSort === 'name') return filtered;
+    return filtered.sort((a, b) => {
+      const aRating = ratings.get(a.id);
+      const bRating = ratings.get(b.id);
+      if (!aRating || !bRating) return Number(Boolean(bRating)) - Number(Boolean(aRating));
+      return (ratingSort === 'highest' ? bRating.average - aRating.average : aRating.average - bRating.average)
+        || bRating.responses - aRating.responses || a.name.localeCompare(b.name);
+    });
+  }, [institutions, search, showInactive, linkedInstitutionId, ratings, ratingSort]);
 
   const openNewInstitution = () => {
     setInstitutionForm({ ...EMPTY_INSTITUTION, supervisor: { ...EMPTY_SUPERVISOR } });
@@ -381,6 +397,14 @@ export default function Supervisors() {
             placeholder="Search company, industry, supervisor..."
           />
         </label>
+        <label className={styles.ratingSort}>
+          <span className={styles.srOnly}>Sort institutions</span>
+          <select value={ratingSort} onChange={(event) => setRatingSort(event.target.value)} disabled={!ratings}>
+            <option value="name">Default order</option>
+            <option value="highest">Highest rating first</option>
+            <option value="lowest">Lowest rating first</option>
+          </select>
+        </label>
         <label className={styles.inactiveToggle}>
           <input
             type="checkbox"
@@ -412,6 +436,7 @@ export default function Supervisors() {
         <section className={styles.institutionGrid} aria-label="Partner institution list">
           {filteredInstitutions.map((institution) => {
             const supervisor = institution.current_supervisor;
+            const rating = ratings?.get(institution.id);
             const historyExpanded = Boolean(expandedHistory[institution.id]);
             const previousAssignmentCount = (institution.supervisor_history || [])
               .filter((entry) => Boolean(entry.ended_at)).length;
@@ -494,6 +519,18 @@ export default function Supervisors() {
                 <p className={styles.addressLine} title={institution.address || ''}>
                   {institution.address || 'Address not provided'}
                 </p>
+
+                <div className={styles.feedbackLine}>
+                  <Star size={16} fill={rating ? 'currentColor' : 'none'} aria-hidden="true" />
+                  {rating ? (
+                    <>
+                      <strong>{rating.average.toFixed(2)} / 5</strong>
+                      <span>{rating.responses} {rating.responses === 1 ? 'student response' : 'student responses'}</span>
+                      {rating.highest_rank === 1 && <span className={styles.topRating}>Highest rated</span>}
+                      {rating.lowest_rank === 1 && rating.highest_rank > 1 && <span className={styles.lowRating}>Lowest rated</span>}
+                    </>
+                  ) : <span>{ratings ? 'No student ratings yet' : 'Student ratings unavailable'}</span>}
+                </div>
 
                 <div className={styles.supervisorInfo}>
                   <div className={styles.supervisorField}>

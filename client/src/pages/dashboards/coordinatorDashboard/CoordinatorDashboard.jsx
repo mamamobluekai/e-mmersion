@@ -9,11 +9,13 @@ import Supervisors from './Supervisors';
 import PartnerDeployments from '../PartnerDeployments';
 import { ChooseStudentsPage } from '../StudentDeploymentApprovals';
 import UserProfileSettings from '../UserProfileSettings';
+import ActivityHistory from '../ActivityHistory';
 import Announcements from '../Announcements/Announcements';
 import CoordinatorOverview from './CoordinatorOverview';
 import About from '../About';
 import SpecialStudents from './SpecialStudents';
 import DeploymentBatches from './DeploymentBatches';
+import ImmersionFeedbackCriteria from './ImmersionFeedbackCriteria';
 
 function CoordinatorDashboard({ user, onLogout }) {
   return (
@@ -31,12 +33,15 @@ function CoordinatorDashboard({ user, onLogout }) {
          <Route path="announcements" element={<Announcements user={user} />} />
          <Route path="batches/*" element={<DeploymentBatches />} />
          <Route path="partner-institutions" element={<Supervisors />} />
+         <Route path="evaluation-criteria" element={<ImmersionFeedbackCriteria />} />
          <Route path="supervisors" element={<Navigate to="/dashboard/coordinator/partner-institutions" replace />} />
          <Route path="deployment" element={<PartnerDeployments />} />
          <Route path="deployment/:requestId/students" element={<ChooseStudentsPage />} />
          <Route path="deployment/monitoring" element={<Navigate to="/dashboard/coordinator/deployment" replace />} />
 
          <Route path="profile" element={<UserProfileSettings />} />
+         <Route path="settings/security" element={<UserProfileSettings section="security" />} />
+         <Route path="settings/history" element={<ActivityHistory settingsPath="/dashboard/coordinator/profile" />} />
          <Route path="about" element={<About user={user} />} />
          <Route path="*" element={<Navigate to="students" replace />} />
       </Routes>

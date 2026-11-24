@@ -11,15 +11,18 @@ import SupervisorReportsConcerns from './SupervisorReportsConcerns';
 import SupervisorSchedule from './SupervisorSchedule';
 import SupervisorEvaluateStudent from './SupervisorEvaluateStudent';
 import SupervisorEvaluation from './SupervisorEvaluation';
+import SupervisorStudentFeedback from './SupervisorStudentFeedback';
 import SupervisorCertifications from './SupervisorCertifications';
 import SupervisorGradeAppeals from './SupervisorGradeAppeals';
 import PartnerChat from '../../../components/social/PartnerChat';
 import Announcements from '../Announcements/Announcements';
 import UserProfileSettings from '../UserProfileSettings';
+import ActivityHistory from '../ActivityHistory';
 
 
 import SupervisorCalendar from './SupervisorCalendar';
 import SupervisorStudentProgress from './SupervisorStudentProgress';
+import SupervisorStudentDocumentation from './SupervisorStudentDocumentation';
 import SupervisorReminders from './SupervisorReminders';
 import About from '../About';
 import aboutStyles from '../About.module.css';
@@ -59,6 +62,8 @@ function SupervisorDashboard({ user, onLogout }) {
 
         <Route path="student-progress" element={<SupervisorStudentProgress />} />
 
+        <Route path="student-documentation" element={<SupervisorStudentDocumentation />} />
+
         <Route path="attendance-schedule" element={<SupervisorSchedule />} />
 
         <Route path="reports-concerns" element={<SupervisorReportsConcerns />} />
@@ -72,6 +77,7 @@ function SupervisorDashboard({ user, onLogout }) {
           path="evaluation"
           element={<SupervisorEvaluation />}
         />
+        <Route path="student-feedback" element={<SupervisorStudentFeedback />} />
 
         <Route
           path="certifications"
@@ -96,6 +102,8 @@ function SupervisorDashboard({ user, onLogout }) {
         />
 
         <Route path="about" element={<About user={user} />} />
+        <Route path="settings/security" element={<UserProfileSettings section="security" />} />
+        <Route path="settings/history" element={<ActivityHistory settingsPath="/dashboard/supervisor/profile" />} />
 
         <Route
           path="*"

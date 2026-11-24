@@ -171,8 +171,21 @@ function computeState(cfg) {
 const getBatchAttendanceStatus = async (req, res) => {
   try {
     const { batchId } = req.params;
+    const gate = await assertBatchAccess(req.user, batchId);
+    if (!gate.ok) return res.status(gate.denied.status).json({ error: gate.denied.error });
+
+    const batch = gate.access.batch;
     const state = await resolveAttendanceState(batchId);
-    if (!state) return res.status(404).json({ error: 'Batch not found.' });
+    if (batch.deployment_request_id) {
+      const scheduledToday = !batch.archived_at && Boolean(await getBatchScheduleForDate(batchId, nowInManilaDateOnly()));
+      return res.json({
+        ...state,
+        scheduled_today: scheduledToday,
+        attendance_open: scheduledToday && state.attendance_open,
+        manual_open: scheduledToday && state.manual_open,
+        active_type: scheduledToday ? state.active_type : null,
+      });
+    }
     res.json(state);
   } catch (err) {
     console.error('getBatchAttendanceStatus error:', err);

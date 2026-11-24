@@ -30,6 +30,7 @@ const {
   uploadMyProfilePicture,
 } = require('../controllers/userProfile.controller');
 const { acceptTerms } = require('../controllers/terms.controller');
+const deviceSecurityRoutes = require('./deviceSecurity.routes');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -52,7 +53,11 @@ router.get('/csrf-token', (req, res) => {
 });
 
 router.post('/register', writeLimiter, registerValidation, handleValidation, registerStudent);
-router.post('/login', authLimiter, credentialLimiter, loginLimiter, loginValidation, handleValidation, login);
+const loginChecks = [authLimiter, credentialLimiter, loginLimiter, loginValidation, handleValidation];
+router.post('/login', ...loginChecks, login);
+for (const role of ['student', 'teacher', 'coordinator', 'supervisor']) {
+  router.post(`/login/${role}`, ...loginChecks, (req, res) => login(req, res, role));
+}
 router.post('/refresh', refreshAccessToken);
 router.post('/logout', authenticate, logout);
 router.get('/me', authenticate, getMe);
@@ -62,6 +67,8 @@ router.post('/reset-password', authLimiter, resetValidation, handleValidation, r
 router.post('/verify-reset-token', authLimiter, verifyTokenValidation, handleValidation, verifyResetToken);
 
 router.use(authenticate);
+
+router.use('/security', deviceSecurityRoutes);
 
 router.post('/activation/set-password', writeLimiter, setActivationPassword);
 

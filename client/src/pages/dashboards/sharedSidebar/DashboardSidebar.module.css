@@ -800,12 +800,23 @@
   pointer-events: none;
 }
 
+.navLockedButton {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
 .navItem[data-trail] {
   position: relative;
   margin-inline-start: 22px;
 }
 
-.navItem[data-trail]::before {
+.navItem[data-trail]::before,
+.navItem[data-trail='end']:has(> .navChildren) > .navLink::before,
+.navItem[data-trail='end'] > .navChildren > li::before {
   position: absolute;
   z-index: 1;
   inset-inline-start: -11px;
@@ -819,8 +830,11 @@
 
 .navItem[data-trail='start']::before { inset-block-start: 50%; }
 .navItem[data-trail='end']::before { inset-block-end: 50%; }
+.navItem[data-trail='end']:has(> .navChildren)::before { content: none; }
+.navItem[data-trail='end'] > .navLink::before { inset-block-end: 0; }
 
-.navItem[data-trail] > .navLink::after {
+.navItem[data-trail] > .navLink::after,
+.navItem[data-trail='end'] > .navChildren > li:last-child::after {
   position: absolute;
   z-index: 1;
   inset-inline-start: -14px;
@@ -838,11 +852,23 @@
 .navItem[data-trail] .badge { flex-shrink: 0; }
 
 .navChildren {
+  --child-indent: 12px;
+  --child-gap: 2px;
   display: grid;
-  gap: 2px;
-  margin: 0 0 2px 12px;
+  gap: var(--child-gap);
+  margin: 0 0 2px var(--child-indent);
   padding: 0;
   list-style: none;
+}
+
+.navItem[data-trail='end'] > .navChildren > li { position: relative; }
+.navItem[data-trail='end'] > .navChildren > li::before {
+  inset-inline-start: calc(-11px - var(--child-indent));
+  inset-block: 0 calc(-1 * var(--child-gap));
+}
+.navItem[data-trail='end'] > .navChildren > li:last-child::before { inset-block-end: 50%; }
+.navItem[data-trail='end'] > .navChildren > li:last-child::after {
+  inset-inline-start: calc(-14px - var(--child-indent));
 }
 
 .navChildren .navLink {

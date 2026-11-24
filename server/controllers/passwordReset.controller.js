@@ -187,7 +187,7 @@ const verifyResetToken = async (req, res) => {
     }
 
     const tokenResult = await pool.query(
-      `SELECT user_id, expires_at FROM password_reset_tokens WHERE token = $1`,
+      `SELECT t.expires_at, u.role FROM password_reset_tokens t JOIN users u ON u.id = t.user_id WHERE t.token = $1`,
       [token]
     );
 
@@ -202,7 +202,7 @@ const verifyResetToken = async (req, res) => {
       return res.status(401).json({ error: 'Invalid or expired reset token.' });
     }
 
-    return res.json({ valid: true });
+    return res.json({ valid: true, role: tokenRow.role });
   } catch (err) {
     console.error('Verify reset token error:', err);
     return res.status(500).json({ error: 'Server error while verifying token.' });

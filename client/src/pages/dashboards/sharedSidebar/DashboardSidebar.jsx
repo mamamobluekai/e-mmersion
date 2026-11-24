@@ -4,6 +4,7 @@ import { X } from 'lucide-react';
 import SidebarLogoutButton from './SidebarLogoutButton';
 import MobileSheet from './MobileSheet';
 import { useIsMobile } from '../../../hooks/useIsMobile';
+import { recordPageVisit } from '../../../api/activityHistoryApi';
 import styles from './DashboardSidebar.module.css';
 
 function DashboardSidebar({
@@ -29,6 +30,7 @@ function DashboardSidebar({
       // from does not unmount it and leaves no double-panel stack behind.
       onClose();
       setSheetLink(link);
+      recordPageVisit(link.to);
       return;
     }
 
@@ -137,7 +139,16 @@ function DashboardSidebar({
                 >
 
                   {link.group && <div className={styles.navGroup}>{link.group}</div>}
-                  {link.disabled ? (
+                  {link.onLockedClick ? (
+                    <button
+                      type="button"
+                      className={`${styles.navLink} ${styles.navLockedButton}`}
+                      aria-label={`${link.label}, locked`}
+                      onClick={link.onLockedClick}
+                    >
+                      {linkContent}
+                    </button>
+                  ) : link.disabled ? (
                     <span className={`${styles.navLink} ${styles.navDisabled}`} aria-disabled="true">
                       {linkContent}
                     </span>
@@ -199,7 +210,7 @@ function DashboardSidebar({
             title={sheetLink.sheetTitle || sheetLink.label}
             onClose={() => setSheetLink(null)}
           >
-            <SheetContent />
+            <SheetContent onNavigate={() => setSheetLink(null)} />
           </MobileSheet>
         )}
 

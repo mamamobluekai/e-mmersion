@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../../context/useAdminAuth';
 import { getLoginErrorTitle } from '../../utils/errors';
 import { useToast } from '../../components/admin/toastContext';
@@ -9,6 +9,7 @@ import styles from './AdminLogin.module.css';
 
 export default function AdminLogin() {
   const navigate = useNavigate();
+  const openSecurity = useLocation().state?.securityRole === 'admin';
   const { login } = useAdminAuth();
   const { showToast } = useToast();
 
@@ -47,7 +48,7 @@ export default function AdminLogin() {
       const role = data.user?.role;
 
       if (role === 'admin') {
-        navigate('/dashboard/admin', { replace: true });
+        navigate(openSecurity ? '/dashboard/admin/settings/security' : '/dashboard/admin', { replace: true });
       } else {
         navigate(`/dashboard/${role}`, { replace: true });
       }

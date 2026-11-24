@@ -3,7 +3,7 @@ import { AlertTriangle, ExternalLink, FileText, Search, Star, X } from 'lucide-r
 import { useAuth } from '../../../context/AuthContext';
 import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
 import {
-  getBatchDailyDocSummary,
+  getInstitutionDailyDocSummary,
   getStudentDailyDocs,
   gradeDailyDoc,
   getDocumentationCriteria,
@@ -137,9 +137,10 @@ function FilePreview({ doc }) {
   );
 }
 
-function TeacherStudentDocumentation() {
+const errorText = (err, fallback) => err.response?.data?.error || fallback;
+
+export function StudentDocumentation({ institutionId, scopeLoading, scopeError, scopePicker, canEditCriteria }) {
   const { token } = useAuth();
-  const { institutionId } = usePartnerInstitution();
   const [students, setStudents] = useState([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
@@ -149,9 +150,13 @@ function TeacherStudentDocumentation() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentDocs, setStudentDocs] = useState([]);
   const [docsLoading, setDocsLoading] = useState(false);
+  const [docsError, setDocsError] = useState('');
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const studentId = selectedStudent?.student_id;
 
   const [reviewModal, setReviewModal] = useState(null);
   const [grading, setGrading] = useState(false);
+  const [gradeError, setGradeError] = useState('');
   const [feedback, setFeedback] = useState('');
   // Star rating per criterion: { [criterionId]: 1-5 }
   const [criterionRatings, setCriterionRatings] = useState({});
@@ -167,25 +172,23 @@ function TeacherStudentDocumentation() {
     setTimeout(() => setNotice(null), 4000);
   }, []);
 
-  const loadSummary = useCallback(async () => {
-    if (!institutionId) {
-      setStudents([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError('');
-    try {
-      const result = await getBatchDailyDocSummary(institutionId, token);
-      setStudents(result.students || []);
-    } catch (err) {
-      setError(err.message || 'Failed to load documentation summary.');
-    } finally {
-      setLoading(false);
-    }
-  }, [institutionId, token]);
-
-  useEffect(() => { loadSummary(); }, [loadSummary]);
+  useEffect(() => {
+    if (!institutionId || !token) return undefined;
+    const request = new AbortController();
+    getInstitutionDailyDocSummary(institutionId, token, request.signal)
+      .then((result) => {
+        if (request.signal.aborted) return;
+        setStudents(result.students || []);
+        setError('');
+      })
+      .catch((err) => {
+        if (!request.signal.aborted) setError(errorText(err, 'Could not load the documentation roster.'));
+      })
+      .finally(() => {
+        if (!request.signal.aborted) setLoading(false);
+      });
+    return () => request.abort();
+  }, [institutionId, token, refreshVersion]);
 
   const filteredStudents = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -197,18 +200,23 @@ function TeacherStudentDocumentation() {
     );
   }, [students, query]);
 
-  // Switching institutions must not leave the previous institution's student, documents
-  // or grading form on screen.
   useEffect(() => {
-    setSelectedStudent(null);
-    setStudentDocs([]);
-    setDocsLoading(false);
-    setReviewModal(null);
-    setGrading(false);
-    setFeedback('');
-    setCriterionRatings({});
-    setQuery('');
-  }, [institutionId]);
+    if (!studentId || !institutionId || !token) return undefined;
+    const request = new AbortController();
+    getStudentDailyDocs({ studentId, institutionId }, token, request.signal)
+      .then((result) => {
+        if (request.signal.aborted) return;
+        setStudentDocs(result.docs || []);
+        setDocsError('');
+      })
+      .catch((err) => {
+        if (!request.signal.aborted) setDocsError(errorText(err, 'Could not load this student’s documentation.'));
+      })
+      .finally(() => {
+        if (!request.signal.aborted) setDocsLoading(false);
+      });
+    return () => request.abort();
+  }, [institutionId, studentId, token, refreshVersion]);
 
   const loadCriteria = useCallback(async () => {
     setCriteriaLoading(true);
@@ -217,7 +225,7 @@ function TeacherStudentDocumentation() {
       setCriteria(result.criteria || []);
       setCriteriaDraft(result.criteria || []);
     } catch (err) {
-      flash('error', err.message || 'Failed to load criteria.');
+      flash('error', errorText(err, 'Could not load grading criteria.'));
     } finally {
       setCriteriaLoading(false);
     }
@@ -253,26 +261,16 @@ function TeacherStudentDocumentation() {
     };
   }, [criteriaOpen, closeCriteria]);
 
-  const openStudentDocs = async (student) => {
-    if (!institutionId) {
-      flash('error', 'Partner institution not loaded yet.');
-      return;
-    }
+  const openStudentDocs = (student) => {
     setSelectedStudent(student);
     setDocsLoading(true);
     setStudentDocs([]);
-    try {
-      const result = await getStudentDailyDocs({ studentId: student.student_id, batchId: institutionId }, token);
-      setStudentDocs(result.docs || []);
-    } catch (err) {
-      flash('error', err.message || 'Failed to load student documentation.');
-    } finally {
-      setDocsLoading(false);
-    }
+    setDocsError('');
   };
 
   const openReview = (doc) => {
     setReviewModal(doc);
+    setGradeError('');
     setFeedback(doc.teacher_feedback || '');
     // Restore the stars this teacher gave previously, so "Update Grade" keeps
     // the existing ratings instead of starting blank.
@@ -316,10 +314,11 @@ function TeacherStudentDocumentation() {
     e.preventDefault();
     if (!reviewModal) return;
     if (!allRated) {
-      flash('error', `Rate all ${criteria.length} criteria with stars before submitting.`);
+      setGradeError(`Rate all ${criteria.length} criteria with stars before submitting.`);
       return;
     }
     setGrading(true);
+    setGradeError('');
     try {
       const criteriaRatings = criteria.map((c) => ({ id: c.id, stars: criterionRatings[c.id] }));
       const result = await gradeDailyDoc(reviewModal.id, { criteriaRatings, teacherFeedback: feedback }, token);
@@ -331,20 +330,17 @@ function TeacherStudentDocumentation() {
           : 'Documentation graded successfully.'
       );
       closeReview();
-      loadSummary();
-      if (selectedStudent) {
-        const result2 = await getStudentDailyDocs({ studentId: selectedStudent.student_id, batchId: institutionId }, token);
-        setStudentDocs(result2.docs || []);
-      }
+      setRefreshVersion((version) => version + 1);
     } catch (err) {
-      flash('error', err.message || 'Failed to grade documentation.');
+      setGradeError(errorText(err, 'Could not save the grade.'));
     } finally {
       setGrading(false);
     }
   };
 
-  const addCriterion = () => {    const newId = Math.max(0, ...criteriaDraft.map(c => c.id)) + 1;
-    setCriteriaDraft(prev => [...prev, { id: newId, criterion_name: '', points: 0, description: '', sort_order: prev.length + 1 }]);
+  const addCriterion = () => {
+    const id = Math.min(0, ...criteriaDraft.map((criterion) => criterion.id)) - 1;
+    setCriteriaDraft((prev) => [...prev, { id, criterion_name: '', points: 0, description: '' }]);
   };
 
   const updateCriterion = (id, field, value) => {
@@ -358,18 +354,23 @@ function TeacherStudentDocumentation() {
   const saveCriteria = async () => {
     setCriteriaLoading(true);
     try {
-      await saveDocumentationCriteria(criteriaDraft, token);
-      setCriteria(criteriaDraft);
+      const { criteria: saved } = await saveDocumentationCriteria(
+        criteriaDraft.map((criterion) => ({ ...criterion, id: criterion.id > 0 ? criterion.id : undefined })), token
+      );
+      setCriteria(saved);
+      setCriteriaDraft(saved);
       setEditingCriteria(false);
       flash('success', 'Criteria updated successfully.');
     } catch (err) {
-      flash('error', err.message || 'Failed to save criteria.');
+      flash('error', errorText(err, 'Could not save grading criteria.'));
     } finally {
       setCriteriaLoading(false);
     }
   };
 
   const totalPoints = criteria.reduce((sum, c) => sum + (parseInt(c.points, 10) || 0), 0);
+  const rosterError = scopeError || error;
+  const rosterLoading = scopeLoading || (Boolean(institutionId) && loading);
 
   const getDocStatusBadge = (status) => {
     const map = {
@@ -396,14 +397,17 @@ function TeacherStudentDocumentation() {
       </div>
 
       {notice && <div className={`${styles.notice} ${styles['notice_' + notice.type]}`}>{notice.text}</div>}
-      {error && <div className={styles.error}>{error}</div>}
+      {scopePicker}
+      {rosterError && <div className={styles.error} role="alert">{rosterError}</div>}
 
       {/* Students List */}
-      {loading && <p className={styles.info}>Loading students...</p>}
-      {!loading && students.length === 0 && (
-        <p className={styles.empty}>No students in this partner institution yet.</p>
+      {rosterLoading && !rosterError && <p className={styles.info}>Loading students...</p>}
+      {!rosterLoading && !rosterError && students.length === 0 && (
+        <p className={styles.empty}>
+          {institutionId ? 'No students have been deployed to this partner institution yet.' : 'You have no published partner deployments yet.'}
+        </p>
       )}
-      {!loading && students.length > 0 && (
+      {!rosterLoading && !rosterError && students.length > 0 && (
         <>
           <div className={styles.toolbar}>
             <div className={styles.searchBox}>
@@ -581,9 +585,11 @@ function TeacherStudentDocumentation() {
                   <button className={styles.cancelBtn} type="button" onClick={closeCriteria}>
                     Close
                   </button>
-                  <button className={styles.saveCriteriaBtn} type="button" onClick={() => setEditingCriteria(true)}>
-                    Edit Criteria
-                  </button>
+                  {canEditCriteria && (
+                    <button className={styles.saveCriteriaBtn} type="button" onClick={() => setEditingCriteria(true)}>
+                      Edit Criteria
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -602,6 +608,8 @@ function TeacherStudentDocumentation() {
             <div className={styles.modalBody}>
               {docsLoading ? (
                 <p className={styles.loading}>Loading documentation...</p>
+              ) : docsError ? (
+                <p className={styles.error} role="alert">{docsError}</p>
               ) : studentDocs.length === 0 ? (
                 <p className={styles.empty}>No documentation submitted yet.</p>
               ) : (
@@ -621,7 +629,10 @@ function TeacherStudentDocumentation() {
                     {studentDocs.map((doc) => (
                       <tr key={doc.id}>
                         <td>Day {doc.day_number}</td>
-                        <td>{doc.date}</td>
+                        <td>
+                          {doc.date}
+                          {doc.batch_label && <small className={styles.docBatch}>{doc.batch_label}</small>}
+                        </td>
                         <td>
                           {doc.cloudinary_url ? (
                             <>
@@ -654,9 +665,11 @@ function TeacherStudentDocumentation() {
                           <span className={`${styles.badge} ${styles[getDocStatusBadge(doc.status)]}`}>{doc.status}</span>
                         </td>
                         <td>
-                          <button className={styles.reviewBtnSmall} onClick={() => openReview(doc)}>
-                            {doc.status === 'graded' ? 'Update Grade' : 'Review & Grade'}
-                          </button>
+                          {doc.status !== 'pending' && (
+                            <button className={styles.reviewBtnSmall} onClick={() => openReview(doc)}>
+                              {doc.status === 'graded' ? 'Update Grade' : 'Review & Grade'}
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -686,6 +699,12 @@ function TeacherStudentDocumentation() {
                 </div>
               )}
               <form onSubmit={submitGrade} className={styles.gradeForm}>
+                {reviewModal.reasoning && (
+                  <div className={styles.field}>
+                    <strong>Student reflection</strong>
+                    <p>{reviewModal.reasoning}</p>
+                  </div>
+                )}
                 {/* Live grade, derived from the star ratings below */}
                 <div
                   className={`${styles.gradeTotalPanel} ${allRated ? styles.gradeTotalReady : ''}`}
@@ -720,7 +739,7 @@ function TeacherStudentDocumentation() {
                   <h4>Rate each criterion</h4>
                   {criteria.length === 0 && (
                     <p className={styles.criteriaEmpty}>
-                      No criteria yet — add them from the &ldquo;Grading Criteria&rdquo; button.
+                      No grading criteria are configured.
                     </p>
                   )}
                   {criteria.map((c, idx) => (
@@ -759,6 +778,7 @@ function TeacherStudentDocumentation() {
                 </label>
 
                 <div className={styles.gradeActions}>
+                  {gradeError && <p className={styles.error} role="alert">{gradeError}</p>}
                   <button type="submit" className={styles.primaryBtn} disabled={grading || !allRated}>
                     {grading ? 'Saving...' : 'Submit Grade'}
                   </button>
@@ -773,4 +793,15 @@ function TeacherStudentDocumentation() {
   );
 }
 
-export default TeacherStudentDocumentation;
+export default function TeacherStudentDocumentation() {
+  const { institutionId, loading, error } = usePartnerInstitution();
+  return (
+    <StudentDocumentation
+      key={institutionId}
+      institutionId={institutionId}
+      scopeLoading={loading}
+      scopeError={error}
+      canEditCriteria
+    />
+  );
+}

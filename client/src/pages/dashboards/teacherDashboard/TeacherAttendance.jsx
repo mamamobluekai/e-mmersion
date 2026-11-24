@@ -2,173 +2,49 @@ import { useState, useEffect, useCallback } from 'react';
 import { CalendarDays, ClipboardList, X } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
+import { useTeacherAttendanceReport } from '../../../hooks/useTeacherAttendanceReport';
+import { getMyTeacherBatch, getTeacherBatchStatus } from '../../../api/teacherApi';
 import ImmersionScheduleCalendar from './ImmersionScheduleCalendar';
 import TeacherAttendanceRecords from './TeacherAttendanceRecords';
 import AttendanceInsights from './AttendanceInsights';
-import { useTeacherAttendanceReport } from '../../../hooks/useTeacherAttendanceReport';
-import {
-  getTeacherBatchStatus,
-  getBatchConfig,
-  getBatchSchedules,
-} from '../../../api/teacherApi';
 import styles from './TeacherAttendance.module.css';
 
-function parseLocalDate(dateStr) {
-  if (dateStr instanceof Date) {
-    if (isNaN(dateStr.getTime())) return new Date();
-    return new Date(dateStr.getFullYear(), dateStr.getMonth(), dateStr.getDate());
-  }
-
-  if (!dateStr) return new Date();
-
-  const [y, m, d] = String(dateStr).split('-').map(Number);
-  return new Date(y, m - 1, d);
+function attendanceError(error, fallback) {
+  if (error.response?.status === 401) return 'Your session has expired. Please sign in again.';
+  return error.response?.data?.error || fallback;
 }
 
-function toLocalDateString(date) {
-  if (!date) return '';
-
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-
-  return `${y}-${m}-${d}`;
-}
-
-/* FIX: Make sure backend date values are always YYYY-MM-DD */
-function normalizeDateInput(value) {
-  if (!value) return toLocalDateString(new Date());
-
-  const str = String(value);
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
-    return str;
-  }
-
-  // ISO datetime such as 2026-08-28T00:00:00.000Z
-  if (str.includes('T')) {
-    return str.substring(0, 10);
-  }
-
-  const d = new Date(str);
-
-  if (isNaN(d.getTime())) {
-    return toLocalDateString(new Date());
-  }
-
-  return toLocalDateString(d);
-}
-
-function normalizeTimeInput(value) {
-  if (!value) return '';
-  return String(value).slice(0, 5);
-}
-
-function TeacherAttendance() {
-  const { token } = useAuth();
-  const { institutionId: selectedInstitutionId, institutionName } = usePartnerInstitution();
-
+function DeploymentAttendance({ batch, institutionName, token }) {
   const [status, setStatus] = useState(null);
-  const [config, setConfig] = useState(null);
-  const [groups, setGroups] = useState([]);
-
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [calendarGroup, setCalendarGroup] = useState(null);
+  const [statusError, setStatusError] = useState('');
+  const [calendarOpen, setCalendarOpen] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
-
-  // One report per partner institution, shared by the records modal and the insights charts.
-  const report = useTeacherAttendanceReport();
-
-  const loadAll = useCallback(async () => {
-    if (!selectedInstitutionId) {
-      setStatus(null);
-      setConfig(null);
-      setGroups([]);
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    // Settle each request on its own: one failing endpoint must not blank out
-    // the whole monitor, and the failure must say WHICH call broke.
-    const calls = [
-      ['status', () => getTeacherBatchStatus(selectedInstitutionId, token)],
-      ['config', () => getBatchConfig(selectedInstitutionId, token)],
-      ['schedules', () => getBatchSchedules(selectedInstitutionId, token)],
-    ];
-
-    const results = await Promise.allSettled(calls.map(([, run]) => run()));
-
-    const failed = [];
-    results.forEach((result, index) => {
-      const name = calls[index][0];
-      if (result.status === 'rejected') {
-        const reason = result.reason;
-        const status = reason?.response?.status;
-        console.error(`Attendance Monitor: ${name} request failed`, reason);
-        failed.push(`${name}${status ? ` (HTTP ${status})` : ''}`);
-        return;
-      }
-
-      const value = result.value;
-      if (name === 'status') {
-        setStatus(value);
-      } else if (name === 'config') {
-        setConfig({
-          ...value,
-          time_in_open: normalizeTimeInput(value.time_in_open),
-          time_in_close: normalizeTimeInput(value.time_in_close),
-          time_out_open: normalizeTimeInput(value.time_out_open),
-          time_out_close: normalizeTimeInput(value.time_out_close),
-        });
-      } else if (name === 'schedules') {
-        setGroups(value?.groups || []);
-      }
-    });
-
-    if (failed.length) {
-      const unauthorized = results.some(
-        (r) => r.status === 'rejected' && r.reason?.response?.status === 401
-      );
-      setError(
-        unauthorized
-          ? 'Your session has expired. Please sign in again to load attendance data.'
-          : failed.length === calls.length
-            ? 'Failed to load attendance data.'
-            : `Could not load: ${failed.join(', ')}.`
-      );
-    }
-
-    setLoading(false);
-  }, [selectedInstitutionId, token]);
+  const closeCalendar = useCallback(() => setCalendarOpen(false), []);
+  const report = useTeacherAttendanceReport({ batchId: batch.id });
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
-
-  // Live refresh
-  useEffect(() => {
-    if (!selectedInstitutionId) return;
-
-    const id = setInterval(async () => {
+    const request = new AbortController();
+    let timer;
+    async function loadStatus() {
       try {
-        const [s] = await Promise.all([
-          getTeacherBatchStatus(selectedInstitutionId, token),
-        ]);
-
-        setStatus(s);
-      } catch {
-        /* ignore */
+        const data = await getTeacherBatchStatus(batch.id, token, request.signal);
+        if (request.signal.aborted) return;
+        setStatus(data);
+        setStatusError('');
+      } catch (error) {
+        if (request.signal.aborted) return;
+        setStatus(null);
+        setStatusError(attendanceError(error, 'Could not load live attendance status.'));
       }
-    }, 15000);
+      if (!request.signal.aborted) timer = setTimeout(loadStatus, 15000);
+    }
+    loadStatus();
+    return () => {
+      request.abort();
+      clearTimeout(timer);
+    };
+  }, [batch.id, token]);
 
-    return () => clearInterval(id);
-  }, [selectedInstitutionId, token]);
-
-  // The attendance records modal has its own dismiss/scroll-lock behaviour.
   useEffect(() => {
     if (!recordsOpen) return undefined;
     const onKey = (event) => {
@@ -183,204 +59,85 @@ function TeacherAttendance() {
     };
   }, [recordsOpen]);
 
-  // Read-only monitor: the supervisor owns attendance scheduling, so the
-  // teacher cannot edit windows or immersion durations here.
-  //
-  // The immersion dates come from the SERVER (group.schedule.attendance_dates).
-  // This used to recompute "the next 10 weekdays" in the browser, which
-  // ignored Philippine holidays and supervisor-blocked dates and so showed
-  // days that were never going to count. The fallback below only applies when
-  // the server sent no list at all.
-  function computeDates(group) {
-    const fromServer = group?.schedule?.attendance_dates;
-    if (Array.isArray(fromServer) && fromServer.length) return fromServer;
-
-    const startDate = normalizeDateInput(group?.schedule?.start_date);
-    if (!startDate) return [];
-
-    const current = parseLocalDate(startDate);
-    if (isNaN(current.getTime())) return [];
-
-    const total = Number(group?.schedule?.duration_value) || 10;
-    const dates = [];
-
-    while (dates.length < total) {
-      const day = current.getDay();
-      if (day !== 0 && day !== 6) {
-        dates.push(toLocalDateString(current));
-      }
-      current.setDate(current.getDate() + 1);
-    }
-
-    return dates;
-  }
+  const windows = status?.schedule;
+  const supervisor = [batch.supervisor?.first_name, batch.supervisor?.last_name].filter(Boolean).join(' ');
+  const statusText = {
+    time_in: 'Time-in is open',
+    time_out: 'Time-out is open',
+  };
+  const liveStatusText = status?.scheduled_today === false
+    ? 'No agreed workday today'
+    : status?.manual_open
+      ? 'Manually opened'
+      : statusText[status?.active_type] || 'Outside attendance windows';
 
   return (
-    <div className={styles.page}>
-
-      <div className={styles.header}>
-        <div>
-          <h2 className={styles.title}>
-            Attendance Monitor
-          </h2>
-
-          <p className={styles.pageDescription}>
-            View-only. Attendance windows and immersion schedules are set by the supervisor.
-          </p>
-        </div>
-      </div>
-
-      {loading && (
-        <p className={styles.info}>
-          Loading…
-        </p>
-      )}
-
-      {error && (
-        <p className={styles.error}>
-          {error}
-        </p>
-      )}
-
-      {/* Live attendance status */}
-      {!loading && status && (
-        <div
-          className={`${styles.liveStatus} ${
-            status.attendance_open ? styles.liveStatusOpen : styles.liveStatusClosed
-          }`}
-        >
-          <span className={styles.liveStatusPill}>
-            {status.attendance_open ? 'Open' : 'Closed'}
-          </span>
-          <span className={styles.liveStatusText}>
-            {status.manual_open
-              ? 'Manually opened'
-              : status.active_type === 'time_in'
-                ? 'Time-In is now open'
-                : status.active_type === 'time_out'
-                  ? 'Time-Out is now open'
-                  : 'No attendance yet'}
-          </span>
+    <>
+      {statusError && <p className={styles.error} role="alert">{statusError}</p>}
+      {status && (
+        <div className={`${styles.liveStatus} ${status.attendance_open ? styles.liveStatusOpen : styles.liveStatusClosed}`}>
+          <span className={styles.liveStatusPill}>{status.attendance_open ? 'Open' : 'Closed'}</span>
+          <span className={styles.liveStatusText}>{liveStatusText}</span>
         </div>
       )}
 
-      {!loading && selectedInstitutionId && (
-        <>
-          {/* Work Immersion Duration + supervisor-set attendance windows */}
-          <div className={styles.panel}>
-
-            <div className={styles.panelHeader}>
-              <div className={styles.scheduleHeading}>
-                <h3 className={styles.panelTitle}>
-                  Work Immersion Duration
-                </h3>
-                <p className={styles.muted}>
-                  Set the immersion duration per supervisor.
-                  Weekends (Saturday/Sunday) are excluded from
-                  attendance days.
-                </p>
-              </div>
-
-              {config && (
-                <div className={styles.windowSummary}>
-                  <span className={styles.windowLabel}>Attendance Windows</span>
-                  <span className={styles.windowValue}>
-                    <span className={styles.windowTag}>Time In</span>
-                    {normalizeTimeInput(config.time_in_open)} - {normalizeTimeInput(config.time_in_close)}
-                  </span>
-                  <span className={styles.windowValue}>
-                    <span className={styles.windowTag}>Time Out</span>
-                    {normalizeTimeInput(config.time_out_open)} - {normalizeTimeInput(config.time_out_close)}
-                  </span>
-                  <span className={styles.windowNote}>Set by the supervisor</span>
-                </div>
-              )}
-            </div>
-
-            {groups.map((group) => {
-
-              const schedule = group.schedule || {};
-
-              const form = {
-                duration_type:
-                  schedule.duration_type || 'days',
-
-                duration_value:
-                  schedule.duration_value || 10,
-
-                // FIX: normalize backend date
-                start_date:
-                  normalizeDateInput(
-                    schedule.start_date
-                  ),
-              };
-
-              const computedDates =
-                computeDates(group);
-
-              return (
-                <div
-                  key={
-                    group.supervisor_id || 'institution'
-                  }
-                  className={styles.supervisorGroup}
-                >
-
-                  <div className={styles.groupButtons}>
-
-                    <button
-                      type="button"
-                      className={styles.scheduleButton}
-                      onClick={() => setCalendarGroup({
-                        title: group.supervisor_name || 'Partner Institution Students',
-                        dates: computedDates,
-                      })}
-                    >
-                      <CalendarDays size={18} strokeWidth={2} aria-hidden="true" />
-                      <span className={styles.scheduleButtonText}>
-                        <strong>View Immersion Schedule</strong>
-                        <span>
-                          {computedDates.length} day{computedDates.length === 1 ? '' : 's'}
-                          {form.start_date ? ` · starts ${form.start_date}` : ''}
-                        </span>
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      className={styles.scheduleButton}
-                      onClick={() => setRecordsOpen(true)}
-                    >
-                      <ClipboardList size={18} strokeWidth={2} aria-hidden="true" />
-                      <span className={styles.scheduleButtonText}>
-                        <strong>View Attendance Records</strong>
-                        <span>Every student against each scheduled immersion date</span>
-                      </span>
-                    </button>
-
-                  </div>
-
-                </div>
-              );
-            })}
+      <section className={styles.panel}>
+        <div className={styles.panelHeader}>
+          <div className={styles.scheduleHeading}>
+            <h3 className={styles.panelTitle}>Work Immersion Schedule</h3>
+            {supervisor && <p className={styles.scheduleSummary}>{supervisor}</p>}
           </div>
+          {windows && (
+            <div className={styles.windowSummary}>
+              <span className={styles.windowLabel}>Attendance Windows</span>
+              <span className={styles.windowValue}>
+                <span className={styles.windowTag}>Time In</span>
+                {windows.time_in.open.slice(0, 5)}–{windows.time_in.close.slice(0, 5)}
+              </span>
+              <span className={styles.windowValue}>
+                <span className={styles.windowTag}>Time Out</span>
+                {windows.time_out.open.slice(0, 5)}–{windows.time_out.close.slice(0, 5)}
+              </span>
+              <span className={styles.windowNote}>{status.timezone}</span>
+            </div>
+          )}
+        </div>
 
-          <AttendanceInsights report={report} />
-        </>
-      )}
+        <div className={styles.supervisorGroup}>
+          <div className={styles.groupButtons}>
+            <button
+              type="button"
+              className={styles.scheduleButton}
+              disabled={!report.dates.length}
+              onClick={() => setCalendarOpen(true)}
+            >
+              <CalendarDays size={18} strokeWidth={2} aria-hidden="true" />
+              <span className={styles.scheduleButtonText}>
+                <strong>View Immersion Schedule</strong>
+                <span>{report.dates.length} agreed workdays</span>
+              </span>
+            </button>
+            <button type="button" className={styles.scheduleButton} onClick={() => setRecordsOpen(true)}>
+              <ClipboardList size={18} strokeWidth={2} aria-hidden="true" />
+              <span className={styles.scheduleButtonText}>
+                <strong>View Attendance Records</strong>
+                <span>Attendance by student and workday</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      </section>
 
-      {!loading && !selectedInstitutionId && (
-        <p className={styles.info}>
-          You are not assigned to a partner institution yet.
-        </p>
-      )}
+      {report.error
+        ? <p className={styles.error} role="alert">{report.error}</p>
+        : <AttendanceInsights report={report} />}
 
-      {calendarGroup && (
+      {calendarOpen && report.dates.length > 0 && (
         <ImmersionScheduleCalendar
-          dates={calendarGroup.dates}
-          title={calendarGroup.title}
-          batchLabel={institutionName}
-          onClose={() => setCalendarGroup(null)}
+          dates={report.dates}
+          title={batch.batch_label}
+          institutionName={institutionName}
+          onClose={closeCalendar}
         />
       )}
 
@@ -400,16 +157,10 @@ function TeacherAttendance() {
           >
             <div className={styles.calHeader}>
               <div className={styles.calIdentity}>
-                <span className={styles.calHeaderIcon} aria-hidden="true">
-                  <ClipboardList size={20} strokeWidth={2} />
-                </span>
+                <span className={styles.calHeaderIcon} aria-hidden="true"><ClipboardList size={20} strokeWidth={2} /></span>
                 <div>
-                  <span className={styles.calEyebrow}>Attendance Records</span>
                   <h2 id="attendance-records-title">Scheduled Immersion Attendance</h2>
-                  <p>
-                    {institutionName ? `${institutionName} · ` : ''}
-                    Every enrolled student against each scheduled work immersion date.
-                  </p>
+                  <p>{batch.batch_label}</p>
                 </div>
               </div>
               <button
@@ -421,14 +172,84 @@ function TeacherAttendance() {
                 <X size={18} />
               </button>
             </div>
-
             <div className={styles.calBody}>
               <TeacherAttendanceRecords variant="body" report={report} />
             </div>
           </section>
         </div>
       )}
+    </>
+  );
+}
 
+function InstitutionAttendance({ batches, institutionName, token }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const batch = batches.find(({ id }) => id === selectedId) || batches[0];
+
+  if (!batch) return <p className={styles.info}>No published deployments are assigned to you at this institution.</p>;
+
+  return (
+    <>
+      {batches.length > 1 && (
+        <label className={styles.deploymentPicker}>
+          Deployment
+          <select value={batch.id} onChange={(event) => setSelectedId(Number(event.target.value))}>
+            {batches.map(({ id, batch_label }) => <option key={id} value={id}>{batch_label}</option>)}
+          </select>
+        </label>
+      )}
+      <DeploymentAttendance key={batch.id} batch={batch} institutionName={institutionName} token={token} />
+    </>
+  );
+}
+
+function TeacherAttendance() {
+  const { token } = useAuth();
+  const { institutionId, institutionName, loading, error } = usePartnerInstitution();
+  const [deployments, setDeployments] = useState(null);
+  const current = deployments?.token === token ? deployments : null;
+
+  useEffect(() => {
+    if (!token) return undefined;
+    const request = new AbortController();
+    getMyTeacherBatch(token, request.signal)
+      .then((data) => {
+        if (!request.signal.aborted) setDeployments({ token, batches: data.batches || [] });
+      })
+      .catch((err) => {
+        if (!request.signal.aborted) {
+          setDeployments({ token, error: attendanceError(err, 'Could not load your published deployments.') });
+        }
+      });
+    return () => request.abort();
+  }, [token]);
+
+  const loadError = error || current?.error;
+  const isLoading = loading || Boolean(institutionId && token && !current);
+
+  return (
+    <div className={styles.page}>
+      <div className={styles.header}>
+        <div>
+          <h2 className={styles.title}>Attendance Monitor</h2>
+          <p className={styles.pageDescription}>View attendance windows and records for your assigned deployments.</p>
+        </div>
+      </div>
+
+      {loadError ? (
+        <p className={styles.error} role="alert">{loadError}</p>
+      ) : isLoading ? (
+        <p className={styles.info}>Loading attendance deployments…</p>
+      ) : !institutionId ? (
+        <p className={styles.info}>You are not assigned to a partner institution yet.</p>
+      ) : current?.batches && (
+        <InstitutionAttendance
+          key={institutionId}
+          batches={current.batches.filter((batch) => batch.partner_institution_id === institutionId)}
+          institutionName={institutionName}
+          token={token}
+        />
+      )}
     </div>
   );
 }

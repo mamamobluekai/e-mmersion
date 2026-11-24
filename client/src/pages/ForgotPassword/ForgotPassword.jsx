@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
   Mail,
   Send,
@@ -11,11 +11,13 @@ import {
 } from 'lucide-react';
 
 import { forgotPassword } from '../../api/authApi';
+import { getLoginPage } from '../../config/login';
 import styles from '../SetPassword/SetPassword.module.css';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function ForgotPassword() {
+  const loginRole = useLocation().state?.loginRole;
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -107,7 +109,7 @@ export default function ForgotPassword() {
                 Use a different email
               </button>
 
-              <Link to="/login" className={styles.btn}>
+              <Link to={getLoginPage(loginRole)} state={{ loginRole }} className={styles.btn}>
                 <ArrowLeft size={16} />
                 Back to login
               </Link>
@@ -180,7 +182,7 @@ export default function ForgotPassword() {
 
           <p className={styles.footer}>
             Remembered it?{' '}
-            <Link to="/login" className={styles.backLink}>
+            <Link to={getLoginPage(loginRole)} state={{ loginRole }} className={styles.backLink}>
               Back to login
             </Link>
           </p>

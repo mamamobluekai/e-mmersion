@@ -12,6 +12,7 @@ import {
   Info,
   List,
   Layers,
+  ListChecks,
 } from 'lucide-react';
 
 const links = [
@@ -44,6 +45,11 @@ const links = [
     to: '/dashboard/coordinator/partner-institutions',
     label: 'Partner Institutions',
     icon: Building2,
+  },
+  {
+    to: '/dashboard/coordinator/evaluation-criteria',
+    label: 'Evaluation Criteria',
+    icon: ListChecks,
   },
   {
     to: '/dashboard/coordinator/deployment',

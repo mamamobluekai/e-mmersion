@@ -154,6 +154,32 @@
 
 .inactiveToggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.8rem; font-weight: 650; white-space: nowrap; }
 .inactiveToggle input { accent-color: var(--maroon); }
+.ratingSort select {
+  min-height: 38px;
+  max-width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--wim-border-input);
+  border-radius: 8px;
+  background: var(--wim-bg-input);
+  color: var(--wim-text);
+  font: inherit;
+  font-size: .8rem;
+}
+
+.feedbackLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-block-start: 10px;
+  color: var(--wim-text-secondary);
+  font-size: .75rem;
+}
+.feedbackLine svg { color: var(--wim-brand); }
+.feedbackLine strong { color: var(--wim-text-strong); font-size: .88rem; }
+.topRating, .lowRating { padding: 3px 7px; border-radius: 999px; font-weight: 650; }
+.topRating { color: var(--wim-success-text); background: var(--wim-success-bg); }
+.lowRating { color: var(--wim-warning-text); background: var(--wim-warning-bg); }
 
 .institutionGrid {
   display: grid;

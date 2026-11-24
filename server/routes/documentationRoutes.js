@@ -9,17 +9,19 @@ const {
   gradeDailyDoc,
   getDocumentationCriteria,
   saveDocumentationCriteria,
-  getBatchDailyDocSummary,
-  ensureDocumentationTables,
+  getDailyDocSummary,
 } = require('../controllers/documentationController');
 
 router.use(authenticate);
 
-router.get('/daily', authorize('teacher', 'coordinator', 'admin', 'student'), requireImmersion, getStudentDailyDocs);
+const reviewers = ['teacher', 'supervisor', 'coordinator', 'admin'];
+
+router.get('/daily', authorize(...reviewers, 'student'), requireImmersion, getStudentDailyDocs);
 router.post('/daily/submit', authorize('student'), requireImmersion, submitDailyDoc);
-router.post('/daily/:docId/grade', authorize('teacher', 'coordinator', 'admin'), gradeDailyDoc);
-router.get('/criteria', authorize('teacher', 'coordinator', 'admin', 'student'), requireImmersion, getDocumentationCriteria);
+router.post('/daily/:docId/grade', authorize(...reviewers), gradeDailyDoc);
+router.get('/criteria', authorize(...reviewers, 'student'), requireImmersion, getDocumentationCriteria);
 router.put('/criteria', authorize('teacher', 'coordinator', 'admin'), saveDocumentationCriteria);
-router.get('/batch/:batchId/summary', authorize('teacher', 'coordinator', 'admin'), getBatchDailyDocSummary);
+router.get('/batch/:batchId/summary', authorize(...reviewers), getDailyDocSummary);
+router.get('/partner-institutions/:institutionId/summary', authorize(...reviewers), getDailyDocSummary);
 
 module.exports = router;

@@ -30,6 +30,9 @@ import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/themeContextValue';
 import { getPasswordFormProblem } from '../../utils/passwordPolicy';
 import { StudentSettingsBackButton } from './studentDashboard/StudentSettings';
+import { ActivityHistoryLink } from './ActivityHistory';
+import AccountDevices from './AccountDevices';
+import { recordThemeChange } from '../../api/activityHistoryApi';
 import styles from './UserProfileSettings.module.css';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -76,7 +79,7 @@ const roleLabels = {
   admin: 'Administrator',
 };
 
-export default function UserProfileSettings({ section = null }) {
+export default function UserProfileSettings({ section = null, onNavigate }) {
   const { showToast } = useToast();
   const { user, updateUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -675,6 +678,7 @@ export default function UserProfileSettings({ section = null }) {
             </button>
 
 </form>
+          <AccountDevices />
         </section>
 
         {/* ADDITIONAL SETTINGS */}
@@ -701,7 +705,7 @@ export default function UserProfileSettings({ section = null }) {
                 <button
                   type="button"
                   className={styles.themeButton}
-                  onClick={toggleTheme}
+                  onClick={() => { toggleTheme(); recordThemeChange(); }}
                   aria-pressed={theme === 'dark'}
                   style={{
                     display: 'inline-flex',
@@ -941,6 +945,9 @@ export default function UserProfileSettings({ section = null }) {
       {/* Hidden while a section is open in a modal, so the page behind the
           overlay does not show a second copy of the same form. */}
       {(section || !modalSection) && contentGrid}
+      {!section && !modalSection && ['teacher', 'coordinator', 'supervisor'].includes(user?.role) && (
+        <ActivityHistoryLink to={`/dashboard/${user.role}/settings/history`} onClick={onNavigate} />
+      )}
 
       {/* =========================================
           PHONE SECTION MODAL
@@ -995,7 +1002,7 @@ export default function UserProfileSettings({ section = null }) {
           document.body
         )}
 
-      {section && <StudentSettingsBackButton />}
+      {section && <StudentSettingsBackButton to={user?.role && user.role !== 'student' ? `/dashboard/${user.role}/profile` : undefined} />}
     </div>
   );
 }

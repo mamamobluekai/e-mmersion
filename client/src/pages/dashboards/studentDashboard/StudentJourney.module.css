@@ -23,8 +23,7 @@
   background: linear-gradient(110deg, var(--journey-surface), var(--wim-brand-tint, #fff7f8));
 }
 
-.hero h1,
-.stageHeader h1 {
+.hero h1 {
   margin: 0 0 10px;
   font-size: clamp(1.75rem, 3.8vw, 3.25rem);
   font-weight: 780;
@@ -32,7 +31,7 @@
   letter-spacing: -.045em;
 }
 
-.hero p, .stageHeader p, .stageCard p, .panel p { margin: 0; line-height: 1.65; color: var(--journey-muted); }
+.hero p, .stageCard p, .panel p { margin: 0; line-height: 1.65; color: var(--journey-muted); }
 .hero .eyebrow {
   color: var(--journey-accent);
   margin-bottom: 10px;
@@ -103,8 +102,8 @@
 .trailStep[data-stage-state='active'] .stageCard { border-color: #b97b75; }
 .trailStep[data-stage-state='completed'] .marker { background: #f3dce2; color: #761929; }
 .trailStep[data-stage-state='active'] .marker { background: var(--journey-accent); color: white; }
-.stageCard h2, .panel h2 { margin: 0 0 7px; font-size: clamp(1.18rem, 2.2vw, 1.55rem); }
-.stageMeta, .stageFooter, .document {
+.stageCard h2, .panel > h1 { margin: 0 0 7px; font-size: clamp(1.18rem, 2.2vw, 1.55rem); }
+.stageMeta, .stageFooter {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -126,7 +125,7 @@
 [data-stage-state='completed'] .stageBadge { color: #761929; background: #f3dce2; }
 [data-stage-state='active'] .stageBadge { color: #fff; background: #8b1e2d; }
 
-.action, .tabs a, .backLink {
+.action {
   display: inline-flex;
   gap: 7px;
   align-items: center;
@@ -144,20 +143,13 @@
 }
 .action:not(:disabled):hover { background: #6b1725; color: white; }
 .action:disabled { background: var(--journey-surface); color: var(--journey-muted); border-color: var(--journey-border); cursor: default; }
-.action:focus-visible, .tabs a:focus-visible, .backLink:focus-visible { outline: 2px solid #a85743; outline-offset: 3px; }
-.backLink { padding-inline: 0; background: none; color: var(--journey-ink); }
-.stageHeader { margin-bottom: 20px; }
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 18px;
+.action:focus-visible { outline: 2px solid #a85743; outline-offset: 3px; }
+.action.lockedAction {
+  background: var(--journey-surface);
+  color: var(--journey-ink);
+  border-color: var(--journey-border);
 }
-.tabs a { color: var(--journey-ink); background: var(--journey-surface); border-color: var(--journey-border); }
-.tabs a[aria-current='page'] { color: white; background: var(--journey-accent); border-color: var(--journey-accent); }
-
-.document { margin-top: 16px; }
-.document h3 { margin: 0 0 5px; }
+.action.lockedAction:hover { background: var(--wim-brand-tint, #fff7f8); color: var(--journey-ink); }
 .loadingTitle { font-size: 1.7rem; }
 .report {
   display: grid;

@@ -1,7 +1,7 @@
 // Student attendance actions: time in / time out, with GPS capture, gating,
 // and real-time Socket.IO broadcasts. Scheduling is resolved in Asia/Manila.
 const pool = require('../../db');
-const { getIO } = require('../../sockets');
+const { getIO, emitTrackingChange } = require('../../sockets');
 const { resolveAttendanceState } = require('../teacherControllers/attendanceSettings.controller');
 const { getBatchScheduleForDate } = require('../teacherControllers/immersionSchedule.controller');
 const {
@@ -70,10 +70,11 @@ function todayInTimezone(timezone = 'Asia/Manila') {
 
 // Record a GPS snapshot for an attendance event.
 async function logGps({ student, teacherBatchId, attendanceId, eventType, latitude, longitude, accuracy }) {
+  if (latitude == null || longitude == null) return;
   await pool.query(
     `INSERT INTO gps_logs (student_id, teacher_batch_id, attendance_id, event_type, latitude, longitude, accuracy, student_name)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [student.id, teacherBatchId, attendanceId, eventType, latitude, longitude, accuracy || null, studentName(student)]
+    [student.id, teacherBatchId, attendanceId, eventType, latitude, longitude, accuracy, studentName(student)]
   );
 }
 
@@ -133,7 +134,8 @@ async function assertDateInSchedule(teacherBatchId, dateStr) {
 // POST /api/attendance/check-in  { latitude, longitude, accuracy }
 exports.checkIn = async (req, res) => {
   const userId = req.user.id;
-  const { latitude, longitude, accuracy } = req.body;
+  const { latitude, longitude } = req.body;
+  const accuracy = req.body.accuracy == null ? null : Math.round(req.body.accuracy);
 
   if (latitude == null || longitude == null) {
     return res.status(400).json({ message: 'Location is required to time in.' });
@@ -179,14 +181,14 @@ exports.checkIn = async (req, res) => {
          check_out_time = NULL,
          updated_at = CURRENT_TIMESTAMP
        RETURNING *`,
-      [student.id, batch.teacher_batch_id, attendanceDate, latitude, longitude, accuracy || null]
+      [student.id, batch.teacher_batch_id, attendanceDate, latitude, longitude, accuracy]
     );
     const attendance = attendanceRes.rows[0];
 
     await client.query(
       `INSERT INTO student_locations (student_id, attendance_id, latitude, longitude, accuracy)
        VALUES ($1, $2, $3, $4, $5)`,
-      [student.id, attendance.id, latitude, longitude, accuracy || null]
+      [student.id, attendance.id, latitude, longitude, accuracy]
     );
 
     await logGps({
@@ -194,14 +196,7 @@ exports.checkIn = async (req, res) => {
       eventType: 'check_in', latitude, longitude, accuracy,
     });
 
-    getIO().to(`batch:${batch.teacher_batch_id}`).emit('student:checked_in', {
-      studentId: student.id,
-      attendanceId: attendance.id,
-      studentName: studentName(student),
-      studentNumber: student.student_number,
-      latitude, longitude, accuracy,
-      time: attendance.check_in_time,
-    });
+    emitTrackingChange(batch.teacher_batch_id);
 
     const teacherUserId = await getBatchTeacherUserId(batch.teacher_batch_id);
     void createNotification({
@@ -244,7 +239,8 @@ exports.checkIn = async (req, res) => {
 // POST /api/attendance/check-out  { latitude, longitude, accuracy }
 exports.checkOut = async (req, res) => {
   const userId = req.user.id;
-  const { latitude, longitude, accuracy } = req.body;
+  const { latitude, longitude } = req.body;
+  const accuracy = req.body.accuracy == null ? null : Math.round(req.body.accuracy);
 
   const client = await pool.connect();
   try {
@@ -285,7 +281,7 @@ exports.checkOut = async (req, res) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE student_id = $1 AND date = $5
        RETURNING *`,
-      [student.id, latitude, longitude, accuracy || null, attendanceDate]
+      [student.id, latitude, longitude, accuracy, attendanceDate]
     );
     const attendance = attendanceRes.rows[0];
 
@@ -294,13 +290,7 @@ exports.checkOut = async (req, res) => {
       eventType: 'check_out', latitude, longitude, accuracy,
     });
 
-    getIO().to(`batch:${batch.teacher_batch_id}`).emit('student:checked_out', {
-      studentId: student.id,
-      attendanceId: attendance.id,
-      studentName: studentName(student),
-      studentNumber: student.student_number,
-      time: attendance.check_out_time,
-    });
+    emitTrackingChange(batch.teacher_batch_id);
 
     const teacherUserId = await getBatchTeacherUserId(batch.teacher_batch_id);
     void createNotification({

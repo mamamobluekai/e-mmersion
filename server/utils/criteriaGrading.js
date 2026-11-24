@@ -38,16 +38,18 @@ function ratingForScore(score) {
  * @returns {string|null} error message, or null when valid
  */
 function validateRatings(ratings, criteria = []) {
-  if (!Array.isArray(ratings) || ratings.length === 0) {
+  if (!Array.isArray(ratings) || ratings.length === 0 || criteria.length === 0) {
     return 'Rate every criterion before submitting.';
   }
+  const outstanding = new Set(criteria.map(({ id }) => Number(id)));
   for (const entry of ratings) {
-    const stars = Number(entry.stars);
+    const stars = Number(entry?.stars);
     if (!Number.isInteger(stars) || stars < 1 || stars > MAX_STARS) {
       return 'Each criterion needs a rating from 1 to 5 stars.';
     }
+    if (!outstanding.delete(Number(entry.id))) return 'Rate each current grading criterion exactly once.';
   }
-  if (criteria.length && ratings.length !== criteria.length) {
+  if (outstanding.size) {
     return `Rate all ${criteria.length} criteria before submitting.`;
   }
   return null;

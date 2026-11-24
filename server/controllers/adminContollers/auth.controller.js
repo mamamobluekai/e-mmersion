@@ -1,6 +1,5 @@
 const pool = require('../../db');
 const { hashPassword, comparePassword } = require('../../utils/hashPassword');
-const { generateAccessToken, generateRefreshToken } = require('../../utils/generateToken');
 const {
   resetLoginAttempts,
   getLockoutState,
@@ -12,6 +11,12 @@ const { getUnreadNotificationCount, ensureAdminTables, ensureCoordinatorRegistra
 const { logSecurityEvent, SECURITY_EVENTS, SEVERITY } = require('../../utils/securityLogger');
 const tokenStore = require('../../utils/tokenStore');
 const { getRefreshCookieOptions } = require('../../utils/refreshCookie');
+const deviceSessions = require('../../services/deviceSessions.service');
+const { notifyNewLogin } = require('../../services/loginAlerts.service');
+
+const attemptLogged = (req, email) => {
+  void deviceSessions.recordFailedLogin(req, email).catch((error) => console.error('Login activity:', error.message));
+};
 
 const login = async (req, res) => {
   try {
@@ -27,6 +32,7 @@ const login = async (req, res) => {
 
     const lockout = await getLockoutState(trimmedEmail);
     if (lockout.locked) {
+      attemptLogged(req, trimmedEmail);
       await logSecurityEvent({
         type: SECURITY_EVENTS.LOGIN_LOCKED,
         severity: SEVERITY.WARNING,
@@ -55,6 +61,7 @@ const login = async (req, res) => {
     // what makes "wrong tab" recoverable; see utils/loginErrors.js for the
     // privacy switch.
     if (user.role !== 'admin') {
+      attemptLogged(req, trimmedEmail);
       await recordFailure(trimmedEmail, req.ip);
       await logSecurityEvent({ type: SECURITY_EVENTS.LOGIN_FAILED, severity: SEVERITY.WARNING, req, email: trimmedEmail, detail: 'admin login: non-admin account' });
       return sendLoginError(res, 'WRONG_ROLE_ADMIN', { role: user.role });
@@ -62,15 +69,18 @@ const login = async (req, res) => {
 
     const match = await comparePassword(password, user.password);
     if (!match) {
+      attemptLogged(req, trimmedEmail);
       await recordFailure(trimmedEmail, req.ip);
       await logSecurityEvent({ type: SECURITY_EVENTS.LOGIN_FAILED, severity: SEVERITY.WARNING, req, email: trimmedEmail, detail: 'admin login: bad password' });
       return sendLoginError(res, 'WRONG_PASSWORD');
     }
 
     if (user.status === 'pending') {
+      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_PENDING');
     }
     if (user.status === 'disapproved') {
+      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_DISAPPROVED_ADMIN');
     }
 
@@ -82,22 +92,9 @@ const login = async (req, res) => {
     );
     const profile = adminResult.rows[0] || {};
 
-    const payload = { id: user.id, email: user.email, role: user.role };
-    const accessToken = generateAccessToken(payload);
-    // generateRefreshToken returns { token, jti }; persist the rotation record
-    // so this token can be validated and revoked later (#7 session hijacking).
-    const { token: refreshToken, jti: refreshJti } = generateRefreshToken(payload);
-
-    try {
-      await tokenStore.storeRefreshToken({ userId: user.id, token: refreshToken, jti: refreshJti, req });
-    } catch (storeErr) {
-      console.warn('Failed to persist admin refresh token:', storeErr.message);
-    }
-
-    res.cookie('refreshToken', refreshToken, {
-      ...getRefreshCookieOptions(),
-      maxAge: tokenStore.REFRESH_TTL_MS,
-    });
+    const session = await deviceSessions.startSession(req, res, user);
+    if (!session) return sendLoginError(res, 'WRONG_PASSWORD');
+    void notifyNewLogin(user, session).catch((error) => console.error('Login alert:', error.message));
 
     await logSecurityEvent({
       type: SECURITY_EVENTS.LOGIN_SUCCESS,
@@ -135,7 +132,7 @@ const login = async (req, res) => {
     const unread = await getUnreadNotificationCount(user.id);
     res.json({
       message: 'Login successful.',
-      accessToken,
+      accessToken: session.accessToken,
       csrfToken: req.cookies?.csrfToken || null,
       user: safeUser,
       unreadNotifications: unread,
@@ -155,13 +152,13 @@ const logout = async (req, res) => {
 
   // Revoke the refresh token and deny-list the current access token (#7).
   try {
-    const refresh = req.cookies?.refreshToken;
-    if (refresh) await tokenStore.revokeRefreshToken(refresh);
+    await deviceSessions.endCurrentSession(req.user);
     if (req.user?.jti) {
       await tokenStore.revokeAccessToken({ jti: req.user.jti, userId: req.user.id, reason: 'admin_logout' });
     }
   } catch (e) {
     console.warn('Admin logout revoke error:', e.message);
+    return res.status(503).json({ error: 'Could not end the session. Try again.' });
   }
 
   res.clearCookie('refreshToken', getRefreshCookieOptions());

@@ -487,6 +487,10 @@ async function archivePeriod(periodId, archivedBy) {
     );
 
     if (studentPks.length) {
+      const { rows: [feedbackSchema] } = await client.query(`SELECT to_regclass('public.work_immersion_feedback') AS table_name`);
+      if (feedbackSchema.table_name) {
+        await client.query(`UPDATE public.work_immersion_feedback SET student_id = NULL WHERE student_id = ANY($1::int[])`, [studentPks]);
+      }
       await client.query(`DELETE FROM students WHERE id = ANY($1::int[])`, [studentPks]);
     }
     const teacherPks = teachers.map((t) => t.teacher_pk).filter(Boolean);

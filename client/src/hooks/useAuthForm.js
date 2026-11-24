@@ -4,14 +4,10 @@ import { getErrorMessage, getLoginErrorTitle } from '../utils/errors';
 import { getPasswordFormProblem } from '../utils/passwordPolicy';
 import { useToast } from '../components/admin/toastContext';
 
-// The tabs the sign-in form offers. Must match the `id` values the server stores
-// on a user row, otherwise the automatic tab switch below cannot apply.
-const ROLES = ['student', 'teacher', 'coordinator', 'supervisor'];
-
-export function useAuthForm(onAuthSuccess) {
+export function useAuthForm(onAuthSuccess, initialRole) {
   const { showToast } = useToast();
   const [mode, setMode] = useState('login');
-  const [role, setRole] = useState('student');
+  const [role, setRole] = useState(initialRole);
   const [form, setForm] = useState({
     studentId: '',
     firstName: '',
@@ -73,7 +69,7 @@ export function useAuthForm(onAuthSuccess) {
             password: form.password,
             confirmPassword: form.confirmPassword,
             phone: form.phone,
-            role,
+            role: 'student',
           };
 
       const data = mode === 'login'
@@ -110,18 +106,9 @@ export function useAuthForm(onAuthSuccess) {
     } catch (err) {
       if (mode === 'login') {
         // Sign-in failures go to a toast. err.code says which one it was -
-        // wrong password, wrong role tab, locked, pending - and err.message is
+        // wrong password, wrong role, locked, pending - and err.message is
         // the server's explanation of what to do about it.
         showToast(`${getLoginErrorTitle(err.code)}: ${err.message}`, 'error', 7000);
-
-        // Signing in on the wrong role tab is the most common mistake, and the
-        // server tells us the account's real role. Move the user to it instead
-        // of leaving them to find it themselves.
-        const actualRole = err.data?.actualRole;
-        if (actualRole && ROLES.some((r) => r.id === actualRole)) {
-          setRole(actualRole);
-          showToast(`Switched to the ${actualRole} tab for you.`, 'info', 5000);
-        }
       } else {
         // Registration keeps its inline alert: it sits on the form next to the
         // fields that caused it, and the user stays on the page to fix them.

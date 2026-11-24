@@ -64,7 +64,7 @@ function sendLoginError(res, code, detail, extra) {
     },
     WRONG_ROLE_SELECTED: {
       status: 401,
-      message: (d) => `This account is registered as ${roleLabel(d.role)}. You signed in on the ${roleLabel(d.selected)} tab - switch to the ${roleLabel(d.role)} one.`,
+      message: (d) => `This account is registered as ${roleLabel(d.role)}. Sign in with the ${roleLabel(d.role)} role.`,
     },
     ACCOUNT_PENDING: {
       status: 403,

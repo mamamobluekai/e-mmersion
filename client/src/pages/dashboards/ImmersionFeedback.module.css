@@ -1,0 +1,119 @@
+.page {
+  width: min(100%, 1050px);
+  margin-inline: auto;
+  color: var(--wim-text);
+}
+
+.header { margin-block-end: 22px; }
+.header h1 {
+  margin: 0 0 7px;
+  color: var(--wim-text-strong);
+  font-size: clamp(1.65rem, 3.4vw, 2.55rem);
+  letter-spacing: -.035em;
+  line-height: 1.15;
+}
+.header p, .hint { margin: 0; color: var(--wim-text-secondary); line-height: 1.55; }
+
+.stack { display: grid; gap: 16px; min-width: 0; }
+.card {
+  min-width: 0;
+  margin: 0;
+  padding: clamp(14px, 2.7vw, 26px);
+  border: 1px solid var(--wim-border-maroon);
+  border-radius: 16px;
+  background: var(--wim-bg-surface);
+}
+.card h2 { margin: 0; font-size: clamp(1.05rem, 2.2vw, 1.3rem); overflow-wrap: anywhere; }
+.cardHeading { display: flex; align-items: center; gap: 12px; }
+.cardHeading p { margin: 0 0 3px; color: var(--wim-text-secondary); font-size: .8rem; }
+.icon {
+  display: grid;
+  flex: 0 0 42px;
+  place-items: center;
+  height: 42px;
+  border-radius: 11px;
+  background: var(--wim-brand-tint);
+  color: var(--wim-brand);
+}
+
+.rows { margin: 14px 0 0; padding: 0; list-style: none; }
+.ratingRow, .editRow, .summaryRow {
+  display: grid;
+  align-items: center;
+  gap: 10px 18px;
+  padding-block: 13px;
+  border-block-start: 1px solid var(--wim-border);
+  font-size: .94rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ratingRow { grid-template-columns: minmax(0, 1fr) minmax(155px, 318px); }
+.editRow { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.summaryRow { grid-template-columns: minmax(0, 1fr) auto auto; }
+.summaryRow small { color: var(--wim-text-secondary); }
+.summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.summary h2 { margin-block-end: 5px; }
+.summary .score { font-size: clamp(1.15rem, 3vw, 1.7rem); }
+.score { display: inline-flex; align-items: center; gap: 6px; color: var(--wim-text-strong); white-space: nowrap; }
+.score svg { color: var(--wim-brand); }
+
+.field { display: grid; gap: 6px; min-width: 0; font-size: .84rem; font-weight: 650; }
+.page > .field { max-width: 480px; margin-block-end: 16px; }
+.field select, .field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 11px;
+  border: 1px solid var(--wim-border-input);
+  border-radius: 9px;
+  background: var(--wim-bg-input);
+  color: var(--wim-text);
+  font: inherit;
+  font-weight: 400;
+}
+.field textarea { resize: vertical; }
+.footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.primary, .secondary, .remove {
+  display: inline-flex;
+  justify-self: start;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 8px 13px;
+  border: 1px solid var(--wim-border-input);
+  border-radius: 9px;
+  background: var(--wim-bg-surface);
+  color: var(--wim-text);
+  font: inherit;
+  font-size: .88rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.primary { color: #fff; background: var(--wim-brand); border-color: var(--wim-brand); }
+.primary:not(:disabled):hover { background: var(--wim-brand-dark); }
+.secondary:not(:disabled):hover, .remove:not(:disabled):hover { background: var(--wim-bg-hover); }
+.remove { color: var(--wim-danger-text); min-width: 44px; }
+.primary:disabled, .secondary:disabled, .remove:disabled { opacity: .6; cursor: default; }
+.page :is(button, select, textarea):focus-visible { outline: 2px solid var(--wim-brand); outline-offset: 2px; }
+
+.success, .error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--wim-success-border);
+  border-radius: 9px;
+  background: var(--wim-success-bg);
+  color: var(--wim-success-text);
+}
+.error { border-color: var(--wim-danger-border); background: var(--wim-danger-bg); color: var(--wim-danger-text); }
+.page > :is(.success, .error, .secondary) { margin-block-end: 12px; }
+
+@media (max-width: 720px) {
+  .ratingRow { grid-template-columns: minmax(0, 1fr); }
+  .summaryRow { grid-template-columns: minmax(0, 1fr) auto; }
+  .summaryRow small { grid-row: 2; }
+  .summaryRow strong { grid-column: 2; grid-row: 1 / 3; }
+}

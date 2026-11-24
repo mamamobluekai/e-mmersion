@@ -19,6 +19,7 @@ import { setActivationPassword } from '../../api/userApi';
 import { useAuth } from '../../context/AuthContext';
 import { getPasswordFormProblem } from '../../utils/passwordPolicy';
 import { API_BASE } from '../../config/api';
+import { getLoginPage } from '../../config/login';
 import styles from './SetPassword.module.css';
 
 // Mirrors the server rule in server/utils/passwordPolicy.js. The displayed
@@ -50,6 +51,7 @@ export default function SetPassword() {
     activationMode ? 'activation' : token ? 'verifying' : email ? 'email' : 'missing',
   );
   const [tokenError, setTokenError] = useState('');
+  const [loginRole, setLoginRole] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   // Used by the legacy link-based reset flow; activation redirects to the dashboard.
@@ -62,8 +64,11 @@ export default function SetPassword() {
     setTokenState('verifying');
 
     verifyResetToken(token)
-      .then(() => {
-        if (active) setTokenState('valid');
+      .then((data) => {
+        if (active) {
+          setLoginRole(data.role);
+          setTokenState('valid');
+        }
       })
       .catch((err) => {
         if (!active) return;
@@ -239,7 +244,7 @@ export default function SetPassword() {
                 <Link to="/forgot-password" className={styles.btn}>
                   Request a new link
                 </Link>
-                <Link to="/login" className={styles.secondaryBtn}>
+                <Link to={getLoginPage(loginRole)} state={{ loginRole }} className={styles.secondaryBtn}>
                   <ArrowLeft size={16} />
                   Back to login
                 </Link>
@@ -260,7 +265,7 @@ export default function SetPassword() {
                 <Link to="/forgot-password" className={styles.btn}>
                   Request a reset link
                 </Link>
-                <Link to="/login" className={styles.secondaryBtn}>
+                <Link to={getLoginPage(loginRole)} state={{ loginRole }} className={styles.secondaryBtn}>
                   <ArrowLeft size={16} />
                   Back to login
                 </Link>
@@ -439,7 +444,7 @@ export default function SetPassword() {
               </form>
 
               <p className={styles.footer}>
-                <Link to="/login" className={styles.backLink}>
+                <Link to={getLoginPage(loginRole)} state={{ loginRole }} className={styles.backLink}>
                   <ArrowLeft size={13} /> Back to login
                 </Link>
               </p>

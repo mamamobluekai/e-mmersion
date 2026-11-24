@@ -31,6 +31,7 @@ function AdminDashboard({ user, onLogout }) {
         <Route path="coordinators" element={<Coordinators />} />
         <Route path="settings" element={<Settings />} />
         <Route path="profile" element={<AdminProfileSettings />} />
+        <Route path="settings/security" element={<AdminProfileSettings key="security" section="security" />} />
         <Route path="about" element={<About user={user} />} />
         <Route path="reports" element={<Reports />} />
         <Route path="access-logs" element={<AccessLogs />} />

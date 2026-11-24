@@ -16,7 +16,7 @@ async function apiFetch(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || data.message || 'Request failed.');
+    throw Object.assign(new Error(data.error || data.message || 'Request failed.'), { status: res.status });
   }
   return data;
 }
@@ -60,4 +60,27 @@ export async function getMyEvaluation() {
 
 export async function getTeacherBatchEvaluations() {
   return apiFetch('/evaluation/teacher/my-batch');
+}
+
+const feedbackPath = '/evaluation/immersion-feedback';
+
+export const getImmersionFeedbackForm = (signal) => apiFetch(`${feedbackPath}/form`, { signal });
+export const getImmersionFeedbackCriteria = (signal) => apiFetch(`${feedbackPath}/criteria`, { signal });
+export const getInstitutionFeedbackRatings = () => apiFetch(`${feedbackPath}/institutions`);
+export const getMySupervisorFeedback = (signal) => apiFetch(`${feedbackPath}/supervisor`, { signal });
+
+export function saveImmersionFeedbackCriteria(criteria, version) {
+  return apiFetch(`${feedbackPath}/criteria`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ criteria, version }),
+  });
+}
+
+export function submitImmersionFeedback(deploymentId, version, ratings) {
+  return apiFetch(`${feedbackPath}/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deploymentId, version, ratings }),
+  });
 }

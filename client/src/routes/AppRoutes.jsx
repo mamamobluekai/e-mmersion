@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useAdminAuth } from '../context/useAdminAuth';
@@ -16,6 +16,7 @@ import StudentDashboard from '../pages/dashboards/studentDashboard/studentDashbo
 import SupervisorDashboard from '../pages/dashboards/supervisorDashboard/SupervisorDashboard';
 import SetPassword from '../pages/SetPassword/SetPassword';
 import ForgotPassword from '../pages/ForgotPassword/ForgotPassword';
+import { getLoginPage } from '../config/login';
 
 // One-time Terms and Agreement, shown after every sign-in until the user agrees.
 //
@@ -62,16 +63,20 @@ function TermsGate({ children }) {
   return <TermsAgreementGate onAgree={handleAgree} onCancel={handleCancel} busy={busy} />;
 }
 
-function ProtectedRoute({ children, allowedRoles, redirectTo = '/login' }) {
+function ProtectedRoute({ children, allowedRoles }) {
   const { user } = useAuth();
   const { status: maintenance } = useMaintenance();
+  const { pathname } = useLocation();
+  const loginRole = allowedRoles?.[0];
+  const loginPage = getLoginPage(loginRole);
+  const securityRole = pathname === `/dashboard/${loginRole}/settings/security` ? loginRole : undefined;
 
   if (!user) {
-    return <Navigate to={redirectTo} replace />;
+    return <Navigate to={loginPage} state={{ loginRole, securityRole }} replace />;
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to={redirectTo} replace />;
+    return <Navigate to={loginPage} state={{ loginRole, securityRole }} replace />;
   }
 
   // The server already refuses non-admin calls during maintenance; this stops
@@ -107,7 +112,10 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/login" element={<MaintenanceAware><LoginAndFRegister onAuthSuccess={login} /></MaintenanceAware>} />
+      <Route path="/login" element={<Navigate to={getLoginPage('student')} replace />} />
+      <Route path={getLoginPage('student')} element={<MaintenanceAware><LoginAndFRegister key="student" initialRole="student" onAuthSuccess={login} /></MaintenanceAware>} />
+      <Route path={getLoginPage('teacher')} element={<MaintenanceAware><LoginAndFRegister key="staff" initialRole="teacher" allowRoleSwitch onAuthSuccess={login} /></MaintenanceAware>} />
+      <Route path={getLoginPage('supervisor')} element={<MaintenanceAware><LoginAndFRegister key="supervisor" initialRole="supervisor" onAuthSuccess={login} /></MaintenanceAware>} />
       <Route path="/admin/login" element={<MaintenanceAware><AdminLogin onAuthSuccess={login} /></MaintenanceAware>} />
       <Route path="/register" element={<Navigate to="/login" replace />} />
       <Route path="/set-password" element={<MaintenanceAware><SetPassword /></MaintenanceAware>} />
@@ -117,7 +125,7 @@ function AppRoutes() {
         <Route
           path="admin/*"
           element={
-            <ProtectedRoute allowedRoles={['admin']} redirectTo="/admin/login">
+            <ProtectedRoute allowedRoles={['admin']}>
               <AdminDashboard user={user} onLogout={adminLogout} />
             </ProtectedRoute>
           }

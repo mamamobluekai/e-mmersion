@@ -1,20 +1,7 @@
-// Refresh-token lifecycle and access-token revocation (#7 session hijacking).
-//
-// Design:
-//   - Every login issues a refresh token carrying a unique `jti`. The DB stores
-//     only a SHA-256 *hash* of the token (a stolen database row is not usable).
-//   - Refreshing rotates the token: the old row is marked revoked and linked to
-//     the replacement via `replaced_by`. If a revoked token is ever presented
-//     again that is a strong signal of theft ("refresh token replay"), so every
-//     token for that user is revoked immediately.
-//   - Logout revokes the stored refresh token and adds the access token's `jti`
-//     to a short-lived deny-list (`revoked_tokens`) so it cannot be replayed
-//     until it would naturally expire.
-//   - Access tokens now carry a `jti` (see utils/generateToken.js) which is what
-//     the deny-list and replay detection key on.
+// Hashed refresh-token storage and the access token deny-list.
+// The device session service coordinates rotation and revocation in one transaction.
 const crypto = require('crypto');
 const pool = require('../db');
-const { logSecurityEvent, SECURITY_EVENTS, SEVERITY } = require('./securityLogger');
 
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days, matches the cookie
 const ACCESS_TTL_MS = 60 * 60 * 1000; // 1 hour, matches the access token
@@ -24,11 +11,10 @@ function hashToken(token) {
 }
 
 // Persist a freshly-issued refresh token.
-async function storeRefreshToken({ userId, token, jti, req }) {
-  const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
-  await pool.query(
-    `INSERT INTO refresh_tokens (user_id, token_hash, jti, ip_address, user_agent, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+async function storeRefreshToken({ userId, token, jti, req, sessionId, expiresAt = new Date(Date.now() + REFRESH_TTL_MS), db = pool }) {
+  await db.query(
+    `INSERT INTO refresh_tokens (user_id, token_hash, jti, ip_address, user_agent, expires_at, session_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       userId,
       hashToken(token),
@@ -36,82 +22,29 @@ async function storeRefreshToken({ userId, token, jti, req }) {
       req?.ip?.slice(0, 100) || null,
       req?.headers?.['user-agent']?.slice(0, 500) || null,
       expiresAt,
+      sessionId,
     ]
   );
   return expiresAt;
 }
 
 // Look up a refresh token row by its raw value. Returns null when absent.
-async function findRefreshToken(token) {
-  const result = await pool.query(
+async function findRefreshToken(token, db = pool) {
+  const result = await db.query(
     'SELECT * FROM refresh_tokens WHERE token_hash = $1 LIMIT 1',
     [hashToken(token)]
   );
   return result.rows[0] || null;
 }
 
-// Validate a presented refresh token. Detects replay of already-revoked tokens
-// and, when found, revokes the whole family (defence against a stolen token
-// being reused after the legitimate client already rotated it).
-async function validateRefreshToken(token, req) {
-  const row = await findRefreshToken(token);
-  if (!row) return { valid: false, reason: 'not_found' };
-
-  if (row.revoked_at) {
-    await revokeAllUserTokens(row.user_id, 'refresh_token_replay');
-    await logSecurityEvent({
-      type: SECURITY_EVENTS.TOKEN_REPLAY_DETECTED,
-      severity: SEVERITY.CRITICAL,
-      req,
-      userId: row.user_id,
-      detail: 'Reuse of a revoked refresh token; all sessions revoked.',
-    });
-    return { valid: false, reason: 'revoked' };
-  }
-
-  if (new Date(row.expires_at) < new Date()) {
-    return { valid: false, reason: 'expired' };
-  }
-
-  return { valid: true, row };
-}
-
 // Rotate: revoke the presented token and record which jti replaced it.
-async function rotateRefreshToken(oldToken, newJti) {
-  await pool.query(
+async function rotateRefreshToken(oldToken, newJti, db = pool) {
+  await db.query(
     `UPDATE refresh_tokens
         SET revoked_at = CURRENT_TIMESTAMP, replaced_by = $1
       WHERE token_hash = $2 AND revoked_at IS NULL`,
     [newJti, hashToken(oldToken)]
   );
-}
-
-// Revoke a single refresh token (logout).
-async function revokeRefreshToken(token) {
-  await pool.query(
-    `UPDATE refresh_tokens SET revoked_at = CURRENT_TIMESTAMP
-      WHERE token_hash = $1 AND revoked_at IS NULL`,
-    [hashToken(token)]
-  );
-}
-
-// Revoke every active refresh token for a user (logout-all / theft response).
-async function revokeAllUserTokens(userId, reason = 'logout_all') {
-  const result = await pool.query(
-    `UPDATE refresh_tokens SET revoked_at = CURRENT_TIMESTAMP
-      WHERE user_id = $1 AND revoked_at IS NULL
-      RETURNING jti`,
-    [userId]
-  );
-  if (result.rows.length) {
-    await logSecurityEvent({
-      type: SECURITY_EVENTS.TOKEN_REVOKED,
-      severity: SEVERITY.WARNING,
-      userId,
-      detail: `${result.rows.length} refresh token(s) revoked (${reason}).`,
-    });
-  }
-  return result.rows.length;
 }
 
 // Add an access-token jti to the short-lived deny-list. Expiry mirrors the
@@ -147,10 +80,7 @@ module.exports = {
   hashToken,
   storeRefreshToken,
   findRefreshToken,
-  validateRefreshToken,
   rotateRefreshToken,
-  revokeRefreshToken,
-  revokeAllUserTokens,
   revokeAccessToken,
   isAccessTokenRevoked,
   pruneExpiredRevocations,

@@ -1,5 +1,5 @@
-import { Link, NavLink } from 'react-router-dom';
-import { ArrowDown, ArrowRight, Check, Flag, LockKeyhole, MapPinned, Route } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Check, Flag, LockKeyhole, MapPinned, Route } from 'lucide-react';
 import styles from './StudentJourney.module.css';
 
 const BASE = '/dashboard/student';
@@ -29,7 +29,7 @@ function stageCount(stage, journey) {
   return [Number(journey.evaluation.available), 1];
 }
 
-export function Roadmap({ journey }) {
+export function Roadmap({ journey, onLockedStageClick }) {
   if (!journey) return <div className={styles.page}><h1 className={styles.loadingTitle}>Your immersion roadmap</h1></div>;
 
   return (
@@ -91,7 +91,16 @@ export function Roadmap({ journey }) {
                         ? `${completed} of ${total} missions completed`
                         : 'Waiting for your schedule.'}
                   </small>
-                  {status !== 'locked' && (
+                  {status === 'locked' ? (
+                    <button
+                      type="button"
+                      className={`${styles.action} ${styles.lockedAction}`}
+                      aria-label={`Why is ${stage.title} locked?`}
+                      onClick={() => onLockedStageClick(stage.key)}
+                    >
+                      <LockKeyhole size={16} aria-hidden="true" /> Why is this locked?
+                    </button>
+                  ) : (
                     <Link to={`${BASE}/${stage.path}`} className={styles.action}>
                       {status === 'completed' ? 'View stage' : 'Open stage'} <ArrowRight size={16} />
                     </Link>
@@ -106,51 +115,6 @@ export function Roadmap({ journey }) {
   );
 }
 
-const POST_SECTIONS = [
-  { path: '', label: 'Progress Report' },
-  { path: '/evaluation', label: 'Final Evaluation' },
-  { path: '/documents', label: 'Documents' },
-];
-
-export function JourneyStage({ stage, children }) {
-  const { title, path, description } = STAGES.find((item) => item.key === stage);
-  return (
-    <div className={styles.page}>
-      {stage === 'post' && (
-        <>
-          <header className={styles.stageHeader}>
-            <Link to={`${BASE}/roadmap`} className={styles.backLink}>← Roadmap</Link>
-            <h1>{title}</h1>
-            <p>{description}</p>
-          </header>
-          <nav aria-label={`${title} sections`} className={styles.tabs}>
-            {POST_SECTIONS.map((section) => (
-              <NavLink key={section.path} to={`${BASE}/${path}${section.path}`} end>
-                {section.label}
-              </NavLink>
-            ))}
-          </nav>
-        </>
-      )}
-      {children}
-    </div>
-  );
-}
-
-export function JourneyDownloads({ issued, busy, message, onDownload }) {
-  return (
-    <section className={styles.panel}>
-      <h2>Downloadable documents</h2>
-      <div className={styles.document}>
-        <div>
-          <h3>Certificate of Completion</h3>
-          <p>{issued ? 'Your certificate is ready to download.' : 'Your certificate will appear here after it is issued.'}</p>
-        </div>
-        <button type="button" className={styles.action} disabled={!issued || busy} onClick={onDownload}>
-          <ArrowDown size={16} /> {busy ? 'Preparing…' : 'Download PDF'}
-        </button>
-      </div>
-      {message && <p role="alert">{message}</p>}
-    </section>
-  );
+export function JourneyStage({ children }) {
+  return <div className={styles.page}>{children}</div>;
 }

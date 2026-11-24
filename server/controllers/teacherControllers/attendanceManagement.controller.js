@@ -94,22 +94,20 @@ const getBatchAttendanceReport = async (req, res) => {
     const own = await assertOwnsBatch(req.user, batchId);
     if (own.error) return res.status(own.status).json({ error: own.error });
 
-    const schedules = await pool.query(
-      `SELECT wis.start_date, wis.duration_type, wis.duration_value,
-              dr.confirmed_schedule->'dates' AS agreed_dates
-       FROM work_immersion_schedules wis
-       LEFT JOIN deployment_requests dr ON dr.teacher_batch_id = wis.teacher_batch_id
-         AND dr.workflow_version = 2 AND dr.status = 'approved'
-       WHERE wis.teacher_batch_id = $1
-       ORDER BY wis.start_date ASC`,
-      [batchId]
-    );
-    const { blocked } = await loadExcludedDates(batchId, null);
-    const dates = [...new Set(
-      schedules.rows.flatMap((schedule) => Array.isArray(schedule.agreed_dates)
-        ? schedule.agreed_dates.map(String)
-        : buildImmersionDateList(schedule.start_date, schedule.duration_type, schedule.duration_value, { blockedDates: blocked }))
-    )].sort();
+    const agreedDates = own.access.batch.confirmed_schedule?.dates;
+    let dates;
+    if (Array.isArray(agreedDates)) {
+      dates = [...new Set(agreedDates)].sort();
+    } else {
+      const { rows: schedules } = await pool.query(
+        `SELECT start_date, duration_type, duration_value
+         FROM work_immersion_schedules WHERE teacher_batch_id = $1`, [batchId]
+      );
+      const { blocked } = await loadExcludedDates(batchId, null);
+      dates = [...new Set(schedules.flatMap((schedule) =>
+        buildImmersionDateList(schedule.start_date, schedule.duration_type, schedule.duration_value, { blockedDates: blocked })
+      ))].sort();
+    }
 
     if (dates.length === 0) return res.json({ dates: [], records: [] });
 
@@ -121,13 +119,10 @@ const getBatchAttendanceReport = async (req, res) => {
               sa.check_in_time, sa.check_out_time,
               sa.appeal_time_in_id, sa.appeal_time_out_id
        FROM unnest($2::date[]) AS d(date)
-       CROSS JOIN (
-         SELECT s.id, s.first_name, s.last_name, s.student_number,
-                s.grade_level, s.track_strand, s.photo_url
-         FROM teacher_batch_students tbs
-         JOIN students s ON s.id = tbs.student_id
-         WHERE tbs.teacher_batch_id = $1
-       ) s
+       JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = $1
+         AND (tbs.deployment_started_on IS NULL OR d.date >= tbs.deployment_started_on)
+         AND (tbs.deployment_ended_on IS NULL OR d.date < tbs.deployment_ended_on)
+       JOIN students s ON s.id = tbs.student_id
        LEFT JOIN student_attendance sa
          ON sa.student_id = s.id
         AND sa.teacher_batch_id = $1

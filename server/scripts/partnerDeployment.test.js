@@ -22,6 +22,7 @@ const { loadExcludedDates } = require('../utils/immersionDays');
 const { initializeSocket, getIO } = require('../sockets');
 const { getPreImmersion } = require('../services/studentJourney.service');
 const { archivePeriod } = require('../services/periodArchive.service');
+const { io: connectSocket } = require('../../client/node_modules/socket.io-client');
 
 test('bilateral deployment agreement, roster, attendance, and role scope', async () => {
   const app = require('../app');
@@ -78,7 +79,7 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
         [account.id, account.email]);
     }
     const partner = await query("INSERT INTO partner_institutions (name,address) VALUES ($1,'Main office') RETURNING id", [tag]);
-    const empty = await query("INSERT INTO partner_institutions (name) VALUES ($1) RETURNING id", [`${tag} Unassigned`]);
+    const empty = await query("INSERT INTO partner_institutions (name, industry) VALUES ($1, 'Finance') RETURNING id, name", [`${tag} Unassigned`]);
     const eligible = [];
     const studentsById = new Map();
     await getPreImmersion(0);
@@ -299,11 +300,146 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     assert.deepEqual(await teacherOverview(teacherAccount), initialOverview);
     assert.deepEqual(await teacherOverview(secondTeacherAccount), initialOverview);
     await teacherOverview(outsideTeacherAccount, 403);
+    const attendanceApi = (actor, endpoint, expected = 200) =>
+      call(actor, `/teacher/batch/${batch}/${endpoint}`, 'GET', undefined, expected, 'attendance');
+    const status = await attendanceApi(secondTeacherAccount, 'status');
+    assert.equal(status.scheduled_today, false);
+    assert.equal(status.attendance_open, false);
+    assert.equal(status.active_type, null);
+    assert.ok(status.schedule.time_in.open);
+    await attendanceApi(outsideTeacherAccount, 'status', 403);
+    await attendanceApi(outsideTeacherAccount, 'report', 403);
+    const initialReport = await attendanceApi(teacherAccount, 'report');
+    assert.deepEqual(initialReport.dates, weekdays.slice(0, 10));
+    assert.deepEqual(initialReport.records.map(({ student_id, date, status }) => [student_id, date, status]),
+      weekdays.slice(0, 10).map((date) => [eligible[0], date, null]));
+    const documentation = (actor, path, method = 'GET', body, expected = 200) =>
+      call(actor, path, method, body, expected, 'documentation');
+    const documentationSummary = `/partner-institutions/${partner.id}/summary`;
+    const dailyDocsPath = `/daily?institutionId=${partner.id}&studentId=${eligible[0]}`;
+    const initialDocRoster = (await documentation(host, documentationSummary)).students;
+    assert.deepEqual(initialDocRoster.map(({ student_id, total_docs }) => [student_id, total_docs]), [[eligible[0], 0]]);
+    assert.deepEqual((await documentation(secondTeacherAccount, documentationSummary)).students, initialDocRoster);
+    await documentation(outsideTeacherAccount, documentationSummary, 'GET', undefined, 403);
+    await documentation(outsider, documentationSummary, 'GET', undefined, 403);
+    const livePath = `/location/batch/${batch}`;
+    const tracking = (actor, path, method = 'GET', body, expected = 200) =>
+      call(actor, path, method, body, expected, 'tracking');
+    assert.deepEqual((await tracking(secondTeacherAccount, livePath)).students, []);
+    await tracking(outsideTeacherAccount, livePath, 'GET', undefined, 403);
+    const trackingSocket = (account) => connectSocket(base.replace(/\/api$/, ''), {
+      auth: { token: jwt.sign({ id: account.id, role: account.role }, process.env.JWT_SECRET) },
+      autoConnect: false, reconnection: false,
+    });
+    const mapViewer = trackingSocket(secondTeacherAccount);
+    const otherViewer = trackingSocket(outsideTeacherAccount);
+    const studentViewer = trackingSocket(student);
+    const viewers = [mapViewer, otherViewer, studentViewer];
+    const originalAssignment = await query(`SELECT deployment_started_on FROM teacher_batch_students
+      WHERE teacher_batch_id = $1 AND student_id = $2`, [batch, eligible[0]]);
+    try {
+      await Promise.all(viewers.map(async (viewer) => {
+        const connected = once(viewer, 'connect', { signal: AbortSignal.timeout(5000) });
+        viewer.connect();
+        await connected;
+      }));
+      const join = (viewer) => viewer.timeout(5000).emitWithAck('tracking:join_batch', batch);
+      assert.deepEqual(await Promise.all(viewers.map(join)), [
+        { success: true }, { success: false }, { success: false },
+      ]);
+      await query(`UPDATE deployment_requests SET confirmed_schedule = jsonb_set(confirmed_schedule, '{dates}', $2::jsonb)
+        WHERE teacher_batch_id = $1`, [batch, JSON.stringify([today, ...initialReport.dates])]);
+      await query('UPDATE teacher_batch_students SET deployment_started_on = $2 WHERE teacher_batch_id = $1', [batch, today]);
+      await query('UPDATE attendance_config SET manual_open = true WHERE teacher_batch_id = $1', [batch]);
+      const waitForMapChange = () => once(mapViewer, 'tracking:changed', { signal: AbortSignal.timeout(5000) });
+      await Promise.all([
+        waitForMapChange(),
+        tracking(student, '/attendance/check-in', 'POST', { latitude: 13.36, longitude: 121.95, accuracy: 4.2 }),
+      ]);
+      const [[gpsEvent]] = await Promise.all([
+        waitForMapChange(),
+        tracking(student, '/location/update', 'POST', { latitude: 13.37, longitude: 121.96, accuracy: 3.8 }),
+      ]);
+      assert.deepEqual(gpsEvent, { batchId: batch });
+      const { students: [liveStudent] } = await tracking(secondTeacherAccount, livePath);
+      assert.equal(liveStudent.student_id, eligible[0]);
+      assert.equal(liveStudent.company_name, tag);
+      assert.equal(Number(liveStudent.latitude), 13.37);
+      assert.equal(liveStudent.accuracy, 4);
+      const history = `/location/history/${eligible[0]}`;
+      assert.equal((await tracking(secondTeacherAccount, history)).length, 2);
+      await tracking(outsideTeacherAccount, history, 'GET', undefined, 403);
+      await Promise.all([waitForMapChange(), tracking(student, '/attendance/check-out', 'POST', {})]);
+      assert.deepEqual((await tracking(secondTeacherAccount, livePath)).students, []);
+      await tracking(student, '/location/update', 'POST', { latitude: 13.36, longitude: 121.95 }, 403);
+
+      const { id: fileId } = await query(`INSERT INTO files (student_id, original_name, cloudinary_public_id, cloudinary_url)
+        VALUES ($1, 'reflection.pdf', $2, 'https://example.test/reflection.pdf') RETURNING id`, [eligible[0], tag]);
+      const submission = { batchId: batch, date: today, fileId, reasoning: 'Practiced the assigned task.' };
+      const { doc } = await documentation(student, '/daily/submit', 'POST', submission, 201);
+      const { students: [reviewRoster] } = await documentation(host, documentationSummary);
+      assert.equal(reviewRoster.pending_count, 1);
+      const { docs: [submittedDoc] } = await documentation(host, dailyDocsPath);
+      assert.equal(submittedDoc.file_id, fileId);
+      assert.equal(submittedDoc.reasoning, submission.reasoning);
+      assert.deepEqual((await documentation(outsider, dailyDocsPath)).docs, []);
+      assert.deepEqual((await documentation(outsideTeacherAccount, dailyDocsPath)).docs, []);
+      const { criteria } = await documentation(host, '/criteria');
+      assert.equal(criteria.length, 8);
+      const criteriaRatings = criteria.map(({ id }) => ({ id, stars: 4 }));
+      const gradePath = `/daily/${doc.id}/grade`;
+      const gradePayload = { teacherFeedback: 'Keep documenting your progress.', criteriaRatings };
+      await documentation(outsider, gradePath, 'POST', gradePayload, 404);
+      await documentation(outsideTeacherAccount, gradePath, 'POST', gradePayload, 404);
+      await documentation(host, gradePath, 'POST', {
+        criteriaRatings: [...criteriaRatings.slice(1), criteriaRatings[1]],
+      }, 400);
+      const { grade, doc: gradedDoc } = await documentation(host, gradePath, 'POST', gradePayload);
+      assert.equal(grade.total, 80);
+      assert.equal(gradedDoc.graded_by, host.id);
+      assert.equal((await documentation(student, '/daily')).docs[0].teacher_feedback, gradePayload.teacherFeedback);
+      await documentation(student, '/daily/submit', 'POST', submission, 409);
+      const { students: [gradedRoster] } = await documentation(secondTeacherAccount, documentationSummary);
+      assert.equal(gradedRoster.graded_count, 1);
+      assert.equal(gradedRoster.pending_count, 0);
+      const revisedCriteria = [...criteria.slice(0, 7), { criterion_name: 'Updated evidence', points: 5 }];
+      await documentation(host, '/criteria', 'PUT', { criteria: revisedCriteria }, 403);
+      const { criteria: savedCriteria } = await documentation(teacherAccount, '/criteria', 'PUT', { criteria: revisedCriteria });
+      assert.deepEqual((await documentation(host, '/criteria')).criteria, savedCriteria);
+      assert.ok(savedCriteria.at(-1).id > criteria.at(-1).id);
+      assert.equal(savedCriteria.at(-1).criterion_name, 'Updated evidence');
+    } finally {
+      viewers.forEach((viewer) => viewer.disconnect());
+      await query('DELETE FROM student_daily_documentation WHERE teacher_batch_id = $1 AND date = $2', [batch, today]);
+      await query('DELETE FROM gps_logs WHERE teacher_batch_id = $1 AND student_id = $2', [batch, eligible[0]]);
+      await query('DELETE FROM student_attendance WHERE teacher_batch_id = $1 AND date = $2', [batch, today]);
+      await query('UPDATE attendance_config SET manual_open = false WHERE teacher_batch_id = $1', [batch]);
+      await query('UPDATE teacher_batch_students SET deployment_started_on = $2 WHERE teacher_batch_id = $1',
+        [batch, originalAssignment.deployment_started_on]);
+      await query(`UPDATE deployment_requests SET confirmed_schedule = jsonb_set(confirmed_schedule, '{dates}', $2::jsonb)
+        WHERE teacher_batch_id = $1`, [batch, JSON.stringify(initialReport.dates)]);
+    }
+    // The remaining deployment scenarios share this local HTTP server and client.
+    await require('../middleware/rateLimiters').globalLimiter.resetKey('127.0.0.1');
     const { institutions: reportInstitutions } = await read(host, '/partner-institutions');
     assert.deepEqual(reportInstitutions.map(({ id }) => id), [partner.id]);
     const institutionRoster = `/partner-institutions/${partner.id}/students`;
     assert.deepEqual((await read(host, institutionRoster)).students.map(({ student_id }) => student_id), [eligible[0]]);
     assert.deepEqual((await read(outsider, institutionRoster)).students, []);
+    const teacherRoster = (actor, expected = 200) => call(actor, institutionRoster, 'GET', undefined, expected, 'coordinator');
+    await query("UPDATE students SET home_address = 'Test address', preferred_partner_institution_id = $2 WHERE id = $1",
+      [eligible[0], empty.id]);
+    const { students: [teacherStudent] } = await teacherRoster(teacherAccount);
+    assert.equal(teacherStudent.student_id, eligible[0]);
+    assert.equal(teacherStudent.home_address, 'Test address');
+    assert.equal(teacherStudent.preferred_partner_name, empty.name);
+    assert.equal(teacherStudent.preferred_industry, 'Finance');
+    assert.equal(teacherStudent.placement.batch_number, 1);
+    assert.equal(teacherStudent.placement.coordinator_name, 'School Test');
+    assert.equal(teacherStudent.placement.partner_institution_name, tag);
+    assert.equal(teacherStudent.placement.supervisor_name, 'Supervisor Test');
+    assert.deepEqual((await teacherRoster(secondTeacherAccount)).students.map(({ student_id }) => student_id), [eligible[0]]);
+    await teacherRoster(outsideTeacherAccount, 403);
     const reportPath = '/reports-concerns';
     const teacherReportPath = '/teacher/reports-concerns';
     const concern = { partner_institution_id: partner.id, student_id: eligible[0],
@@ -478,6 +614,19 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     await call(school, rosterUrl(backfilledBatch.id), 'GET', undefined, 404);
     assert.equal((await read(school, next)).roster.length, 2);
 
+    // A teacher can have access to one deployment at a partner without having access to its other roster.
+    await query('UPDATE deployment_requests SET partner_institution_id = $2 WHERE id = $1', [alternate.id, partner.id]);
+    try {
+      assert.deepEqual((await teacherRoster(teacherAccount)).students.map(({ student_id }) => student_id), [eligible[0]]);
+      const { students: sharedRoster } = await teacherRoster(secondTeacherAccount);
+      assert.deepEqual(sharedRoster.map(({ student_id }) => student_id).sort(), [eligible[0], eligible[2]].sort());
+      assert.deepEqual((await documentation(host, documentationSummary)).students.map(({ student_id }) => student_id), [eligible[0]]);
+      assert.deepEqual((await documentation(secondTeacherAccount, documentationSummary)).students
+        .map(({ student_id }) => student_id).sort(), [eligible[0], eligible[2]].sort());
+    } finally {
+      await query('UPDATE deployment_requests SET partner_institution_id = $2 WHERE id = $1', [alternate.id, alternatePartner.id]);
+    }
+
     await amend(host, draft, 'amendment', { revision: 10, start: weekdays[1], reason: 'Additional training day' });
     await amend(host, draft, 'amendment-decision', { revision: 11, decision: 'accept' }, 409);
     assert.deepEqual((await call(host, '/batches/' + batch + '/attendance')).dates, weekdays.slice(0, 10));
@@ -491,6 +640,22 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
       VALUES ($1,$2,$3,1,'Preserved evidence','submitted')`, [eligible[0], batch, weekdays[0]]);
     const attendance = await query(`INSERT INTO student_attendance (student_id, teacher_batch_id, date, status)
       VALUES ($1,$2,$3,'present') RETURNING id`, [eligible[0], batch, weekdays[1]]);
+    const currentReport = await attendanceApi(secondTeacherAccount, 'report');
+    assert.deepEqual(currentReport.dates, weekdays.slice(1, 11));
+    assert.equal(currentReport.records[0].attendance_id, attendance.id);
+    assert.equal(currentReport.records[0].status, 'present');
+    const assignment = await query(`SELECT deployment_started_on FROM teacher_batch_students
+      WHERE teacher_batch_id = $1 AND student_id = $2`, [batch, eligible[0]]);
+    await query(`UPDATE teacher_batch_students SET deployment_started_on = $3, deployment_ended_on = $4
+      WHERE teacher_batch_id = $1 AND student_id = $2`, [batch, eligible[0], weekdays[2], weekdays[5]]);
+    try {
+      const partialReport = await attendanceApi(teacherAccount, 'report');
+      assert.deepEqual(partialReport.dates, currentReport.dates);
+      assert.deepEqual(partialReport.records.map(({ date }) => date), weekdays.slice(2, 5));
+    } finally {
+      await query(`UPDATE teacher_batch_students SET deployment_started_on = $3, deployment_ended_on = NULL
+        WHERE teacher_batch_id = $1 AND student_id = $2`, [batch, eligible[0], assignment.deployment_started_on]);
+    }
     // Simulate a published deployment that was grouped by the backfill.
     await query('UPDATE coordinator_deployment_batches SET creation_key = NULL WHERE id = $1', [firstBatch.id]);
     const availableToRebatch = (await stagePartners('completed')).find(({ id }) => id === partner.id);
@@ -500,6 +665,7 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     const regrouped = (await read(school, draft)).request;
     assert.equal(regrouped.coordinator_batch_id, replacementBatch.id);
     assert.equal(regrouped.teacher_batch_id, batch);
+    assert.equal((await teacherRoster(teacherAccount)).students[0].placement.batch_number, 4);
     assert.equal(includesPartner(await stagePartners('completed')), false);
     assert.deepEqual((await call(school, prefix + '/batches', 'POST', rebatchSelection)).batch, replacementBatch);
     assert.ok(await query('SELECT 1 FROM student_attendance WHERE id = $1 AND teacher_batch_id = $2', [attendance.id, batch]));

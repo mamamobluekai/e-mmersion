@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthForm } from '../../hooks/useAuthForm';
 import SplashScreen from './SplashScreen';
 import '../../pages/LoginAndRegister/LoginAndFRegister.css';
@@ -9,18 +9,14 @@ import {
   ArrowRight,
   Eye,
   EyeOff,
-  GraduationCap,
   LogIn,
-  ShieldCheck,
   UserCog,
   Users,
 } from 'lucide-react';
 
-const ROLES = [
-  { id: 'student', label: 'Student', Icon: GraduationCap },
-  { id: 'teacher', label: 'Teacher', Icon: Users },
-  { id: 'coordinator', label: 'Coordinator', Icon: UserCog },
-  { id: 'supervisor', label: 'Supervisor', Icon: ShieldCheck },
+const STAFF_ROLES = [
+  { id: 'teacher', Icon: Users },
+  { id: 'coordinator', Icon: UserCog },
 ];
 
 const ROLE_COPY = {
@@ -45,8 +41,11 @@ const ROLE_COPY = {
       'Evaluate your interns, verify attendance at the host site, certify completed requirements, and keep deployment schedules organised for your team.',
   },
 };
-function AuthForm({ onAuthSuccess }) {
+function AuthForm({ onAuthSuccess, initialRole = 'student', allowRoleSwitch = false }) {
   const navigate = useNavigate();
+  const { state } = useLocation();
+  const securityRole = state?.securityRole;
+  const startingRole = allowRoleSwitch && state?.loginRole === 'coordinator' ? 'coordinator' : initialRole;
 
   const {
     mode,
@@ -61,15 +60,15 @@ function AuthForm({ onAuthSuccess }) {
     loginSuccess,
   } = useAuthForm((data) => {
     onAuthSuccess?.(data);
-  });
+  }, startingRole);
 
   useEffect(() => {
     if (loginSuccess) {
-      navigate(`/dashboard/${loginSuccess}`, {
+      navigate(`/dashboard/${loginSuccess}${securityRole === loginSuccess ? '/settings/security' : ''}`, {
         replace: true,
       });
     }
-  }, [loginSuccess, navigate]);
+  }, [loginSuccess, navigate, securityRole]);
 
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(false);
@@ -100,7 +99,7 @@ useEffect(() => {
   })();
 
   const content = (
-    <div className="auth-shell">
+    <div className="auth-shell" data-login-role={role}>
         <div className="auth-layout">
           {/* ================= BRAND SIDE ================= */}
           <aside className="brand-panel">
@@ -154,7 +153,7 @@ useEffect(() => {
 
             <p className="panel-subtitle">
               {mode === 'login'
-                ? 'Sign in to continue to your account'
+                ? `Sign in to your ${roleCopy.label.toLowerCase()} account`
                 : 'Register as a student to get started'}
             </p>
 
@@ -180,26 +179,19 @@ useEffect(() => {
               onSubmit={handleSubmit}
               noValidate
             >
-              {mode === 'login' ? (
-                <div
-                  className="role-row"
-                  role="tablist"
-                  aria-label="User role"
-                >
-                  {ROLES.map(({ id, label, Icon }) => (
+              {mode === 'login' && allowRoleSwitch ? (
+                <div className="role-row" role="group" aria-label="Sign-in role">
+                  {STAFF_ROLES.map(({ id, Icon }) => (
                     <button
                       key={id}
                       type="button"
-                      role="tab"
-                      aria-selected={role === id}
-                      className={`role-btn ${
-                        role === id ? 'active' : ''
-                      }`}
+                      className={`role-btn${role === id ? ' active' : ''}`}
+                      aria-pressed={role === id}
+                      disabled={loading}
                       onClick={() => setRole(id)}
                     >
-                      <Icon size={16} />
-
-                      {label}
+                      <Icon size={16} aria-hidden="true" />
+                      {ROLE_COPY[id].label}
                     </button>
                   ))}
                 </div>
@@ -498,7 +490,7 @@ useEffect(() => {
                     type="button"
                     className="forgot-link"
                     onClick={() =>
-                      navigate('/forgot-password')
+                      navigate('/forgot-password', { state: { loginRole: role } })
                     }
                   >
                     Forgot Password?

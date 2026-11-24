@@ -41,29 +41,28 @@ let inFlightRefresh = null;
 async function refreshAccessToken() {
   if (inFlightRefresh) return inFlightRefresh;
 
-  inFlightRefresh = (async () => {
-    try {
-      const response = await fetch(`${API_BASE}/users/refresh`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', [CSRF_HEADER]: getCsrfToken() },
-      });
+  async function rotate() {
+    const response = await fetch(`${API_BASE}/users/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', [CSRF_HEADER]: getCsrfToken() },
+    });
+    if (!response.ok) return null;
 
-      if (!response.ok) return null;
+    const data = await response.json().catch(() => ({}));
+    if (!data.accessToken) return null;
 
-      const data = await response.json().catch(() => ({}));
-      if (!data.accessToken) return null;
+    storeToken('wim-token', data.accessToken);
+    if (data.csrfToken) storeToken('wim-csrf', data.csrfToken);
+    return data.accessToken;
+  }
 
-      storeToken('wim-token', data.accessToken);
-      if (data.csrfToken) storeToken('wim-csrf', data.csrfToken);
-
-      return data.accessToken;
-    } catch {
-      return null;
-    } finally {
-      inFlightRefresh = null;
-    }
-  })();
+  // Tabs share the refresh cookie, so serialize rotations across tabs when available.
+  const locks = globalThis.navigator?.locks;
+  inFlightRefresh = Promise.resolve()
+    .then(() => locks ? locks.request('wim-refresh-token', rotate) : rotate())
+    .catch(() => null)
+    .finally(() => { inFlightRefresh = null; });
 
   return inFlightRefresh;
 }

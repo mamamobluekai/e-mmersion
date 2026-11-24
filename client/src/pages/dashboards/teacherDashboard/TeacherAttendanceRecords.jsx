@@ -1,25 +1,24 @@
 import { RefreshCw } from 'lucide-react';
 import { useTeacherAttendanceReport } from '../../../hooks/useTeacherAttendanceReport';
-import { getAttendanceLabel, hasAppeal, isFutureDate, formatShortDate } from '../../../utils/attendanceAnalytics';
+import { getAttendanceLabel, hasAppeal, formatShortDate } from '../../../utils/attendanceAnalytics';
 import styles from './AttendanceReportsRecords.module.css';
 
-// Attendance records grid for the partner institution selected in the sidebar: every enrolled
-// student against every scheduled work immersion date.
-//
-// variant="panel" renders the full card (section header, legend, refresh) and
-// fetches its own data. variant="body" renders only the grid for use inside a
-// modal that supplies its own header, taking the already-loaded `report` so the
-// batch is not fetched twice.
 function TeacherAttendanceRecords({ variant = 'panel', report: reportProp }) {
   const own = useTeacherAttendanceReport({ enabled: !reportProp });
   const report = reportProp || own;
 
   const { dates, rows, loading, refreshing, error } = report;
   const refresh = report.refresh || own.refresh;
+  const refreshButton = (className) => (
+    <button type="button" className={className} onClick={refresh} disabled={loading || refreshing}>
+      <RefreshCw size={16} className={refreshing ? styles.spin : ''} aria-hidden="true" />
+      {refreshing ? 'Refreshing…' : 'Refresh records'}
+    </button>
+  );
 
   const grid = (
     <>
-      {loading ? <p className={styles.state}>Loading attendance records...</p> : !dates.length ? <p className={styles.state}>No work immersion schedule has been configured for this partner institution.</p> : (
+      {loading ? <p className={styles.state}>Loading attendance records…</p> : !dates.length ? <p className={styles.state}>No agreed workdays are available for this deployment.</p> : !rows.length ? <p className={styles.state}>No students are assigned to these workdays.</p> : (
         <div className={styles.tableWrap}>
           <table className={styles.table}>
             <thead><tr><th>Student</th><th>Student ID</th><th>Grade / Strand</th>{dates.map((date) => <th key={date}>{formatShortDate(date)}</th>)}</tr></thead>
@@ -31,18 +30,17 @@ function TeacherAttendanceRecords({ variant = 'panel', report: reportProp }) {
                   <td>{[student.grade_level, student.track_strand].filter(Boolean).join(' / ') || '-'}</td>
                   {dates.map((date) => {
                     const record = student.attendance[date];
-                    const appealed = hasAppeal(record);
-                    // No record on a future date means the immersion day has not
-                    // started yet — never label that an absence.
-                    if (!record?.status && isFutureDate(date)) {
-                      return (
-                        <td key={date} className={styles.statusCell}>
-                          <span className={`${styles.status} ${styles.upcoming}`}>Not Started</span>
-                        </td>
-                      );
-                    }
-                    const value = getAttendanceLabel(record?.status, date);
-                    return <td key={date} className={styles.statusCell}><span className={`${styles.status} ${value === 'Absent' ? styles.absent : value === 'Late' ? styles.late : value === 'Present' || value === 'In' ? styles.present : styles.unrecorded}`}>{value}</span>{appealed && <span className={styles.appealMark}>Appeal</span>}</td>;
+                    const value = record ? getAttendanceLabel(record.status, date) : 'Not assigned';
+                    const statusClass = {
+                      Absent: styles.absent, Late: styles.late, Present: styles.present,
+                      In: styles.present, 'Not Started': styles.upcoming,
+                    }[value] || styles.unrecorded;
+                    return (
+                      <td key={date} className={styles.statusCell}>
+                        <span className={`${styles.status} ${statusClass}`}>{value}</span>
+                        {hasAppeal(record) && <span className={styles.appealMark}>Appeal</span>}
+                      </td>
+                    );
                   })}
                 </tr>
               ))}
@@ -56,8 +54,8 @@ function TeacherAttendanceRecords({ variant = 'panel', report: reportProp }) {
   if (variant === 'body') {
     return (
       <div>
-        {error && <div className={styles.error}>{error}</div>}
-        {grid}
+        {refreshButton(styles.bodyRefreshButton)}
+        {error ? <div className={styles.error} role="alert">{error}</div> : grid}
       </div>
     );
   }
@@ -79,21 +77,11 @@ function TeacherAttendanceRecords({ variant = 'panel', report: reportProp }) {
               <span><i className={styles.absentDot} />Absent</span>
               <span><i className={styles.appealDot} />Appeal</span>
             </div>
-            <button
-              type="button"
-              className={styles.refreshButton}
-              onClick={() => {
-                if (!refreshing) refresh();
-              }}
-              disabled={refreshing}
-            >
-              <RefreshCw size={16} className={refreshing ? styles.spin : ''} />
-              {refreshing ? 'Refreshing...' : 'Refresh'}
-            </button>
+            {refreshButton(styles.refreshButton)}
           </div>
         </div>
 
-        {grid}
+        {!error && grid}
       </section>
     </div>
   );

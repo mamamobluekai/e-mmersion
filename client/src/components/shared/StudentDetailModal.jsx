@@ -18,7 +18,8 @@ function formatDate(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString();
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  return date.toLocaleDateString(undefined, dateOnly ? { timeZone: 'UTC' } : undefined);
 }
 
 function DetailItem({ label, value }) {
@@ -39,9 +40,7 @@ function DetailSection({ title, children }) {
   );
 }
 
-// Shared "all student information" modal used by the teacher and supervisor
-// student tables so both dashboards show exactly the same detail view.
-function StudentDetailModal({ student, batch, onClose, children, variant = 'centered' }) {
+function StudentDetailModal({ student, batch, placement, onClose, children, variant = 'centered' }) {
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') onClose();
@@ -58,9 +57,11 @@ function StudentDetailModal({ student, batch, onClose, children, variant = 'cent
   if (!student) return null;
 
   const name = getStudentName(student) || 'Student';
-  const coordinatorName = batch
-    ? `${batch.coordinator_first_name || ''} ${batch.coordinator_last_name || ''}`.trim()
-    : '';
+  const coordinatorName = placement
+    ? placement.coordinator_name
+    : [batch?.coordinator_first_name, batch?.coordinator_last_name].filter(Boolean).join(' ').trim();
+  const batchLabel = placement?.batch_number ? `BATCH - ${placement.batch_number}` : placement?.batch_label || batch?.batch_label;
+  const preferredPartner = placement && student.preferred_partner_name;
 
   const isDrawer = variant === 'drawer';
   const shellClass = isDrawer ? `${styles.overlay} ${styles.overlayDrawer}` : styles.overlay;
@@ -87,7 +88,7 @@ function StudentDetailModal({ student, batch, onClose, children, variant = 'cent
               <h2 id="student-modal-title">{name}</h2>
               <p>
                 {student.student_number || `Student ${student.student_id || ''}`}
-                {student.grade_level ? ` · Grade ${student.grade_level}` : ''}
+                {student.grade_level ? ` · Grade ${String(student.grade_level).replace(/^Grade\s+/i, '')}` : ''}
               </p>
             </div>
           </div>
@@ -117,10 +118,19 @@ function StudentDetailModal({ student, batch, onClose, children, variant = 'cent
           </DetailSection>
 
           <DetailSection title="Immersion">
-            <DetailItem label="Batch" value={batch?.batch_label} />
+            <DetailItem label="Batch" value={batchLabel} />
             <DetailItem label="Coordinator" value={coordinatorName} />
+            {placement && (
+              <>
+                <DetailItem label="Assigned Partner Institution" value={placement.partner_institution_name} />
+                <DetailItem label="Workplace Supervisor" value={placement.supervisor_name} />
+              </>
+            )}
             <DetailItem label="Preferred Industry" value={student.preferred_industry} />
-            <DetailItem label="Preferred Company" value={student.preferred_company} />
+            <DetailItem
+              label={preferredPartner ? 'Preferred Partner Institution' : 'Preferred Company'}
+              value={preferredPartner || student.preferred_company}
+            />
             <DetailItem label="Career Goal" value={student.career_goal} />
             <DetailItem label="Industry Reason" value={student.industry_reason} />
           </DetailSection>

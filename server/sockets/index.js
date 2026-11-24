@@ -4,6 +4,8 @@ const { isOriginAllowed } = require('../config/corsOption');
 const pool = require('../db');
 const { resolveBatchAccess } = require('../utils/batchAccess');
 const { getPreImmersion } = require('../services/studentJourney.service');
+const { checkAccessSession } = require('../services/deviceSessions.service');
+const { isAccessTokenRevoked } = require('../utils/tokenStore');
 
 let io;
 
@@ -52,11 +54,13 @@ function initializeSocket(server) {
     },
   });
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth?.token;
       const user = token ? verifyAccessToken(token) : null;
-      if (!user?.id) return next(new Error('Unauthorized'));
+      if (!user?.id || !await checkAccessSession(user, true) || await isAccessTokenRevoked(user.jti)) {
+        return next(new Error('Unauthorized'));
+      }
       socket.data.user = user;
       return next();
     } catch (err) {
@@ -67,6 +71,12 @@ function initializeSocket(server) {
   io.on('connection', (socket) => {
     const user = socket.data.user;
     socket.join(`user:${user.id}`);
+    if (user.sid) {
+      socket.join(`account-session:${user.sid}`);
+      void checkAccessSession(user).then((session) => {
+        if (!session) socket.disconnect(true);
+      }).catch(() => socket.disconnect(true));
+    }
 
     const hasAccess = async (teacherBatchId) => {
       if (!teacherBatchId) return false;
@@ -85,6 +95,15 @@ function initializeSocket(server) {
       } else {
         socket.emit('student:error', { error: 'Access denied.' });
       }
+    });
+
+    socket.on('tracking:join_batch', async (batchId, acknowledge) => {
+      if (typeof acknowledge !== 'function') return;
+      const id = Number(batchId);
+      const allowed = Number.isInteger(id) && id > 0 &&
+        ['teacher', 'coordinator'].includes(user.role) && await hasAccess(id);
+      if (allowed) await socket.join(`tracking:${id}`);
+      acknowledge({ success: Boolean(allowed) });
     });
 
     socket.on('chat:join_batch', async (teacherBatchId) => {
@@ -115,4 +134,12 @@ function getIO() {
   return io;
 }
 
-module.exports = { initializeSocket, getIO };
+function emitTrackingChange(batchId) {
+  io?.to(`tracking:${batchId}`).emit('tracking:changed', { batchId });
+}
+
+function disconnectAccountSessions(ids) {
+  for (const id of ids) io?.in(`account-session:${id}`).disconnectSockets(true);
+}
+
+module.exports = { initializeSocket, getIO, emitTrackingChange, disconnectAccountSessions };

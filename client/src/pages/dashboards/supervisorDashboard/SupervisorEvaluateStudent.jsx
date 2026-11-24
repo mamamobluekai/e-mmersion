@@ -16,75 +16,9 @@ import {
   getStudentEvaluation,
   getSupervisorEvaluationStudents,
 } from '../../../api/evaluationApi';
-import { restoreEvaluationRatings } from '../../../utils/evaluationCategories';
+import { restoreEvaluationRatings, STUDENT_RATING_SCALE as RATING_SCALE } from '../../../utils/evaluationCategories';
+import { StarRating } from '../../../components/shared/StarRating';
 import styles from './SupervisorEvaluateStudent.module.css';
-
-// The rating scale, reused by the star control and the legend below it so the
-// wording can never drift between them.
-const RATING_SCALE = [
-  { value: 1, label: 'Needs Improvement' },
-  { value: 2, label: 'Fair' },
-  { value: 3, label: 'Satisfactory' },
-  { value: 4, label: 'Very Satisfactory' },
-  { value: 5, label: 'Outstanding' },
-];
-
-// The values the server accepts are exactly these: 1-5, or the literal 'N/A'
-// for an indicator that does not apply to the student.
-
-// Star rating in place of a <select>. Clicking a star sets that value, so the
-// scale reads the same way DepEd describes it instead of hiding the labels in a
-// dropdown. "N/A" stays a separate toggle because it is not a star count.
-function StarRating({ value, onChange, name }) {
-  const numeric = Number(value);
-  const current = Number.isInteger(numeric) && numeric >= 1 && numeric <= RATING_SCALE.length ? numeric : 0;
-  const isNA = value === 'N/A';
-
-  return (
-    <div className={styles.starRow}>
-      <div
-        className={styles.stars}
-        role="radiogroup"
-        aria-label={`Rating for ${name}`}
-      >
-        {RATING_SCALE.map((opt) => {
-          const filled = !isNA && opt.value <= current;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              role="radio"
-              aria-checked={!isNA && current === opt.value}
-              aria-label={`${opt.value} star - ${opt.label}`}
-              title={`${opt.value} - ${opt.label}`}
-              className={`${styles.starBtn} ${filled ? styles.starOn : ''}`}
-              onClick={() => onChange(opt.value)}
-            >
-              <Star size={22} fill={filled ? 'currentColor' : 'none'} />
-            </button>
-          );
-        })}
-      </div>
-
-      <span className={styles.starValue}>
-        {isNA
-          ? 'N/A'
-          : current
-            ? `${current} - ${RATING_SCALE[current - 1].label}`
-            : 'Not rated'}
-      </span>
-
-      <button
-        type="button"
-        className={`${styles.naBtn} ${isNA ? styles.naBtnOn : ''}`}
-        aria-pressed={isNA}
-        onClick={() => onChange(isNA ? '' : 'N/A')}
-      >
-        N/A
-      </button>
-    </div>
-  );
-}
 
 function initials(first, last) {  const f = String(first || '').trim().charAt(0);
   const l = String(last || '').trim().charAt(0);

@@ -26,6 +26,7 @@ const generateAccessToken = (user) =>  {
         role: user.role,
         jti: user.jti || newJti(),
         type: 'access',
+        ...(user.sid ? { sid: user.sid } : {}),
 
     },
     process.env.JWT_SECRET,

@@ -30,6 +30,28 @@ export async function getUserProfile() {
   return apiFetch('/profile');
 }
 
+const securityPath = '/security';
+export const getAccountDevices = (signal) => apiFetch(`${securityPath}/devices`, { signal });
+
+export function getLoginActivity({ date, device, before, signal }) {
+  const query = new URLSearchParams();
+  if (date) query.set('date', date);
+  if (device) query.set('device', device);
+  if (before) query.set('before', before);
+  return apiFetch(`${securityPath}/activity?${query}`, { signal });
+}
+
+export const saveDeviceAlerts = (enabled) => apiFetch(`${securityPath}/alerts`, {
+  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+});
+export const requestDeviceCode = () => apiFetch(`${securityPath}/verification/send`, { method: 'POST' });
+export const verifyDeviceCode = (code) => apiFetch(`${securityPath}/verification/confirm`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+});
+export const signOutDevice = (id) => apiFetch(`${securityPath}/devices/${encodeURIComponent(id)}/logout`, { method: 'POST' });
+export const removeAccountDevice = (id) => apiFetch(`${securityPath}/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const signOutOtherDevices = () => apiFetch(`${securityPath}/logout-others`, { method: 'POST' });
+
 // Revokes the refresh cookie and the access token server-side. Without this the
 // token only disappears from localStorage, leaving a usable session alive until
 // it expires on its own.

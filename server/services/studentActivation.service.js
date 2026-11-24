@@ -28,7 +28,8 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
   const safeName = mailer.escapeHtml(name);
   const safeEmail = mailer.escapeHtml(to);
   const safePassword = mailer.escapeHtml(temporaryPassword);
-  const clientUrl = mailer.escapeHtml(process.env.CLIENT_URL || 'http://localhost:5173');
+  const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  const loginUrl = `${clientUrl}/login/${possessiveRole}`;
   let result;
   try {
     result = await mailer.sendMail({
@@ -43,7 +44,7 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
            <strong>Temporary password:</strong> ${safePassword}</p>
         <p>Your temporary password is valid for ${TEMPORARY_PASSWORD_TTL_HOURS} hours. After signing in,
            accept the Terms and Agreement, then create a permanent password to activate your account.</p>
-        <p><a href="${clientUrl}/login">Open Work Immersion</a></p>
+        <p><a href="${mailer.escapeHtml(loginUrl)}">Open Work Immersion</a></p>
         <p style="color: #666; font-size: 12px;">Marinduque National High School - Work Immersion Office</p>
       </div>
       `,
@@ -57,7 +58,7 @@ async function sendTemporaryPasswordEmail(user, temporaryPassword) {
         `Temporary password: ${temporaryPassword}`,
         '',
         `Your temporary password is valid for ${TEMPORARY_PASSWORD_TTL_HOURS} hours. After signing in, accept the Terms and Agreement, then create a permanent password to activate your account.`,
-        `${process.env.CLIENT_URL || 'http://localhost:5173'}/login`,
+        loginUrl,
         '',
         'Marinduque National High School - Work Immersion Office',
       ].join('\n'),

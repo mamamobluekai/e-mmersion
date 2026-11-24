@@ -1,0 +1,129 @@
+.page {
+  inline-size: min(100%, 960px);
+}
+
+.header {
+  margin-block-end: clamp(18px, 3vw, 28px);
+}
+
+.header h1 {
+  margin: 0 0 6px;
+  color: var(--wim-text-strong);
+  font-size: clamp(1.7rem, 3vw, 2.5rem);
+  font-weight: 760;
+  letter-spacing: -.035em;
+  line-height: 1.15;
+}
+
+.header p,
+.details p {
+  margin: 0;
+  color: var(--wim-text-secondary);
+  line-height: 1.55;
+}
+
+.card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: clamp(14px, 2.6vw, 24px);
+  padding: clamp(16px, 3vw, 28px);
+  border: 1px solid var(--wim-border-maroon);
+  border-radius: 20px;
+  background: var(--wim-bg-surface);
+  box-shadow: 0 12px 32px -24px rgba(88, 23, 37, .48);
+}
+
+.emblem {
+  display: grid;
+  place-items: center;
+  inline-size: clamp(56px, 8vw, 84px);
+  aspect-ratio: 1;
+  border: 1px solid var(--wim-border-maroon);
+  border-radius: 16px;
+  color: var(--wim-brand);
+  background: linear-gradient(145deg, var(--wim-brand-tint-strong), var(--wim-brand-tint));
+}
+
+.details h2 {
+  margin: 0 0 6px;
+  color: var(--wim-text-strong);
+  font-size: clamp(1.08rem, 2vw, 1.35rem);
+  line-height: 1.25;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.status,
+.download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-weight: 650;
+}
+
+.status {
+  padding: 5px 10px;
+  border: 1px solid var(--wim-warning-border);
+  border-radius: 999px;
+  color: var(--wim-warning-text);
+  background: var(--wim-warning-bg);
+  font-size: .8rem;
+}
+
+.status[data-issued='true'] {
+  border-color: var(--wim-success-border);
+  color: var(--wim-success-text);
+  background: var(--wim-success-bg);
+}
+
+.download {
+  min-block-size: 44px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--wim-brand);
+  font-family: inherit;
+  font-size: .9rem;
+  cursor: pointer;
+}
+
+.download:not(:disabled):hover { background: var(--wim-brand-dark); }
+.download:focus-visible { outline: 2px solid var(--wim-brand); outline-offset: 3px; }
+.download:disabled {
+  border-color: var(--wim-border);
+  color: var(--wim-text-secondary);
+  background: var(--wim-bg-sunken);
+  cursor: default;
+}
+
+.error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--wim-danger-border);
+  border-radius: 10px;
+  color: var(--wim-danger-text);
+  background: var(--wim-danger-bg);
+}
+
+@media (max-width: 720px) {
+  .card { grid-template-columns: auto minmax(0, 1fr); }
+  .actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    padding-block-start: 14px;
+    border-block-start: 1px solid var(--wim-border);
+  }
+  .emblem svg { inline-size: 30px; }
+}

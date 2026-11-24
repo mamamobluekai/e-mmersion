@@ -16,7 +16,7 @@ import styles from './TeacherStudents.module.css';
 // Clicking a row opens the shared student information modal.
 function TeacherStudents() {
   const { token } = useAuth();
-  const { institution, institutionId, institutionName, loading: institutionsLoading } = usePartnerInstitution();
+  const { institution, institutionId, loading: institutionsLoading } = usePartnerInstitution();
   const [students, setStudents] = useState([]);
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
@@ -49,9 +49,9 @@ function TeacherStudents() {
 
   const closeStudent = useCallback(() => setSelected(null), []);
 
-  // Switching institution starts from a clean search.
   useEffect(() => {
     setQuery('');
+    setSelected(null);
   }, [institutionId]);
 
   const filtered = useMemo(() => {
@@ -201,10 +201,10 @@ function TeacherStudents() {
         )}
       </div>
 
-      {selected && (
+      {selected?.placement?.partner_institution_id === institutionId && (
         <StudentDetailModal
           student={selected}
-          batch={{ batch_label: institutionName }}
+          placement={selected.placement}
           onClose={closeStudent}
         />
       )}

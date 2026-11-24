@@ -4,8 +4,7 @@ import * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { io } from 'socket.io-client';
 import { useAuth } from '../../../context/AuthContext';
-import { usePartnerInstitution } from '../../../hooks/usePartnerInstitution';
-import { getBatchCurrentLocations } from '../../../api/teacherApi';
+import { getBatchCurrentLocations, getMyTeacherBatch } from '../../../api/teacherApi';
 import { buildBatchColorMap } from '../../../utils/batchColors';
 import styles from './LiveMap.module.css';
 import { SOCKET_URL } from '../../../config/api';
@@ -307,11 +306,12 @@ function StudentMarker({ student, color }) {
   const name = `${student.first_name || ''} ${student.last_name || ''}`.trim();
   const photo = student.photo_url;
   const sid = student.student_number || student.student_id;
-  const strand = [student.grade_level && `Grade ${student.grade_level}`, student.track_strand]
+  const grade = student.grade_level && String(student.grade_level).replace(/^Grade\s+/i, '');
+  const strand = [grade && `Grade ${grade}`, student.track_strand]
     .filter(Boolean)
     .join(' · ');
-  const phone = student.contact_number || student.supervisor_phone;
-  const email = student.email || student.supervisor_email;
+  const phone = student.contact_number;
+  const email = student.email;
   const lastSeen = student.recorded_at
     ? new Date(student.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : '—';
@@ -337,15 +337,7 @@ function StudentMarker({ student, color }) {
                 <strong className={styles.studentCardName}>{name}</strong>
                 <span className={styles.studentCardId}>Student ID: {sid}</span>
               </div>
-              {student.batch_label && (
-                <span className={styles.studentCardBatch}>
-                  <span
-                    className={styles.studentCardBatchDot}
-                
-                  />
-                 
-                </span>
-              )}
+              {student.batch_label && <span className={styles.studentCardBatch}>{student.batch_label}</span>}
             </div>
 
             <div className={styles.studentCardBody}>
@@ -745,10 +737,9 @@ function AirParticleLayer({ conditions, level }) {
   return null;
 }
 
-function LiveMap() {
-  const { token } = useAuth();
-  const { institutions, loading: institutionsLoading } = usePartnerInstitution();
-  const [students, setStudents] = useState([]);
+function TeacherLiveMap({ token }) {
+  const [batches, setBatches] = useState([]);
+  const [locations, setLocations] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [socketStatus, setSocketStatus] = useState('disconnected');
@@ -756,13 +747,8 @@ function LiveMap() {
   const [mapLayer, setMapLayer] = useState(() => readStoredView()?.layer || 'standard');
   const [mapInstance, setMapInstance] = useState(null);
   const [batchPanelOpen, setBatchPanelOpen] = useState(false);
-  const [scheduleMessage, setScheduleMessage] = useState(null);
   const [weather, setWeather] = useState(null);
   const [weatherList, setWeatherList] = useState([]);
-
-  const socketRef = useRef(null);
-  const abortControllerRef = useRef(null);
-  const locationUpdateTimeoutRef = useRef(null);
 
   // Keep the tile layer in sync with what ViewPersistence restores.
   useEffect(() => {
@@ -774,12 +760,23 @@ function LiveMap() {
     return () => window.removeEventListener('wim-map-layer', handleLayerRestore);
   }, []);
 
-  // The map is NOT scoped to the selected institution: it shows the students of
-  // every institution the teacher handles, colored by institution.
-  const institutionKey = useMemo(() => institutions.map((inst) => Number(inst.id)).join(','), [institutions]);
-  const institutionIds = useMemo(() => institutionKey ? institutionKey.split(',').map(Number) : [], [institutionKey]);
+  const institutions = useMemo(() => Array.from(new Map(batches.map((batch) => [
+    batch.partner_institution_id,
+    { id: batch.partner_institution_id, name: batch.partner_institution_name },
+  ])).values()).sort((a, b) => a.id - b.id), [batches]);
   const colorMap = useMemo(() => buildBatchColorMap(institutions), [institutions]);
   const hasInstitutions = institutions.length > 0;
+
+  const students = useMemo(() => batches.flatMap((batch) =>
+    (locations[batch.id]?.students || []).map((student) => ({
+      ...student,
+      batch_id: batch.id,
+      batch_label: batch.batch_label,
+      institution_id: batch.partner_institution_id,
+    }))
+  ), [batches, locations]);
+  const failedBatches = batches.filter((batch) => locations[batch.id]?.failed).length;
+  const outsideSchedule = batches.length > 0 && batches.every((batch) => locations[batch.id]?.in_schedule === false);
 
   // Start from the last saved view so a refresh never jumps back to defaults.
   const initialView = useMemo(
@@ -876,166 +873,98 @@ function LiveMap() {
     };
   }, [mapLayer]);
 
-  // Fetch student locations for every assigned partner institution
   useEffect(() => {
-    if (!token || !hasInstitutions) {
-      setStudents([]);
-      setLoading(!institutionsLoading);
-      return undefined;
+    if (!token) return undefined;
+
+    const request = new AbortController();
+    const pending = new Set();
+    let batchIds = [];
+    let socket;
+    let timer;
+    let poll;
+    let fetching = false;
+
+    async function loadLocations() {
+      timer = undefined;
+      if (request.signal.aborted || fetching || !pending.size) return;
+      fetching = true;
+      const ids = [...pending];
+      pending.clear();
+      const results = await Promise.allSettled(ids.map((id) =>
+        getBatchCurrentLocations(id, token, { signal: request.signal })
+      ));
+      if (request.signal.aborted) return;
+      fetching = false;
+      setLocations((current) => ({
+        ...current,
+        ...Object.fromEntries(results.map((result, index) => [
+          ids[index],
+          result.status === 'fulfilled' ? result.value : { failed: true },
+        ])),
+      }));
+      if (results.some((result) => result.status === 'fulfilled')) setLastUpdate(new Date());
+      setLoading(false);
+      if (pending.size && timer === undefined) timer = setTimeout(loadLocations, 1000);
     }
-    let cancelled = false;
-    const fetchLocations = async () => {
-      setLoading(true);
-      setError(null);
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = new AbortController();
+
+    function queueRefresh(ids) {
+      ids.forEach((id) => pending.add(id));
+      if (pending.size && !fetching && timer === undefined) timer = setTimeout(loadLocations, 1000);
+    }
+
+    async function start() {
       try {
-        const results = await Promise.all(
-          institutionIds.map((id) =>
-            getBatchCurrentLocations(id, token, { signal: abortControllerRef.current.signal })
-          )
-        );
-        if (cancelled) return;
-        const merged = [];
-        const seen = new Set();
-        let message = null;
-        results.forEach((res, index) => {
-          const id = institutionIds[index];
-          const label = institutions.find((inst) => Number(inst.id) === id)?.name || '';
-          if (res?.message && !message) message = res.message;
-          (res?.students || []).forEach((s) => {
-            if (seen.has(s.student_id)) return;
-            seen.add(s.student_id);
-            merged.push({ ...s, batch_id: id, batch_label: label });
-          });
+        const data = await getMyTeacherBatch(token, request.signal);
+        if (request.signal.aborted) return;
+        const published = (data.batches || []).filter((batch) => batch.partner_institution_id);
+        setBatches(published);
+        batchIds = published.map(({ id }) => id);
+        if (!batchIds.length) {
+          setLoading(false);
+          return;
+        }
+
+        batchIds.forEach((id) => pending.add(id));
+        void loadLocations();
+        poll = setInterval(() => queueRefresh(batchIds), 30000);
+
+        socket = io(SOCKET_URL, { auth: { token }, ...SOCKET_CONFIG });
+        socket.on('connect', async () => {
+          const joins = await Promise.all(batchIds.map((id) => new Promise((resolve) => {
+            socket.timeout(5000).emit('tracking:join_batch', id, (err, ack) => resolve(!err && ack?.success));
+          })));
+          if (request.signal.aborted || !socket.connected) return;
+          setSocketStatus(joins.every(Boolean) ? 'connected' : 'disconnected');
+          queueRefresh(batchIds);
         });
-        setStudents(merged);
-        setScheduleMessage(message);
-        setLastUpdate(new Date());
+        socket.on('disconnect', () => setSocketStatus('disconnected'));
+        socket.on('connect_error', () => setSocketStatus('disconnected'));
+        socket.on('tracking:changed', ({ batchId }) => {
+          if (batchIds.includes(batchId)) queueRefresh([batchId]);
+        });
       } catch (err) {
-        if (!cancelled && err.name !== 'CanceledError') {
-          console.error('Failed to fetch locations:', err);
-          setError('Could not load student locations. Retrying...');
-          const timeout = setTimeout(fetchLocations, 3000);
-          locationUpdateTimeoutRef.current = timeout;
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+        if (request.signal.aborted) return;
+        setError(err.response?.data?.error || 'Could not load your published deployments.');
+        setLoading(false);
       }
-    };
-    fetchLocations();
-    const pollInterval = setInterval(fetchLocations, 30000);
+    }
+
+    start();
     return () => {
-      cancelled = true;
-      clearInterval(pollInterval);
-      abortControllerRef.current?.abort();
-      if (locationUpdateTimeoutRef.current) clearTimeout(locationUpdateTimeoutRef.current);
+      request.abort();
+      clearTimeout(timer);
+      clearInterval(poll);
+      socket?.removeAllListeners();
+      socket?.disconnect();
     };
-    // `institutions` is stable state from the shared provider; it only changes when
-    // the institution list is (re)loaded, so this effect keys off the institution set.
-  }, [institutionIds, institutions, institutionsLoading, hasInstitutions, token]);
-
-  // Socket connection management
-  useEffect(() => {
-    if (!token) return;
-    socketRef.current = io(SOCKET_URL, { auth: { token }, ...SOCKET_CONFIG });
-
-    socketRef.current.on('connect', () => {
-      setSocketStatus('connected');
-      institutionIds.forEach((id) => socketRef.current?.emit('student:join_batch', id));
-    });
-    socketRef.current.on('disconnect', () => setSocketStatus('disconnected'));
-    socketRef.current.on('connect_error', () => setSocketStatus('error'));
-
-    socketRef.current.on('student:location_update', (data) => {
-      setStudents((prev) => {
-        const idx = prev.findIndex((s) => s.student_id === data.studentId);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = {
-            ...updated[idx],
-            latitude: data.latitude,
-            longitude: data.longitude,
-            accuracy: data.accuracy,
-            status: data.status || updated[idx].status,
-            check_in_time: data.check_in_time || updated[idx].check_in_time,
-            recorded_at: new Date().toISOString(),
-            first_name: data.studentName ? data.studentName.split(' ')[0] : updated[idx].first_name,
-            last_name: data.studentName ? data.studentName.split(' ').slice(1).join(' ') : updated[idx].last_name,
-          };
-          return updated;
-        }
-        return prev;
-      });
-      setLastUpdate(new Date());
-    });
-
-    // Live refresh on check-in / check-out
-    socketRef.current.on('student:checked_in', (data) => {
-      setStudents((prev) => {
-        const idx = prev.findIndex((s) => s.student_id === data.studentId);
-        const nameParts = (data.studentName || '').split(' ');
-        const patch = {
-          status: 'checked_in',
-          check_in_time: data.time,
-          latitude: data.latitude,
-          longitude: data.longitude,
-          accuracy: data.accuracy,
-          first_name: nameParts[0] || undefined,
-          last_name: nameParts.slice(1).join(' ') || undefined,
-          recorded_at: new Date().toISOString(),
-        };
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = { ...updated[idx], ...patch };
-          return updated;
-        }
-        return [
-          ...prev,
-          {
-            student_id: data.studentId,
-            student_number: data.studentNumber,
-            ...patch,
-          },
-        ];
-      });
-      setLastUpdate(new Date());
-    });
-
-    socketRef.current.on('student:checked_out', (data) => {
-      setStudents((prev) => {
-        const idx = prev.findIndex((s) => s.student_id === data.studentId);
-        if (idx >= 0) {
-          const updated = [...prev];
-          updated[idx] = { ...updated[idx], status: 'checked_out', check_out_time: data.time, recorded_at: new Date().toISOString() };
-          return updated;
-        }
-        return prev;
-      });
-      setLastUpdate(new Date());
-    });
-
-    return () => socketRef.current?.disconnect();
-  }, [institutionIds, token]);
-
-  // (Re)join every assigned institution room whenever the institution set changes
-  useEffect(() => {
-    if (!institutionIds.length || socketRef.current?.disconnected) return;
-    institutionIds.forEach((id) => {
-      socketRef.current?.emit('student:join_batch', id, (ack) => {
-        if (ack?.success) console.log('Joined institution room:', id);
-      });
-    });
-  }, [institutionIds]);
-
-  const activeStudents = useMemo(() => students.filter((s) => s.status === 'checked_in'), [students]);
+  }, [token]);
 
   const batchSummary = useMemo(
     () =>
       institutions.map((inst) => ({
         ...inst,
         color: colorMap[inst.id],
-        total: students.filter((s) => Number(s.batch_id) === Number(inst.id)).length,
+        students: students.filter((student) => student.institution_id === inst.id),
       })),
     [institutions, colorMap, students]
   );
@@ -1044,7 +973,6 @@ function LiveMap() {
     {
       connected: styles.statusConnected,
       disconnected: styles.statusDisconnected,
-      error: styles.statusError,
     }[socketStatus] || styles.statusDisconnected;
 
   return (
@@ -1055,13 +983,15 @@ function LiveMap() {
           <div className={styles.statusBar}>
             <div className={`${styles.statusIndicator} ${statusIndicatorClass}`} />
             <span className={styles.statusText}>
-              {socketStatus === 'connected' ? 'Live' : socketStatus === 'error' ? 'Connection Error' : 'Offline'}
+              {socketStatus === 'connected' ? 'Live' : hasInstitutions ? 'Polling' : 'Offline'}
             </span>
             {lastUpdate && <span className={styles.lastUpdate}>Updated: {lastUpdate.toLocaleTimeString()}</span>}
           </div>
         </div>
 
-        {!institutionsLoading && !hasInstitutions && <p className={styles.info}>You have not been assigned to a partner institution yet.</p>}
+        {!loading && !error && !hasInstitutions && (
+          <p className={styles.info}>You have no published partner deployments yet.</p>
+        )}
 
         {hasInstitutions && (
           <p className={styles.batchTag}>
@@ -1075,66 +1005,67 @@ function LiveMap() {
           </div>
         )}
 
-        {loading && hasInstitutions && <p className={styles.info}>Loading map data...</p>}
+        {failedBatches > 0 && (
+          <p className={styles.error} role="alert">
+            Could not load locations for {failedBatches === batches.length ? 'your deployments' : `${failedBatches} deployment(s)`}. Retrying automatically.
+          </p>
+        )}
+
+        {loading && <p className={styles.info}>Loading map data…</p>}
 
         {!loading && hasInstitutions && (
           <div className={styles.mapWrapper}>
-            {scheduleMessage && students.length === 0 && <p className={styles.info}>{scheduleMessage}</p>}
-            {!scheduleMessage && students.length === 0 && <p className={styles.info}>No student data available for your partner institutions.</p>}
-            {students.length > 0 && activeStudents.length === 0 && (
-              <p className={styles.info}>No students are currently checked in.</p>
+            {outsideSchedule && <p className={styles.info}>No agreed workdays today across your deployments.</p>}
+            {!outsideSchedule && failedBatches === 0 && students.length === 0 && (
+              <p className={styles.info}>No checked-in students are sharing locations.</p>
             )}
-        {students.length > 0 && (
-              <div className={styles.mapToolbar}>
-                <MunicipalityControls map={mapInstance} />
-                <MapLayerControl layer={mapLayer} onLayerChange={setMapLayer} />
-              </div>
-            )}
+            <div className={styles.mapToolbar}>
+              <MunicipalityControls map={mapInstance} />
+              <MapLayerControl layer={mapLayer} onLayerChange={setMapLayer} />
+            </div>
 
-            {students.length > 0 && (
-              <MapContainer
-                center={initialView.center}
-                zoom={initialView.zoom}
-                minZoom={MAP_CONFIG.minZoom}
+            <MapContainer
+              center={initialView.center}
+              zoom={initialView.zoom}
+              minZoom={MAP_CONFIG.minZoom}
+              maxZoom={MAP_CONFIG.maxZoom}
+              maxBounds={MAP_CONFIG.mapBounds}
+              maxBoundsViscosity={0.6}
+              className={styles.map}
+            >
+              <TileLayer
+                key={mapLayer}
+                attribution={TILE_LAYERS[mapLayer].attribution}
+                url={TILE_LAYERS[mapLayer].url}
+                className={TILE_LAYERS[mapLayer].overlay ? 'wim-dark-tiles' : ''}
+                maxNativeZoom={mapLayer === 'standard' ? 19 : 18}
                 maxZoom={MAP_CONFIG.maxZoom}
-                maxBounds={MAP_CONFIG.mapBounds}
-                maxBoundsViscosity={0.6}
-                className={styles.map}
-              >
-                <TileLayer
-                  key={mapLayer}
-                  attribution={TILE_LAYERS[mapLayer].attribution}
-                  url={TILE_LAYERS[mapLayer].url}
-                  className={TILE_LAYERS[mapLayer].overlay ? 'wim-dark-tiles' : ''}
-                  maxNativeZoom={mapLayer === 'standard' ? 19 : 18}
-                  maxZoom={MAP_CONFIG.maxZoom}
+              />
+              {TILE_LAYERS[mapLayer].overlay && (
+                <AirParticleLayer
+                  conditions={weather || DEFAULT_CONDITIONS}
+                  level={(weather?.level && weather.level !== 'unknown' ? weather.level : 'calm')}
                 />
-                {TILE_LAYERS[mapLayer].overlay && (
-                  <AirParticleLayer
-                    conditions={weather || DEFAULT_CONDITIONS}
-                    level={(weather?.level && weather.level !== 'unknown' ? weather.level : 'calm')}
-                  />
-                )}
-                {TILE_LAYERS[mapLayer].overlay &&
-                  weatherList.map((w) => <WeatherIconMarker key={w.name} weather={w} />)}
-                <MapBridge onReady={setMapInstance} />
-                <ViewPersistence layer={mapLayer} enabled />
-                {students.map((s) => (
-                  <StudentMarker key={s.student_id} student={s} color={colorMap[s.batch_id]} />
-                ))}
-              </MapContainer>
-            )}
+              )}
+              {TILE_LAYERS[mapLayer].overlay &&
+                weatherList.map((w) => <WeatherIconMarker key={w.name} weather={w} />)}
+              <MapBridge onReady={setMapInstance} />
+              <ViewPersistence layer={mapLayer} enabled />
+              {students.map((s) => (
+                <StudentMarker key={`${s.batch_id}:${s.student_id}`} student={s} color={colorMap[s.institution_id]} />
+              ))}
+            </MapContainer>
           </div>
         )}
 
-        {hasBatches && batchSummary.length > 0 && (
+        {!loading && batchSummary.length > 0 && (
           <div className={styles.batchLegend}>
             <div className={styles.batchLegendItems}>
               {batchSummary.map((b) => (
                 <span key={b.id} className={styles.batchLegendItem}>
                   <span className={styles.batchSwatch} style={{ background: b.color }} />
-                  <span className={styles.batchLegendLabel}>{b.batch_label}</span>
-                  <span className={styles.batchLegendCount}>{b.total}</span>
+                  <span className={styles.batchLegendLabel}>{b.name}</span>
+                  <span className={styles.batchLegendCount}>{b.students.length}</span>
                 </span>
               ))}
             </div>
@@ -1143,7 +1074,7 @@ function LiveMap() {
               className={styles.batchPanelButton}
               onClick={() => setBatchPanelOpen(true)}
             >
-              Batches ({batchSummary.length})
+              Institutions ({batchSummary.length})
             </button>
           </div>
         )}
@@ -1174,25 +1105,23 @@ function LiveMap() {
 
             <div className={styles.drawerBody}>
               {batchSummary.map((batch) => {
-                const batchStudents = activeStudents.filter(
-                  (s) => s.batch_id === batch.id
-                );
+                const batchStudents = batch.students;
                 return (
                   <section key={batch.id} className={styles.drawerGroup}>
                     <header className={styles.drawerGroupHeader}>
                       <span className={styles.batchSwatch} style={{ background: batch.color }} />
-                      <strong>{batch.batch_label}</strong>
+                      <strong>{batch.name}</strong>
                       <span className={styles.drawerGroupCount}>
-                        {batchStudents.length}/{batch.total} timed in
+                        {batchStudents.length} sharing
                       </span>
                     </header>
 
                     {batchStudents.length === 0 ? (
-                      <p className={styles.drawerEmpty}>No students timed in for this partner institution.</p>
+                      <p className={styles.drawerEmpty}>No live locations available.</p>
                     ) : (
                       <ul className={styles.drawerList}>
                         {batchStudents.map((student) => (
-                          <li key={student.student_id} className={styles.drawerItem}>
+                          <li key={`${student.batch_id}:${student.student_id}`} className={styles.drawerItem}>
                             <span
                               className={styles.drawerAvatar}
                               style={{ background: batch.color }}
@@ -1217,15 +1146,6 @@ function LiveMap() {
                                     })
                                   : '—'}
                               </span>
-                              <span>
-                                <em>Time out</em>
-                                {student.check_out_time
-                                  ? new Date(student.check_out_time).toLocaleTimeString([], {
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })
-                                  : '—'}
-                              </span>
                             </div>
                           </li>
                         ))}
@@ -1242,4 +1162,7 @@ function LiveMap() {
   );
 }
 
-export default LiveMap;
+export default function LiveMap() {
+  const { token } = useAuth();
+  return token ? <TeacherLiveMap key={token} token={token} /> : null;
+}

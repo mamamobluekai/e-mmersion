@@ -1,5 +1,7 @@
-import { useState, cloneElement } from 'react';
+import { useEffect, useRef, useState, cloneElement } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useMobileKeyboardFocus } from '../../../hooks/useMobileKeyboardFocus';
+import { recordPageVisit } from '../../../api/activityHistoryApi';
 import styles from './DashboardLayout.module.css';
 
 function DashboardLayout({
@@ -8,8 +10,21 @@ function DashboardLayout({
   children,
   enableMobileKeyboardFocus = false,
   compactGutters = false,
+  activityReady = true,
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { pathname } = useLocation();
+  const lastVisit = useRef(null);
+
+  useEffect(() => {
+    if (!activityReady || lastVisit.current === pathname) return undefined;
+    // Let redirects settle before recording the page the user actually opens.
+    const timer = window.setTimeout(() => {
+      lastVisit.current = pathname;
+      recordPageVisit(pathname);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activityReady, pathname]);
 
   useMobileKeyboardFocus(enableMobileKeyboardFocus ? 110 : 24);
 

@@ -1,110 +1,73 @@
 const pool = require('../db');
 const { getStudentSchedules } = require('./teacherControllers/immersionSchedule.controller');
 const { nowInManilaDateOnly, isValidManilaDate } = require('../utils/manilaDate');
-const { computeGradeFromRatings, ratingForScore, validateRatings } = require('../utils/criteriaGrading');
-const { createNotification, getStudentUserId, getBatchTeacherUserId } = require('../services/notification.service');
+const { computeGradeFromRatings, validateRatings } = require('../utils/criteriaGrading');
+const { createNotification, getStudentUserId, notifyUsers } = require('../services/notification.service');
 
-async function ensureDocumentationTables() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS student_daily_documentation (
-      id SERIAL PRIMARY KEY,
-      student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-      teacher_batch_id INTEGER NOT NULL REFERENCES teacher_batches(id) ON DELETE CASCADE,
-      date DATE NOT NULL,
-      day_number INTEGER NOT NULL CHECK (day_number >= 1),
-      file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
-      reasoning TEXT,
-      status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'submitted', 'reviewed', 'graded')),
-      teacher_score INTEGER CHECK (teacher_score BETWEEN 0 AND 100),
-      teacher_feedback TEXT,
-      graded_by INTEGER REFERENCES users(id),
-      graded_at TIMESTAMP,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      criteria_ratings JSONB,
-      final_stars SMALLINT CHECK (final_stars BETWEEN 1 AND 4),
-      final_label VARCHAR(50),
-      submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE (student_id, teacher_batch_id, date)
-    );
-  `);
+const accessibleDeployments = `
+  SELECT tb.id, tb.batch_label, dr.partner_institution_id, dr.confirmed_schedule
+  FROM teacher_batches tb
+  JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+  WHERE tb.archived_at IS NULL AND (
+    $2::text = 'admin'
+    OR ($2 = 'supervisor' AND tb.supervisor_id = $1 AND dr.supervisor_id = $1)
+    OR ($2 = 'coordinator' AND EXISTS (
+      SELECT 1 FROM coordinators c WHERE c.id = tb.coordinator_id AND c.user_id = $1
+    ))
+    OR ($2 = 'teacher' AND EXISTS (
+      SELECT 1 FROM teachers t WHERE t.user_id = $1 AND (t.id = tb.teacher_id OR EXISTS (
+        SELECT 1 FROM partner_deployment_teachers link
+        WHERE link.deployment_request_id = dr.id AND link.teacher_id = t.id
+      ))
+    ))
+  )`;
 
-  // Older installs predate the star-rating columns.
-  await pool.query(`
-    ALTER TABLE student_daily_documentation ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
-    ALTER TABLE student_daily_documentation ADD COLUMN IF NOT EXISTS criteria_ratings JSONB;
-    ALTER TABLE student_daily_documentation ADD COLUMN IF NOT EXISTS final_stars SMALLINT;
-    ALTER TABLE student_daily_documentation ADD COLUMN IF NOT EXISTS final_label VARCHAR(50);
-  `);
+const assignedWorkday = `
+  (d.confirmed_schedule->'dates') ? sdd.date::text
+  AND (tbs.deployment_started_on IS NULL OR sdd.date >= tbs.deployment_started_on)
+  AND (tbs.deployment_ended_on IS NULL OR sdd.date < tbs.deployment_ended_on)`;
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS documentation_criteria (
-      id SERIAL PRIMARY KEY,
-      criterion_name VARCHAR(255) NOT NULL,
-      points INTEGER NOT NULL CHECK (points BETWEEN 0 AND 100),
-      description TEXT,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_daily_doc_student_batch ON student_daily_documentation(student_id, teacher_batch_id);
-    CREATE INDEX IF NOT EXISTS idx_daily_doc_batch_date ON student_daily_documentation(teacher_batch_id, date);
-    CREATE INDEX IF NOT EXISTS idx_daily_doc_status ON student_daily_documentation(status);
-    CREATE INDEX IF NOT EXISTS idx_doc_criteria_sort ON documentation_criteria(sort_order);
-  `);
-
-  await pool.query(`
-    INSERT INTO documentation_criteria (id, criterion_name, points, description, sort_order) VALUES
-      (1, 'Completeness of Daily Entries', 20, 'Student submits documentation for every required immersion day.', 1),
-      (2, 'Accuracy of Information', 15, 'Activities, dates, times, and experiences are truthful and correctly recorded.', 2),
-      (3, 'Description of Activities', 20, 'Clearly explains what the student actually did during the day.', 3),
-      (4, 'Reflection and Learning', 20, 'Explains what the student learned, difficulties encountered, and how the experience improved their skills.', 4),
-      (5, 'Relevance to Work Immersion', 10, 'Documentation is related to the assigned workplace, tasks, and learning competencies.', 5),
-      (6, 'Organization and Presentation', 5, 'Entries are organized, readable, and properly formatted.', 6),
-      (7, 'Professionalism', 5, 'Uses appropriate language and demonstrates professional attitude in documentation.', 7),
-      (8, 'Supporting Evidence', 5, 'Includes appropriate evidence when required, such as photos, signatures, task records, or other verification.', 8)
-    ON CONFLICT (id) DO UPDATE SET
-      criterion_name = EXCLUDED.criterion_name,
-      points = EXCLUDED.points,
-      description = EXCLUDED.description,
-      sort_order = EXCLUDED.sort_order,
-      updated_at = CURRENT_TIMESTAMP;
-  `);
+function isId(value) {
+  return typeof value === 'string' && /^\d+$/.test(value) && Number(value) > 0 && Number(value) <= 2147483647;
 }
 
 async function getStudentDailyDocs(req, res) {
   try {
-    await ensureDocumentationTables();
-    const { studentId, batchId, date } = req.query;
-    let query = `SELECT sdd.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
-                        u.email as student_email,
-                        f.original_name, f.cloudinary_url, f.mime_type, f.file_size
-                 FROM student_daily_documentation sdd
-                 JOIN students s ON s.id = sdd.student_id
-                 JOIN users u ON u.id = s.user_id
-                 LEFT JOIN files f ON f.id = sdd.file_id
-                 WHERE 1=1`;
-    const params = [];
-    const isStudent = req.user?.role === 'student';
-
-    if (isStudent) {
-      const studentResult = await pool.query('SELECT id FROM students WHERE user_id = $1 LIMIT 1', [req.user.id]);
-      if (!studentResult.rows.length) return res.status(404).json({ error: 'Student profile not found.' });
-      params.push(studentResult.rows[0].id);
-      query += ` AND sdd.student_id = $${params.length}`;
-    } else if (studentId) {
-      params.push(studentId);
-      query += ` AND sdd.student_id = $${params.length}`;
+    const { studentId, batchId, date, institutionId } = req.query;
+    if ([studentId, batchId, institutionId].some((id) => id !== undefined && !isId(id)) ||
+        (date !== undefined && !isValidManilaDate(date))) {
+      return res.status(400).json({ error: 'Invalid documentation filter.' });
     }
-
-    if (batchId) { params.push(batchId); query += ` AND sdd.teacher_batch_id = $${params.length}`; }
-    if (date) { params.push(date); query += ` AND sdd.date = $${params.length}`; }
-    query += ` ORDER BY sdd.date DESC, sdd.day_number ASC`;
-    const result = await pool.query(query, params);
-    res.json({ docs: result.rows });
+    const fields = `sdd.*, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand,
+      u.email AS student_email, f.original_name, f.cloudinary_url, f.mime_type, f.file_size`;
+    const files = 'LEFT JOIN files f ON f.id = sdd.file_id';
+    if (req.user.role === 'student') {
+      const { rows: [student] } = await pool.query('SELECT id FROM students WHERE user_id = $1 LIMIT 1', [req.user.id]);
+      if (!student) return res.status(404).json({ error: 'Student profile not found.' });
+      const { rows: docs } = await pool.query(`
+        SELECT ${fields} FROM student_daily_documentation sdd
+        JOIN students s ON s.id = sdd.student_id JOIN users u ON u.id = s.user_id
+        ${files}
+        WHERE sdd.student_id = $1 AND ($2::int IS NULL OR sdd.teacher_batch_id = $2)
+          AND ($3::date IS NULL OR sdd.date = $3)
+        ORDER BY sdd.date DESC, sdd.day_number ASC`, [student.id, batchId ?? null, date ?? null]);
+      return res.json({ docs });
+    }
+    const { rows: docs } = await pool.query(`
+      WITH deployments AS (${accessibleDeployments})
+      SELECT ${fields}, d.batch_label FROM student_daily_documentation sdd
+      JOIN deployments d ON d.id = sdd.teacher_batch_id
+      JOIN teacher_batch_students tbs ON tbs.student_id = sdd.student_id AND tbs.teacher_batch_id = d.id
+      JOIN students s ON s.id = sdd.student_id JOIN users u ON u.id = s.user_id
+      ${files}
+      WHERE ${assignedWorkday}
+        AND ($3::int IS NULL OR sdd.student_id = $3)
+        AND ($4::int IS NULL OR d.id = $4)
+        AND ($5::date IS NULL OR sdd.date = $5)
+        AND ($6::int IS NULL OR d.partner_institution_id = $6)
+      ORDER BY sdd.date DESC, sdd.day_number ASC, sdd.id DESC`,
+    [req.user.id, req.user.role, studentId ?? null, batchId ?? null, date ?? null, institutionId ?? null]);
+    res.json({ docs });
   } catch (err) {
     console.error('getStudentDailyDocs error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -113,7 +76,6 @@ async function getStudentDailyDocs(req, res) {
 
 async function submitDailyDoc(req, res) {
   try {
-    await ensureDocumentationTables();
     const studentUserId = req.user.id;
     const studentResult = await pool.query('SELECT id FROM students WHERE user_id = $1 LIMIT 1', [studentUserId]);
     if (!studentResult.rows.length) return res.status(404).json({ error: 'Student profile not found.' });
@@ -166,7 +128,7 @@ async function submitDailyDoc(req, res) {
           ? existing.rows[0].date.toISOString().slice(0, 10)
           : String(existing.rows[0].date);
       return res.status(409).json({
-        error: `Documentation for ${blockedDate} has already been reviewed by your teacher and cannot be edited.`,
+        error: `Documentation for ${blockedDate} has already been reviewed and cannot be edited.`,
       });
     }
 
@@ -174,6 +136,7 @@ async function submitDailyDoc(req, res) {
       `INSERT INTO student_daily_documentation (student_id, teacher_batch_id, date, day_number, file_id, reasoning, status, submitted_at)
        VALUES ($1, $2, $3, $4, $5, $6, 'submitted', CURRENT_TIMESTAMP)
        ON CONFLICT (student_id, teacher_batch_id, date) DO UPDATE SET
+         day_number = EXCLUDED.day_number,
          file_id = EXCLUDED.file_id,
          reasoning = EXCLUDED.reasoning,
          status = 'submitted',
@@ -183,21 +146,32 @@ async function submitDailyDoc(req, res) {
       [studentId, finalBatchId, date, dayNumber, fileId || null, reasoning || '']
     );
     if (!result.rows.length) {
-      return res.status(409).json({ error: 'Your teacher has already reviewed this documentation.' });
+      return res.status(409).json({ error: 'This documentation has already been reviewed.' });
     }
-    const teacherUserId = await getBatchTeacherUserId(finalBatchId);
-    void createNotification({
-      userId: teacherUserId,
+    const { rows: [reviewers] } = await pool.query(`
+      SELECT CASE WHEN tb.supervisor_id = dr.supervisor_id THEN tb.supervisor_id END AS supervisor_id, ARRAY(
+        SELECT t.user_id FROM teachers t WHERE t.id = tb.teacher_id OR EXISTS (
+          SELECT 1 FROM partner_deployment_teachers link
+          WHERE link.deployment_request_id = dr.id AND link.teacher_id = t.id
+        )
+      ) AS teacher_ids
+      FROM teacher_batches tb
+      JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
+      WHERE tb.id = $1`, [finalBatchId]);
+    const notice = {
       title: 'Daily documentation submitted',
       message: 'A student submitted daily documentation for review.',
       type: 'documentation',
       category: 'documentation',
-      actionUrl: '/dashboard/teacher/documentation',
       relatedUserId: req.user.id,
       entityType: 'daily_documentation',
       entityId: result.rows[0].id,
       eventKey: `documentation-submitted:${result.rows[0].id}:${result.rows[0].updated_at}`,
-    }).catch((err) => console.error('Documentation submission notification failed:', err.message));
+    };
+    void Promise.all([
+      notifyUsers(reviewers?.teacher_ids, { ...notice, actionUrl: '/dashboard/teacher/student-documentation' }),
+      notifyUsers([reviewers?.supervisor_id], { ...notice, actionUrl: '/dashboard/supervisor/student-documentation' }),
+    ]).catch((err) => console.error('Documentation submission notification failed:', err.message));
     res.status(201).json({ doc: result.rows[0] });
   } catch (err) {
     console.error('submitDailyDoc error:', err);
@@ -207,12 +181,12 @@ async function submitDailyDoc(req, res) {
 
 async function gradeDailyDoc(req, res) {
   try {
-    await ensureDocumentationTables();
     const { docId } = req.params;
     const { teacherFeedback, criteriaRatings } = req.body || {};
+    if (!isId(docId) || (teacherFeedback !== undefined && typeof teacherFeedback !== 'string')) {
+      return res.status(400).json({ error: 'Invalid documentation grade.' });
+    }
 
-    // The teacher rates every criterion 1-5 stars; the grade follows from those
-    // ratings, weighted by each criterion's points.
     const criteriaResult = await pool.query(
       'SELECT id, criterion_name, points, description, sort_order FROM documentation_criteria ORDER BY sort_order ASC, id ASC'
     );
@@ -224,20 +198,24 @@ async function gradeDailyDoc(req, res) {
     const grade = computeGradeFromRatings(criteria, criteriaRatings);
 
     const result = await pool.query(
-      `UPDATE student_daily_documentation
-       SET teacher_score = $1, teacher_feedback = $2, criteria_ratings = $3,
-           final_stars = $4, final_label = $5,
-           status = 'graded', graded_by = $6, graded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $7
-       RETURNING *`,
+      `WITH deployments AS (${accessibleDeployments})
+       UPDATE student_daily_documentation sdd
+       SET teacher_score = $4, teacher_feedback = $5, criteria_ratings = $6,
+           final_stars = $7, final_label = $8,
+           status = 'graded', graded_by = $1, graded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       FROM deployments d JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = d.id
+       WHERE sdd.id = $3 AND sdd.teacher_batch_id = d.id AND sdd.student_id = tbs.student_id
+         AND sdd.status IN ('submitted', 'reviewed', 'graded') AND ${assignedWorkday}
+       RETURNING sdd.*`,
       [
+        req.user.id,
+        req.user.role,
+        docId,
         grade.total,
         teacherFeedback || '',
         JSON.stringify(criteriaRatings),
         grade.stars,
         grade.label,
-        req.user.id,
-        docId,
       ]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Documentation not found.' });
@@ -265,7 +243,6 @@ async function gradeDailyDoc(req, res) {
 
 async function getDocumentationCriteria(req, res) {
   try {
-    await ensureDocumentationTables();
     const result = await pool.query(
       `SELECT id, criterion_name, points, description, sort_order
        FROM documentation_criteria
@@ -280,34 +257,51 @@ async function getDocumentationCriteria(req, res) {
 
 async function saveDocumentationCriteria(req, res) {
   try {
-    await ensureDocumentationTables();
     const { criteria } = req.body || {};
     if (!Array.isArray(criteria) || criteria.length === 0) {
       return res.status(400).json({ error: 'Invalid criteria payload.' });
+    }
+    const valid = criteria.every((criterion) =>
+      typeof criterion?.criterion_name === 'string' && criterion.criterion_name.trim().length > 0 &&
+      criterion.criterion_name.trim().length <= 255 &&
+      (typeof criterion.points === 'number' || (typeof criterion.points === 'string' && criterion.points.trim() !== '')) &&
+      Number.isInteger(Number(criterion.points)) &&
+      Number(criterion.points) >= 0 && Number(criterion.points) <= 100 &&
+      (criterion.description == null || typeof criterion.description === 'string') &&
+      (criterion.id == null || isId(String(criterion.id))));
+    const existingIds = criteria.filter((criterion) => criterion?.id != null).map((criterion) => Number(criterion.id));
+    if (!valid || !criteria.some((criterion) => Number(criterion.points) > 0) ||
+        new Set(existingIds).size !== existingIds.length) {
+      return res.status(400).json({ error: 'Give each criterion a name and 0–100 points, with at least one positive weight.' });
     }
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      for (const c of criteria) {
-        if (!c.criterion_name || c.points === undefined) {
+      await client.query('LOCK TABLE documentation_criteria IN SHARE ROW EXCLUSIVE MODE');
+      await client.query(`
+        SELECT setval(pg_get_serial_sequence('documentation_criteria', 'id'),
+          GREATEST(MAX(id), (SELECT last_value FROM documentation_criteria_id_seq)))
+        FROM documentation_criteria`);
+      const saved = [];
+      const fields = 'id, criterion_name, points, description, sort_order';
+      for (const [index, c] of criteria.entries()) {
+        const values = [c.criterion_name.trim(), Number(c.points), c.description || '', index + 1];
+        const sql = c.id == null
+          ? `INSERT INTO documentation_criteria (criterion_name, points, description, sort_order)
+             VALUES ($1, $2, $3, $4) RETURNING ${fields}`
+          : `UPDATE documentation_criteria SET criterion_name = $1, points = $2, description = $3,
+               sort_order = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5 RETURNING ${fields}`;
+        const { rows: [criterion] } = await client.query(sql, c.id == null ? values : [...values, c.id]);
+        if (!criterion) {
           await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Each criterion must include criterion_name and points.' });
+          return res.status(409).json({ error: 'The grading criteria changed. Reload them before saving.' });
         }
-        await client.query(
-          `INSERT INTO documentation_criteria (id, criterion_name, points, description, sort_order, updated_at)
-           VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
-           ON CONFLICT (id) DO UPDATE SET
-             criterion_name = EXCLUDED.criterion_name,
-             points = EXCLUDED.points,
-             description = EXCLUDED.description,
-             sort_order = EXCLUDED.sort_order,
-             updated_at = CURRENT_TIMESTAMP`,
-          [c.id, c.criterion_name, parseInt(c.points, 10), c.description || '', c.sort_order || 0]
-        );
+        saved.push(criterion);
       }
+      await client.query('DELETE FROM documentation_criteria WHERE id <> ALL($1::int[])', [saved.map(({ id }) => id)]);
       await client.query('COMMIT');
-      res.json({ message: 'Criteria saved.' });
+      res.json({ criteria: saved });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;
@@ -320,38 +314,43 @@ async function saveDocumentationCriteria(req, res) {
   }
 }
 
-async function getBatchDailyDocSummary(req, res) {
+async function getDailyDocSummary(req, res) {
   try {
-    await ensureDocumentationTables();
-    const { batchId } = req.params;
-    const result = await pool.query(
-      `SELECT s.id as student_id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email,
-              COUNT(sdd.id) as total_docs,
-              COUNT(CASE WHEN sdd.status = 'graded' THEN 1 END) as graded_count,
-              COUNT(CASE WHEN sdd.status = 'pending' OR sdd.status = 'submitted' THEN 1 END) as pending_count,
-              COALESCE(SUM(sdd.teacher_score), 0) as total_score
-       FROM teacher_batch_students tbs
-       JOIN students s ON s.id = tbs.student_id
-       JOIN users u ON u.id = s.user_id
-       LEFT JOIN student_daily_documentation sdd ON sdd.student_id = s.id AND sdd.teacher_batch_id = tbs.teacher_batch_id
-       WHERE tbs.teacher_batch_id = $1
-       GROUP BY s.id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email
-       ORDER BY s.last_name ASC, s.first_name ASC`,
-      [batchId]
-    );
-    res.json({ students: result.rows });
+    const { batchId, institutionId } = req.params;
+    if (!isId(batchId ?? institutionId)) return res.status(400).json({ error: 'Invalid documentation scope.' });
+    const { rows: [summary] } = await pool.query(`
+      WITH deployments AS (
+        ${accessibleDeployments}
+        AND ($3::int IS NULL OR tb.id = $3) AND ($4::int IS NULL OR dr.partner_institution_id = $4)
+      ), roster AS (
+        SELECT s.id AS student_id, s.first_name, s.last_name, s.student_number, s.grade_level, s.track_strand, u.email,
+          COUNT(sdd.id)::int AS total_docs,
+          (COUNT(sdd.id) FILTER (WHERE sdd.status = 'graded'))::int AS graded_count,
+          (COUNT(sdd.id) FILTER (WHERE sdd.status IN ('pending', 'submitted', 'reviewed')))::int AS pending_count,
+          COALESCE(SUM(sdd.teacher_score), 0) AS total_score
+        FROM deployments d
+        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = d.id AND tbs.deployment_ended_on IS NULL
+        JOIN students s ON s.id = tbs.student_id JOIN users u ON u.id = s.user_id
+        LEFT JOIN student_daily_documentation sdd ON sdd.student_id = s.id AND sdd.teacher_batch_id = d.id
+          AND ${assignedWorkday}
+        GROUP BY s.id, u.email
+      )
+      SELECT EXISTS (SELECT 1 FROM deployments) AS assigned,
+        COALESCE((SELECT json_agg(roster ORDER BY last_name, first_name, student_id) FROM roster), '[]') AS students`,
+    [req.user.id, req.user.role, batchId ?? null, institutionId ?? null]);
+    if (!summary.assigned) return res.status(403).json({ error: 'You have no assigned deployment in this selection.' });
+    res.json({ students: summary.students });
   } catch (err) {
-    console.error('getBatchDailyDocSummary error:', err);
+    console.error('getDailyDocSummary error:', err);
     res.status(500).json({ error: 'Server error.' });
   }
 }
 
 module.exports = {
-  ensureDocumentationTables,
   getStudentDailyDocs,
   submitDailyDoc,
   gradeDailyDoc,
   getDocumentationCriteria,
   saveDocumentationCriteria,
-  getBatchDailyDocSummary,
+  getDailyDocSummary,
 };

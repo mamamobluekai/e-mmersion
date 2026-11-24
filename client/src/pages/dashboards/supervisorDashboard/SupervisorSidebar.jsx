@@ -13,6 +13,7 @@ import {
   Megaphone,
   FileText,
   Info,
+  Star,
 } from 'lucide-react';
 
 const links = [
@@ -50,6 +51,11 @@ const links = [
     icon: UsersRound,
   },
   {
+    to: '/dashboard/supervisor/student-documentation',
+    label: 'Student Documentation',
+    icon: FileText,
+  },
+  {
     to: '/dashboard/supervisor/reports-concerns',
     label: 'My Reports & Concerns',
     icon: FileText,
@@ -59,6 +65,11 @@ const links = [
     label: 'Evaluate Student',
     icon: ClipboardPenLine,
     group: 'Post-Immersion',
+  },
+  {
+    to: '/dashboard/supervisor/student-feedback',
+    label: 'Student Feedback',
+    icon: Star,
   },
   // 'Student Criteria' was retired: criteria are now edited from the
   // "Grading Criteria" modal on the Evaluate Student page.

@@ -139,27 +139,21 @@ const getTeacherInstitutionOverview = async (req, res) => {
 
 const getPartnerInstitutionStudents = async (req, res) => {
   try {
-    const { institutionId } = req.params;
+    const institutionId = Number(req.params.institutionId);
+    if (!Number.isInteger(institutionId) || institutionId < 1 || institutionId > 2147483647) {
+      return res.status(400).json({ error: 'Invalid partner institution.' });
+    }
 
+    let teacherId = null;
+    let coordinatorId = null;
     if (req.user.role === 'teacher') {
       const teacherRow = await pool.query(
         "SELECT id FROM teachers WHERE user_id = $1",
         [req.user.id]
       );
-      const teacherId = teacherRow.rows[0]?.id;
+      teacherId = teacherRow.rows[0]?.id;
       if (!teacherId) {
         return res.status(400).json({ error: 'Teacher profile not found.' });
-      }
-      const ownership = await pool.query(
-        `SELECT 1 FROM teacher_batches tb
-         JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
-         WHERE tb.archived_at IS NULL AND dr.partner_institution_id = $1 AND (tb.teacher_id = $2 OR EXISTS (
-           SELECT 1 FROM partner_deployment_teachers link WHERE link.deployment_request_id = dr.id AND link.teacher_id = $2
-         ))`,
-        [institutionId, teacherId]
-      );
-      if (ownership.rows.length === 0) {
-        return res.status(403).json({ error: 'Access denied.' });
       }
     }
 
@@ -168,23 +162,37 @@ const getPartnerInstitutionStudents = async (req, res) => {
         "SELECT id FROM coordinators WHERE user_id = $1",
         [req.user.id]
       );
-      const coordinatorId = coordinatorRow.rows[0]?.id;
+      coordinatorId = coordinatorRow.rows[0]?.id;
       if (!coordinatorId) {
         return res.status(400).json({ error: 'Coordinator profile not found.' });
       }
-      const ownership = await pool.query(
-        `SELECT 1 FROM teacher_batches tb
-         JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
-         WHERE tb.coordinator_id = $1 AND dr.partner_institution_id = $2`,
-        [coordinatorId, institutionId]
-      );
+    }
+
+    const deployments = `
+        FROM teacher_batches tb
+        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id
+          AND dr.workflow_version = 2 AND dr.status = 'approved'
+        WHERE dr.partner_institution_id = $1 AND tb.archived_at IS NULL
+          AND ($4::boolean OR tb.coordinator_id = $3 OR tb.teacher_id = $2 OR EXISTS (
+            SELECT 1 FROM partner_deployment_teachers link
+            WHERE link.deployment_request_id = dr.id AND link.teacher_id = $2
+          ))`;
+    const isAdmin = req.user.role === 'admin';
+    const params = [institutionId, teacherId, coordinatorId, isAdmin];
+    if (!isAdmin) {
+      const ownership = await pool.query(`SELECT 1 ${deployments} LIMIT 1`, params);
       if (ownership.rows.length === 0) {
         return res.status(403).json({ error: 'Access denied.' });
       }
     }
 
     const result = await pool.query(
-      `SELECT
+      `WITH deployments AS (
+          SELECT tb.id, tb.batch_label, tb.coordinator_id, dr.coordinator_batch_id,
+            dr.partner_institution_id, dr.supervisor_id
+          ${deployments}
+        )
+        SELECT
           s.user_id AS user_id,
           s.id AS student_id,
           s.student_number,
@@ -196,13 +204,15 @@ const getPartnerInstitutionStudents = async (req, res) => {
           s.birthdate,
           s.age,
           s.contact_number,
+          s.home_address,
           s.section,
           s.school,
           s.grade_level,
           s.track_strand,
           s.track_strand AS strand,
-          s.preferred_industry,
+          COALESCE(NULLIF(btrim(s.preferred_industry), ''), preference.industry) AS preferred_industry,
           s.preferred_company,
+          preference.name AS preferred_partner_name,
           s.career_goal,
           s.industry_reason,
           s.guardian_name,
@@ -218,15 +228,27 @@ const getPartnerInstitutionStudents = async (req, res) => {
           u.phone,
           u.status,
           u.status AS account_status,
-          tbs.assigned_at
-        FROM teacher_batch_students tbs
+          tbs.assigned_at,
+          json_build_object(
+            'batch_number', batch.batch_number,
+            'batch_label', deployment.batch_label,
+            'partner_institution_id', partner.id,
+            'partner_institution_name', partner.name,
+            'coordinator_name', NULLIF(btrim(concat_ws(' ', c.first_name, c.last_name)), ''),
+            'supervisor_name', NULLIF(btrim(concat_ws(' ', sv.first_name, sv.last_name)), '')
+          ) AS placement
+        FROM deployments deployment
+        JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = deployment.id
         JOIN students s ON s.id = tbs.student_id
         JOIN users u ON u.id = s.user_id
-        JOIN teacher_batches tb ON tb.id = tbs.teacher_batch_id
-        JOIN deployment_requests dr ON dr.teacher_batch_id = tb.id AND dr.workflow_version = 2 AND dr.status = 'approved'
-        WHERE dr.partner_institution_id = $1 AND tbs.deployment_ended_on IS NULL
+        JOIN partner_institutions partner ON partner.id = deployment.partner_institution_id
+        LEFT JOIN coordinators c ON c.id = deployment.coordinator_id
+        LEFT JOIN supervisors sv ON sv.user_id = deployment.supervisor_id
+        LEFT JOIN coordinator_deployment_batches batch ON batch.id = deployment.coordinator_batch_id
+        LEFT JOIN partner_institutions preference ON preference.id = s.preferred_partner_institution_id
+        WHERE tbs.deployment_ended_on IS NULL
         ORDER BY tbs.assigned_at DESC`,
-      [institutionId]
+      params
     );
 
     res.json({ students: result.rows });

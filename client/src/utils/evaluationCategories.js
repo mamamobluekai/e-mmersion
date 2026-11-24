@@ -1,3 +1,11 @@
+export const STUDENT_RATING_SCALE = [
+  { value: 1, label: 'Needs Improvement' },
+  { value: 2, label: 'Fair' },
+  { value: 3, label: 'Satisfactory' },
+  { value: 4, label: 'Very Satisfactory' },
+  { value: 5, label: 'Outstanding' },
+];
+
 export function evaluationCategories(scores, criteria) {
   const definitions = new Map(criteria.map((category) => [String(category.id), category]));
   const entries = Array.isArray(scores) ?

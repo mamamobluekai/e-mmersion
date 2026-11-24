@@ -108,6 +108,25 @@
   cursor: wait;
 }
 
+.bodyRefreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #eadde0;
+  border-radius: 8px;
+  background: #fff;
+  color: #8b1e2d;
+  font: inherit;
+  cursor: pointer;
+}
+
+.bodyRefreshButton:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .spin {
   animation: spin 0.7s linear infinite;
 }

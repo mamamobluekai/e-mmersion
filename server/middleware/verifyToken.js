@@ -1,6 +1,8 @@
 const { verifyAccessToken } = require('../utils/generateToken');
 const { isAccessTokenRevoked } = require('../utils/tokenStore');
 const pool = require('../db');
+const { observeActivity } = require('../services/activityHistory.service');
+const { checkAccessSession } = require('../services/deviceSessions.service');
 
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -94,7 +96,10 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    req.user = { ...decoded, ...current };
+    const session = await checkAccessSession(decoded, true);
+    if (!session) return res.status(401).json({ error: 'Session ended. Sign in again.' });
+    req.user = { ...decoded, ...current, deviceId: session.device_id };
+    observeActivity(req, res);
     next();
   } catch (err) {
     console.error('verifyAccessToken failed:', err.name, err.message, 'path=', req.path, 'method=', req.method);

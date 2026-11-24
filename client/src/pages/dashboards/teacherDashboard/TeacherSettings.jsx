@@ -3,6 +3,8 @@ import { useTheme } from '../../../context/themeContextValue';
 import { useState } from 'react';
 import { updateUserProfile } from '../../../api/userApi';
 import { useToast } from '../../../components/admin/toastContext';
+import { ActivityHistoryLink } from '../ActivityHistory';
+import { recordThemeChange } from '../../../api/activityHistoryApi';
 import styles from './TeacherSettings.module.css';
 
 function TeacherSettings() {
@@ -43,7 +45,7 @@ function TeacherSettings() {
           <button
             type="button"
             className={styles.themeToggleBtn}
-            onClick={toggleTheme}
+            onClick={() => { toggleTheme(); recordThemeChange(); }}
             aria-pressed={theme === 'dark'}
             style={{
               display: 'inline-flex',
@@ -155,6 +157,7 @@ function TeacherSettings() {
           </button>
         </div>
       </div>
+      <ActivityHistoryLink to="/dashboard/teacher/settings/history" />
     </div>
   );
 }

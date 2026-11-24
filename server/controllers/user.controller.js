@@ -5,7 +5,6 @@ const { hashPassword, comparePassword } = require('../utils/hashPassword');
 const { validatePassword, validateConfirmation } = require('../utils/passwordPolicy');
 const { normalizeEmail } = require('../utils/normalizeEmail');
 const { getRefreshCookieOptions } = require('../utils/refreshCookie');
-const { generateAccessToken, generateRefreshToken } = require('../utils/generateToken');
 const {
   getLoginAttempts,
   incrementLoginAttempts,
@@ -13,10 +12,17 @@ const {
   getLockoutState,
 } = require('../utils/loginAttempts');
 const { sendLoginError } = require('../utils/loginErrors');
+const { recordActivity, reportActivityError } = require('../services/activityHistory.service');
 const { DEFAULT_GRADE_LEVEL } = require('./coordinatorControllers/helpers/constant');
 const { readMaintenance } = require('../middleware/maintenance');
 const { logSecurityEvent, countRecentEvents, SECURITY_EVENTS, SEVERITY } = require('../utils/securityLogger');
 const tokenStore = require('../utils/tokenStore');
+const deviceSessions = require('../services/deviceSessions.service');
+const { notifyNewLogin } = require('../services/loginAlerts.service');
+
+const attemptLogged = (req, email) => {
+  void deviceSessions.recordFailedLogin(req, email).catch((error) => console.error('Login activity:', error.message));
+};
 
 // Every login failure reason, its wording and its status code live in
 // utils/loginErrors.js, shared with the admin sign-in so both pages behave the
@@ -361,9 +367,10 @@ async function registerFailedLogin(req, email, reason) {
   return attempts;
 }
 
-const login = async (req, res) => {
+const login = async (req, res, endpointRole) => {
   try {
-    const { email, password, role } = req.body;
+    const { email, password } = req.body;
+    const role = typeof endpointRole === 'string' ? endpointRole : req.body.role;
 
     if (!email || !password) {
       return sendLoginError(res, 'MISSING_CREDENTIALS');
@@ -377,6 +384,7 @@ const login = async (req, res) => {
     // Check lockout before even hitting the DB / comparing password.
     const lockout = await getLockoutState(trimmedEmail);
     if (lockout.locked) {
+      attemptLogged(req, trimmedEmail);
       await logSecurityEvent({
         type: SECURITY_EVENTS.LOGIN_LOCKED,
         severity: SEVERITY.WARNING,
@@ -404,15 +412,12 @@ const login = async (req, res) => {
 
     const user = result.rows[0];
 
-    // The account exists but under a different role than the tab that was
-    // clicked. Naming the real role is the whole point: "Invalid email or
-    // password" told a user nothing about switching tabs. See
-    // utils/loginErrors.js for the privacy switch.
+    // The role-specific endpoint takes precedence over a role sent in the body.
+    // See loginErrors.js for the privacy setting that controls role disclosure.
     if (role && user.role !== role) {
+      attemptLogged(req, trimmedEmail);
       await registerFailedLogin(req, trimmedEmail, 'role mismatch');
       return sendLoginError(res, 'WRONG_ROLE_SELECTED', { role: user.role, selected: role }, {
-        // Also sent as data so the form can move the user to the right tab
-        // instead of only telling them which one to click.
         actualRole: user.role,
         selectedRole: role,
       });
@@ -457,6 +462,7 @@ const login = async (req, res) => {
 
     const match = await comparePassword(password, user.password);
     if (!match) {
+      attemptLogged(req, trimmedEmail);
       await registerFailedLogin(req, trimmedEmail, 'bad password');
       return sendLoginError(res, 'WRONG_PASSWORD');
     }
@@ -464,14 +470,17 @@ const login = async (req, res) => {
     // Account-state failures only surface *after* the password is proven
     // correct, so they cannot be used to probe which emails exist.
     if (user.status === 'pending') {
+      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_PENDING');
     }
     if (user.status === 'disapproved') {
+      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_DISAPPROVED_USER');
     }
     if (String(user.status || '').toLowerCase() === 'pending_activation') {
       const expiresAt = new Date(user.temporary_password_expires_at).getTime();
       if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+        attemptLogged(req, trimmedEmail);
         return sendLoginError(res, 'TEMPORARY_PASSWORD_EXPIRED');
       }
       user.must_change_password = true;
@@ -483,6 +492,7 @@ const login = async (req, res) => {
     if (user.role !== 'admin') {
       const maintenance = await readMaintenance();
       if (maintenance.enabled) {
+        attemptLogged(req, trimmedEmail);
         return sendLoginError(res, 'MAINTENANCE', { detail: maintenance.message }, {
           maintenance: true,
           startedAt: maintenance.startedAt,
@@ -492,6 +502,7 @@ const login = async (req, res) => {
 
       const accessBlock = await checkImmersionPeriodAccess(user.role);
       if (accessBlock.blocked) {
+        attemptLogged(req, trimmedEmail);
         return sendLoginError(res, 'PERIOD_CLOSED', { detail: accessBlock.message }, {
           phase: accessBlock.phase,
           startDate: accessBlock.startDate,
@@ -506,22 +517,9 @@ const login = async (req, res) => {
     // Update last_login timestamp
     await pool.query(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1`, [user.id]);
 
-    const payload = { id: user.id, role: user.role, email: user.email };
-    const accessToken = generateAccessToken(payload);
-    // generateRefreshToken now returns { token, jti } so the rotation record can
-    // be persisted and later validated/revoked (#7 session hijacking).
-    const { token: refreshToken, jti: refreshJti } = generateRefreshToken(payload);
-
-    try {
-      await tokenStore.storeRefreshToken({ userId: user.id, token: refreshToken, jti: refreshJti, req });
-    } catch (storeErr) {
-      console.warn('Failed to persist refresh token:', storeErr.message);
-    }
-
-    res.cookie('refreshToken', refreshToken, {
-      ...getRefreshCookieOptions(),
-      maxAge: tokenStore.REFRESH_TTL_MS, // 7 days
-    });
+    const session = await deviceSessions.startSession(req, res, user);
+    if (!session) return sendLoginError(res, 'WRONG_PASSWORD');
+    void notifyNewLogin(user, session).catch((error) => console.error('Login alert:', error.message));
 
     await logSecurityEvent({
       type: SECURITY_EVENTS.LOGIN_SUCCESS,
@@ -536,11 +534,13 @@ const login = async (req, res) => {
     user.terms_accepted = Boolean(user.terms_accepted);
     user.skip_splash_screen = Boolean(user.skip_splash_screen);
 
+    void recordActivity(user, 'sign-in', 'account', 'Signed in').catch(reportActivityError);
+
     // The CSRF cookie is issued globally by middleware; echo it so the SPA can
     // begin sending the X-CSRF-Token header immediately after login.
     res.json({
       message: 'Login successful.',
-      accessToken,
+      accessToken: session.accessToken,
       csrfToken: req.cookies?.csrfToken || null,
       user,
     });
@@ -715,10 +715,7 @@ const setPassword = async (req, res) => {
   }
 };
 
-// Rotating refresh endpoint (#7). Exchanges a valid refresh cookie for a fresh
-// access token and a *new* refresh token, revoking the old one. Replaying an
-// already-revoked refresh token revokes the whole family and is logged as a
-// critical event (see utils/tokenStore.validateRefreshToken).
+// Refresh rotation keeps the same server-side session across access tokens.
 const refreshAccessToken = async (req, res) => {
   try {
     const presented = req.cookies?.refreshToken;
@@ -726,52 +723,17 @@ const refreshAccessToken = async (req, res) => {
       return res.status(401).json({ error: 'No refresh token provided.' });
     }
 
-    const { verifyRefreshToken } = require('../utils/generateToken');
-    let decoded;
-    try {
-      decoded = verifyRefreshToken(presented);
-    } catch {
-      return res.status(401).json({ error: 'Invalid or expired refresh token.' });
+    const session = await deviceSessions.refreshSession(req, presented);
+    if (!session || session.inactive) {
+      res.clearCookie('refreshToken', getRefreshCookieOptions());
+      return res.status(session?.inactive ? 403 : 401).json({ error: session?.inactive ? 'Account is not active.' : 'Session ended. Sign in again.' });
     }
-
-    const check = await tokenStore.validateRefreshToken(presented, req);
-    if (!check.valid) {
-      res.clearCookie('refreshToken');
-      return res.status(401).json({ error: 'Refresh token is no longer valid.' });
-    }
-
-    const userResult = await pool.query(
-      'SELECT id, email, role, status FROM users WHERE id = $1',
-      [check.row.user_id]
-    );
-    if (userResult.rows.length === 0) {
-      res.clearCookie('refreshToken');
-      return res.status(401).json({ error: 'Account no longer exists.' });
-    }
-    const user = userResult.rows[0];
-    // Must match the login gate (lines 453/456), which rejects only these two
-    // states. Requiring exactly 'approved' here broke refresh for accounts
-    // stored as 'active' - notably admins - so their access token could never
-    // be renewed.
-    if (user.status === 'pending' || user.status === 'disapproved') {
-      res.clearCookie('refreshToken');
-      return res.status(403).json({ error: 'Account is not active.' });
-    }
-
-    const payload = { id: user.id, role: user.role, email: user.email };
-    const accessToken = generateAccessToken(payload);
-    const { token: newRefresh, jti: newJti } = generateRefreshToken(payload);
-
-    // Rotate: revoke the presented token and persist the replacement.
-    await tokenStore.rotateRefreshToken(presented, newJti);
-    await tokenStore.storeRefreshToken({ userId: user.id, token: newRefresh, jti: newJti, req });
-
-    res.cookie('refreshToken', newRefresh, {
+    res.cookie('refreshToken', session.refreshToken, {
       ...getRefreshCookieOptions(),
       maxAge: tokenStore.REFRESH_TTL_MS,
     });
 
-    return res.json({ accessToken, csrfToken: req.cookies?.csrfToken || null });
+    return res.json({ accessToken: session.accessToken, csrfToken: req.cookies?.csrfToken || null });
   } catch (err) {
     console.error('Refresh token error:', err);
     return res.status(500).json({ error: 'Server error during token refresh.' });
@@ -782,10 +744,7 @@ const refreshAccessToken = async (req, res) => {
 // jti to the deny-list so the still-valid access token cannot be replayed.
 const logout = async (req, res) => {
   try {
-    const refresh = req.cookies?.refreshToken;
-    if (refresh) {
-      await tokenStore.revokeRefreshToken(refresh);
-    }
+    await deviceSessions.endCurrentSession(req.user);
     if (req.user?.jti) {
       await tokenStore.revokeAccessToken({ jti: req.user.jti, userId: req.user.id, reason: 'logout' });
     }
@@ -798,6 +757,7 @@ const logout = async (req, res) => {
     });
   } catch (err) {
     console.warn('Logout cleanup error:', err.message);
+    return res.status(503).json({ error: 'Could not end the session. Try again.' });
   }
 
   res.clearCookie('refreshToken', getRefreshCookieOptions());

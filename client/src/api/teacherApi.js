@@ -35,9 +35,10 @@ export async function getPartnerInstitutionStudents(institutionId, token) {
 
 /* ---------------- Teacher Batch (Legacy) ---------------- */
 
-export async function getMyTeacherBatch(token) {
+export async function getMyTeacherBatch(token, signal) {
   const res = await axios.get(`${API_BASE}/coordinator/teacher-batches/me`, {
     headers: authHeaders(token),
+    signal,
   });
   return res.data;
 }
@@ -65,9 +66,10 @@ export async function confirmReportConcern(reportId, token) {
 
 /* ---------------- Attendance ---------------- */
 
-export async function getTeacherBatchStatus(batchId, token) {
+export async function getTeacherBatchStatus(batchId, token, signal) {
   const res = await axios.get(`${API_BASE}/attendance/teacher/batch/${batchId}/status`, {
     headers: authHeaders(token),
+    signal,
   });
   return res.data;
 }
@@ -101,9 +103,10 @@ export async function getBatchRecords(batchId, date, token) {
   return res.data;
 }
 
-export async function getBatchAttendanceReport(batchId, token) {
+export async function getBatchAttendanceReport(batchId, token, signal) {
   const res = await axios.get(`${API_BASE}/attendance/teacher/batch/${batchId}/report`, {
     headers: authHeaders(token),
+    signal,
   });
   return res.data;
 }
@@ -165,17 +168,19 @@ export async function getFileById(id) {
 
 /* ---------------- Documentation ---------------- */
 
-export async function getBatchDailyDocSummary(batchId, token) {
-  const res = await axios.get(`${API_BASE}/documentation/batch/${batchId}/summary`, {
+export async function getInstitutionDailyDocSummary(institutionId, token, signal) {
+  const res = await axios.get(`${API_BASE}/documentation/partner-institutions/${institutionId}/summary`, {
     headers: authHeaders(token),
+    signal,
   });
   return res.data;
 }
 
-export async function getStudentDailyDocs(params, token) {
+export async function getStudentDailyDocs(params, token, signal) {
   const res = await axios.get(`${API_BASE}/documentation/daily`, {
     headers: authHeaders(token),
     params,
+    signal,
   });
   return res.data;
 }
