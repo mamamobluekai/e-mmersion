@@ -14,7 +14,8 @@ const {
 const { forgotPassword, resetPassword, verifyResetToken } = require('../controllers/passwordReset.controller');
 const authenticate = require('../middleware/verifyToken');
 const loginLimiter = require('../middleware/loginLimter');
-const { authLimiter, credentialLimiter, writeLimiter } = require('../middleware/rateLimiters');
+const { authLimiter, credentialLimiter, writeLimiter, otpVerifyLimiter, otpResendLimiter } = require('../middleware/rateLimiters');
+const { verifyLoginOtp, resendLoginOtp } = require('../controllers/loginOtp.controller');
 const {
   registerValidation,
   loginValidation,
@@ -49,12 +50,14 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.get('/csrf-token', (req, res) => {
   const issued = res.locals.csrfToken;
   const existing = req.cookies?.[CSRF_COOKIE];
-  res.json({ csrfToken: existing || issued || null });
+  res.set('Cache-Control', 'no-store').json({ csrfToken: existing || issued || null });
 });
 
 router.post('/register', writeLimiter, registerValidation, handleValidation, registerStudent);
 const loginChecks = [authLimiter, credentialLimiter, loginLimiter, loginValidation, handleValidation];
 router.post('/login', ...loginChecks, login);
+router.post('/login/otp/verify', otpVerifyLimiter, verifyLoginOtp);
+router.post('/login/otp/resend', otpResendLimiter, resendLoginOtp);
 for (const role of ['student', 'teacher', 'coordinator', 'supervisor']) {
   router.post(`/login/${role}`, ...loginChecks, (req, res) => login(req, res, role));
 }
@@ -65,6 +68,14 @@ router.post('/set-password', authLimiter, setPassword);
 router.post('/forgot-password', authLimiter, forgotValidation, handleValidation, forgotPassword);
 router.post('/reset-password', authLimiter, resetValidation, handleValidation, resetPassword);
 router.post('/verify-reset-token', authLimiter, verifyTokenValidation, handleValidation, verifyResetToken);
+
+function sessionStatus(req, res) {
+  const remainingMs = Math.max(0, new Date(res.locals.sessionDeadline).getTime() - Date.now());
+  res.set('Cache-Control', 'no-store').json({ remainingMs });
+}
+
+router.get('/session', authenticate, sessionStatus);
+router.post('/session/activity', writeLimiter, authenticate, sessionStatus);
 
 router.use(authenticate);
 

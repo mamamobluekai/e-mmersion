@@ -7,8 +7,8 @@
 // it is the same Gmail account - so nothing about the sender changes, only the
 // transport.
 //
-// Deliberately dependency-free: the OAuth token exchange and the send call are
-// two small HTTPS requests, so there is no reason to pull in `googleapis`.
+// Nodemailer composes the message locally. The token exchange and delivery
+// use HTTPS requests to Google.
 //
 // Credentials come from a one-time authorisation (see scripts/gmailAuth.js):
 //   GMAIL_CLIENT_ID      from the Google Cloud console OAuth client
@@ -18,10 +18,11 @@
 // A refresh token is used rather than an access token because access tokens
 // expire after an hour and this server has to keep sending approval emails for
 // as long as it is running.
-const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SEND_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
+const messageComposer = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'windows' });
 
 const REQUEST_TIMEOUT_MS = 20000;
 
@@ -82,42 +83,6 @@ async function getAccessToken() {
   return accessToken;
 }
 
-// Base64url, the encoding the Gmail API expects for a raw RFC 2822 message.
-function base64Url(input) {
-  return Buffer.from(input, 'utf8')
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-}
-
-// Builds a multipart/alternative message so there is a plain-text part as well
-// as HTML. Gmail is markedly more likely to file an HTML-only message as spam,
-// which matters here because a rejected approval email means nobody can sign in.
-function buildMessage({ to, subject, html, text }) {
-  const boundary = `wim_${crypto.randomBytes(12).toString('hex')}`;
-  const safeSubject = String(subject).replace(/[\r\n]+/g, ' ');
-
-  return [
-    `To: ${to}`,
-    `Subject: ${safeSubject}`,
-    'MIME-Version: 1.0',
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
-    '',
-    `--${boundary}`,
-    'Content-Type: text/plain; charset="UTF-8"',
-    '',
-    text || '',
-    '',
-    `--${boundary}`,
-    'Content-Type: text/html; charset="UTF-8"',
-    '',
-    html || '',
-    '',
-    `--${boundary}--`,
-  ].join('\r\n');
-}
-
 // Sends one message. Returns { sent, reason } so the caller can report the
 // precise failure to the admin instead of a bare "failed".
 async function sendMail({ to, subject, html, text }) {
@@ -148,6 +113,14 @@ async function sendMail({ to, subject, html, text }) {
     };
   }
 
+  let raw;
+  try {
+    const { message } = await messageComposer.sendMail({ from, to, subject, html, text });
+    raw = message.toString('base64url');
+  } catch {
+    return { sent: false, reason: 'Could not prepare the message for Gmail.' };
+  }
+
   let res;
   try {
     res = await fetchWithTimeout(SEND_URL, {
@@ -156,7 +129,7 @@ async function sendMail({ to, subject, html, text }) {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ raw: base64Url(buildMessage({ to, subject, html, text })) }),
+      body: JSON.stringify({ raw }),
     });
   } catch (err) {
     const aborted = err.name === 'AbortError';

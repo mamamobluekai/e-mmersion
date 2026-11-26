@@ -58,7 +58,7 @@ function initializeSocket(server) {
     try {
       const token = socket.handshake.auth?.token;
       const user = token ? verifyAccessToken(token) : null;
-      if (!user?.id || !await checkAccessSession(user, true) || await isAccessTokenRevoked(user.jti)) {
+      if (!user?.id || !await checkAccessSession(user, socket.request) || await isAccessTokenRevoked(user.jti)) {
         return next(new Error('Unauthorized'));
       }
       socket.data.user = user;
@@ -71,12 +71,22 @@ function initializeSocket(server) {
   io.on('connection', (socket) => {
     const user = socket.data.user;
     socket.join(`user:${user.id}`);
-    if (user.sid) {
-      socket.join(`account-session:${user.sid}`);
-      void checkAccessSession(user).then((session) => {
-        if (!session) socket.disconnect(true);
-      }).catch(() => socket.disconnect(true));
+    socket.join(`account-session:${user.sid}`);
+    let sessionTimer;
+    async function checkSocketSession() {
+      try {
+        const session = await checkAccessSession(user, socket.request);
+        if (!session) return socket.disconnect(true);
+        if (socket.connected) {
+          const remaining = new Date(session.deadline).getTime() - Date.now();
+          sessionTimer = setTimeout(checkSocketSession, Math.max(100, Math.min(remaining, 60_000)));
+          sessionTimer.unref();
+        }
+      } catch {
+        socket.disconnect(true);
+      }
     }
+    void checkSocketSession();
 
     const hasAccess = async (teacherBatchId) => {
       if (!teacherBatchId) return false;
@@ -120,6 +130,7 @@ function initializeSocket(server) {
     });
 
     socket.on('disconnect', () => {
+      clearTimeout(sessionTimer);
       console.log(`Socket ${socket.id} disconnected`);
     });
   });

@@ -15,7 +15,7 @@ import { useAuth } from '../../../context/AuthContext';
 import styles from './CoordinatorOverview.module.css';
 
 const ROUTES = {
-  students: '/dashboard/coordinator/students',
+  students: '/dashboard/coordinator/student-list',
   requirements: '/dashboard/coordinator/requirements',
   batches: '/dashboard/coordinator/batches',
   supervisors: '/dashboard/coordinator/supervisors',
@@ -101,7 +101,7 @@ function CoordinatorOverview() {
                   <h2>Requirements Overview</h2>
                 </div>
                 <div className={styles.summaryRow} aria-label="Key coordinator metrics">
-                  <div className={styles.summaryItem}><strong>{requirements.pendingReview || 0}</strong><span>Pending review</span></div>
+                  <div className={styles.summaryItem}><strong>{requirements.pendingReview || 0}</strong><span>Awaiting teacher review</span></div>
                   <div className={styles.summaryItem}><strong>{requirements.approved || 0}</strong><span>Approved</span></div>
                 </div>
                 <div className={styles.lineChartWrap}>
@@ -120,18 +120,18 @@ function CoordinatorOverview() {
                     <div className={styles.emptyState}><p>No requirement activity yet.</p></div>
                   )}
                 </div>
-                <Link className={styles.reviewButton} to={ROUTES.requirements}>Open requirements review<ArrowRight size={17} /></Link>
+                <Link className={styles.reviewButton} to={ROUTES.requirements}>View approved requirements<ArrowRight size={17} /></Link>
               </section>
             </div>
 
             <section className={styles.roleSection} aria-label="Coordinator responsibilities">
               <div className={styles.roleCard}>
-                <p className={styles.cardEyebrow}>STUDENT APPROVALS</p>
-                <p>Review and approve student accounts so learners can access the work immersion system and begin submitting requirements.</p>
+                <p className={styles.cardEyebrow}>STUDENT LIST</p>
+                <p>Check student records and see which teacher uploaded each account.</p>
               </div>
               <div className={styles.roleCard}>
-                <p className={styles.cardEyebrow}>REQUIREMENTS REVIEW</p>
-                <p>Check submitted documents, provide feedback, and mark requirements as approved, under review, or needing revision.</p>
+                <p className={styles.cardEyebrow}>APPROVED REQUIREMENTS</p>
+                <p>View student forms and files after a teacher approves the submission.</p>
               </div>
               <div className={styles.roleCard}>
                 <p className={styles.cardEyebrow}>PLACEMENT COORDINATION</p>

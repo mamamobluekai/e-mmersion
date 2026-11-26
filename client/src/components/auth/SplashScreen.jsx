@@ -24,6 +24,7 @@ export default function SplashScreen({
   variant = 'user',
   duration = 1900,
   children,
+  onDone,
 }) {
   const [state, setState] = useState('visible');
 
@@ -37,13 +38,16 @@ export default function SplashScreen({
     const total = reduced ? 120 : duration;
 
     const dismiss = setTimeout(() => setState('hidden'), total);
-    const unmount = setTimeout(() => setState('done'), total + 800);
+    const unmount = setTimeout(() => {
+      setState('done');
+      onDone?.();
+    }, total + 800);
 
     return () => {
       clearTimeout(dismiss);
       clearTimeout(unmount);
     };
-  }, [duration]);
+  }, [duration, onDone]);
 
   if (state === 'done') {
     return children ?? null;

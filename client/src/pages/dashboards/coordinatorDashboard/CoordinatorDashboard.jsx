@@ -2,7 +2,6 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import DashboardLayout from '../sharedSidebar/DashboardLayout';
 import DashboardTopNav from '../sharedSidebar/DashboardTopNav';
 import CoordinatorSidebar from './CoordinatorSidebar';
-import StudentApprovals from './StudentApprovals';
 import StudentList from './StudentList';
 import RequirementsReview from './RequirementsReview';
 import Supervisors from './Supervisors';
@@ -25,11 +24,11 @@ function CoordinatorDashboard({ user, onLogout }) {
     >
       <Routes>
         <Route index element={<CoordinatorOverview />} />
-        <Route path="students" element={<StudentApprovals />} />
+        <Route path="students" element={<Navigate to="/dashboard/coordinator/student-list" replace />} />
         <Route path="student-list" element={<StudentList />} />
         <Route path="special-students" element={<SpecialStudents />} />
-        <Route path="upload-students" element={<Navigate to="/dashboard/coordinator/students" replace />} />
-         <Route path="requirements" element={<RequirementsReview />} />
+        <Route path="upload-students" element={<Navigate to="/dashboard/coordinator/student-list" replace />} />
+         <Route path="requirements" element={<RequirementsReview readOnly />} />
          <Route path="announcements" element={<Announcements user={user} />} />
          <Route path="batches/*" element={<DeploymentBatches />} />
          <Route path="partner-institutions" element={<Supervisors />} />

@@ -6,6 +6,7 @@ const pool = require('./db');
 const { initializeSocket } = require('./sockets');
 const { startAttendancePushReminders } = require('./services/attendancePush.service');
 const { startActivityHistoryCleanup } = require('./services/activityHistory.service');
+const { startLoginActivityCleanup } = require('./services/deviceSessions.service');
 
 const PORT = process.env.PORT || 5000;
 
@@ -17,6 +18,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   initializeSocket(server);
   startAttendancePushReminders();
   server.once('close', startActivityHistoryCleanup());
+  server.once('close', startLoginActivityCleanup());
 
   try {
     const result = await pool.query('SELECT NOW() as current_time');

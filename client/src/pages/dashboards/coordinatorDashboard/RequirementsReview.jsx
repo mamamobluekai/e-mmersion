@@ -33,9 +33,10 @@ import {
   UserCheck,
 } from 'lucide-react';
 import ConfirmModal from '../../../components/admin/ConfirmModal';
+import { SERVER_ROOT } from '../../../config/api';
 import styles from './RequirementsReview.module.css';
 
-// The review vocabulary a coordinator can set. Rows saved with an older value
+// The review vocabulary a teacher can set. Rows saved with an older value
 // ("Pending Review", "Under Review", "Rejected") still render through the badge
 // map below, they just cannot be picked any more.
 const REVIEW_STATUSES = [
@@ -106,6 +107,13 @@ const viewUrl = (url) => {
     .replace('/upload/', '/upload/fl_inline/')
     .replace('/upload/fl_inline/fl_inline/', '/upload/fl_inline/');
 };
+
+function requirementFileUrl(document) {
+  const url = document?.cloudinary_url || document?.file_path || '';
+  if (/^https?:\/\//i.test(url)) return url;
+  if (/^\/?uploads\/requirements\//i.test(url)) return `${SERVER_ROOT}/${url.replace(/^\//, '')}`;
+  return '';
+}
 
 const FALLBACK_DOC_TYPES = [
   {
@@ -182,7 +190,7 @@ const FALLBACK_DOC_TYPES = [
   },
 ];
 
-function RequirementsReview() {
+function RequirementsReview({ readOnly = false }) {
   const [submissions, setSubmissions] = useState([]);
   const [statusFilter, setStatusFilter] = useState('all');
   const [strandFilter, setStrandFilter] = useState('');
@@ -313,7 +321,7 @@ function RequirementsReview() {
             strand: strandFilter,
             search: debouncedSearch,
           }),
-          getDocumentTypes({ all: true }).catch(() => null),
+          getDocumentTypes({ all: !readOnly }).catch(() => null),
         ]);
 
         if (mounted) {
@@ -348,7 +356,7 @@ function RequirementsReview() {
       mounted = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, strandFilter, debouncedSearch]);
+  }, [statusFilter, strandFilter, debouncedSearch, readOnly]);
 
   const openSubmission = async (sub) => {
     setSelected(sub);
@@ -650,7 +658,7 @@ function RequirementsReview() {
       ? ['Pending']
       : REVIEW_STATUSES;
 
-  // Approved and held submissions are locked until the coordinator releases
+  // Approved and held submissions are locked until the teacher releases
   // the hold or starts a new review cycle.
   const checklistLocked = ['Approved', HOLD_STATUS].includes(selected?.status);
 
@@ -677,24 +685,28 @@ function RequirementsReview() {
     <div className={styles.page}>
       <div className={styles.pageHeader}>
         <div>
-          <h1>Requirements Review</h1>
+          <h1>{readOnly ? 'Student Requirements' : 'Requirements Review'}</h1>
           <p>
-            Review each requirement independently, then approve the submission
-            after every requirement is approved.
+            {readOnly ? 'View student forms and files after their submission is approved.'
+              : 'Review each requirement, then approve the submission after every item is approved.'}
           </p>
         </div>
-        <button
+        {readOnly ? (
+          <button type="button" className={styles.editReqBtn} onClick={() => { setLoading(true); void loadSubmissions(); }} disabled={loading}>
+            Refresh list
+          </button>
+        ) : <button
           type="button"
           className={styles.editReqBtn}
           onClick={openReqModal}
         >
           <Settings2 size={17} />
           Edit Requirements
-        </button>
+        </button>}
       </div>
 
       <div className={styles.statsGrid}>
-        <div className={styles.statCard}>
+        {!readOnly && <div className={styles.statCard}>
           <div
             className={`${styles.statIcon} ${styles.statBlue}`}
           >
@@ -708,7 +720,7 @@ function RequirementsReview() {
 
             <strong>{pendingCount}</strong>
           </div>
-        </div>
+        </div>}
 
         <div className={styles.statCard}>
           <div
@@ -726,7 +738,7 @@ function RequirementsReview() {
           </div>
         </div>
 
-        <div className={styles.statCard}>
+        {!readOnly && <div className={styles.statCard}>
           <div
             className={`${styles.statIcon} ${styles.statRed}`}
           >
@@ -740,7 +752,7 @@ function RequirementsReview() {
 
             <strong>{revisionCount}</strong>
           </div>
-        </div>
+        </div>}
 
       </div>
 
@@ -778,7 +790,7 @@ function RequirementsReview() {
             </div>
           </div>
 
-          <div className={styles.toolField}>
+          {!readOnly && <div className={styles.toolField}>
             <label className={styles.toolLabel} htmlFor="req-status">
               Status
             </label>
@@ -809,7 +821,7 @@ function RequirementsReview() {
                 Hold
               </option>
             </select>
-          </div>
+          </div>}
 
           <div className={styles.toolField}>
             <label className={styles.toolLabel} htmlFor="req-strand">
@@ -939,10 +951,10 @@ function RequirementsReview() {
                     <td>
                       <button
                         className={styles.reviewButton}
-                        onClick={() => openReviewOptions(student)}
+                        onClick={() => readOnly ? openSubmission(student) : openReviewOptions(student)}
                       >
                         <Eye size={16} />
-                        Review
+                        {readOnly ? 'View requirements' : 'Review'}
                         <ChevronRight size={15} />
                       </button>
                     </td>
@@ -1275,8 +1287,8 @@ function RequirementsReview() {
                       <h3>Requirements Checklist</h3>
 
                       <p>
-                        Open a requirement to preview its file or form details.
-                        Verify it or mark it for revision from the preview.
+                        {readOnly ? 'Open form details here or preview each uploaded file below.'
+                          : 'Open a requirement to preview it and record a review decision.'}
                       </p>
                     </div>
 
@@ -1350,6 +1362,8 @@ function RequirementsReview() {
                                 View Details
                               </button>
                             </div>
+                          ) : readOnly ? (
+                            <span className={styles.checklistState}>{item.requirementStatus || (item.uploaded ? 'Uploaded' : 'Missing')}</span>
                           ) : primaryDoc ? (
                             <div className={styles.checklistActions}>
                               {primaryDoc.cloudinary_url ? (
@@ -1409,8 +1423,37 @@ function RequirementsReview() {
 
                 </div>
 
-                {/* REVIEW SECTION */}
-                <div className={styles.reviewSection}>
+                {readOnly && <section className={styles.reviewSection}>
+                  <div className={styles.sectionHeading}>
+                    <div>
+                      <h3>Submitted files</h3>
+                      {submission.reviewed_by_name && <p>Reviewed by {submission.reviewed_by_name}</p>}
+                    </div>
+                  </div>
+                  {documents.length ? <ul className={styles.checklist}>
+                    {documents.map((document) => {
+                      const item = checklist.find((entry) => Number(entry.id) === Number(document.document_type_id));
+                      const label = document.requirement_name || document.document_name || 'Uploaded requirement';
+                      return <li key={document.id} className={`${styles.checklistItem} ${styles.checklistDone}`}>
+                        <div className={styles.checklistMain}>
+                          <strong className={styles.checklistLabel}>{label}</strong>
+                          <span className={styles.checklistMeta}>{document.original_name || document.document_name || 'File'}</span>
+                        </div>
+                        {requirementFileUrl(document) ? (
+                          <button type="button" className={styles.viewButton}
+                            onClick={() => setPreviewRequirement({ item: item || { label, reviewHistory: [] }, document })}>
+                            <Eye size={15} /> View file
+                          </button>
+                        ) : <span className={styles.checklistState}>File unavailable</span>}
+                      </li>;
+                    })}
+                  </ul> : <p>No files were uploaded for this submission.</p>}
+                  {submission.coordinator_feedback && <div className={styles.previousFeedback}>
+                    <strong>Review feedback</strong><p>{submission.coordinator_feedback}</p>
+                  </div>}
+                </section>}
+
+                {!readOnly && <div className={styles.reviewSection}>
 
                   <div className={styles.sectionHeading}>
                     <div>
@@ -1458,7 +1501,7 @@ function RequirementsReview() {
 
                     <div className={styles.formGroup}>
                       <label>
-                        Coordinator Feedback
+                        Teacher Feedback
                       </label>
 
                       <textarea
@@ -1579,7 +1622,7 @@ function RequirementsReview() {
 
                   </div>
 
-                </div>
+                </div>}
 
               </div>
 
@@ -1657,13 +1700,13 @@ function RequirementsReview() {
               ) : previewRequirement.document?.mime_type?.startsWith('image/') ? (
                 <img
                   className={styles.previewImage}
-                  src={previewRequirement.document.cloudinary_url}
+                  src={requirementFileUrl(previewRequirement.document)}
                   alt={previewRequirement.document.original_name || 'Uploaded requirement'}
                 />
               ) : (
                 <iframe
                   className={styles.previewFrame}
-                  src={viewUrl(previewRequirement.document?.cloudinary_url)}
+                  src={viewUrl(requirementFileUrl(previewRequirement.document))}
                   title={`Preview of ${previewRequirement.item.label}`}
                 />
               )}
@@ -1701,7 +1744,9 @@ function RequirementsReview() {
 
             <footer className={styles.previewActions}>
               {requirementError && <p className={styles.previewError} role="alert">{requirementError}</p>}
-              {checklistLocked ? (
+              {readOnly ? (
+                <button type="button" className={styles.secondaryButton} onClick={closeRequirementPreview}>Close preview</button>
+              ) : checklistLocked ? (
                 <span className={styles.viewFirstHint}>
                   This submission is locked; review actions are unavailable.
                 </span>
@@ -1742,7 +1787,7 @@ function RequirementsReview() {
                   {previewRequirement.item.requirementStatus || 'Incomplete'}
                 </span>
               )}
-              {previewRequirement.document?.cloudinary_url && (
+              {!readOnly && previewRequirement.document?.cloudinary_url && (
                 <a
                   className={styles.downloadButton}
                   href={previewRequirement.document.cloudinary_url}
@@ -1816,6 +1861,7 @@ function RequirementsReview() {
       </div>
 
       {/* REMOVED REQUIREMENTS ARCHIVE ICON (bottom) */}
+      {!readOnly && <>
       <button
         type="button"
         className={styles.archiveToggleBtn}
@@ -1955,6 +2001,7 @@ function RequirementsReview() {
           </div>
         </div>
       </div>
+      </>}
 
     </div>
   );

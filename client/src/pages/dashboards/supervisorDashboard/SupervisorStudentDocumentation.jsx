@@ -41,6 +41,7 @@ export default function SupervisorStudentDocumentation() {
       scopeLoading={loading}
       scopeError={error}
       scopePicker={picker}
+      readOnly
     />
   );
 }

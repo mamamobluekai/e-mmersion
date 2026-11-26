@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  getCoordinatorProfile,
+  createStudentAccountReport,
   getPendingStudents,
   getStudentStrands,
   getArchivedStudents,
@@ -26,9 +26,18 @@ import {
   UserCheck,
   X,
   Archive,
+  Flag,
 } from 'lucide-react';
 import ConfirmModal from '../../../components/admin/ConfirmModal';
-import styles from './StudentApprovals.module.css';
+import styles from '../coordinatorDashboard/StudentApprovals.module.css';
+
+const reportReasons = {
+  remove_account: 'Request account removal',
+  duplicate_account: 'Duplicate account',
+  incorrect_information: 'Incorrect student information',
+  access_problem: 'Account access problem',
+  other: 'Other concern',
+};
 
 const getStatusLabel = (activityStatus, activityLabel) => {
   if (activityStatus === 'pending') return 'Pending Activation';
@@ -53,7 +62,6 @@ const getStatusBadge = (activityStatus) => {
 function StudentApprovals() {
 const [students, setStudents] = useState([]);
 const [archivedStudents, setArchivedStudents] = useState([]);
-const [coordinator, setCoordinator] = useState(null);
 const [strands, setStrands] = useState([]);
 const [loading, setLoading] = useState(true);
 const [loadingStrands, setLoadingStrands] = useState(true);
@@ -65,8 +73,12 @@ const [loadingStrands, setLoadingStrands] = useState(true);
   const [error, setError] = useState('');
 
   const [file, setFile] = useState(null);
+  const fileInput = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
+  const [reportingStudent, setReportingStudent] = useState(null);
+  const [reportSaving, setReportSaving] = useState(false);
+  const [reportError, setReportError] = useState('');
 
   // Delete confirmation state
 const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -94,13 +106,11 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
     setError('');
 
     try {
-      const [studentsData, profileData, archivedData] = await Promise.all([
+      const [studentsData, archivedData] = await Promise.all([
         getPendingStudents(strandFilter, activityFilter),
-        getCoordinatorProfile(),
         getArchivedStudents(),
       ]);
       setStudents(studentsData.students || []);
-      setCoordinator(profileData.coordinator || null);
       setArchivedStudents(archivedData.students || []);
     } catch (err) {
       setError(err.message);
@@ -183,12 +193,15 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
       const r = data.results || {};
 
       setUploadResult({
-        kind: r.failed ? 'warning' : 'success',
+        kind: r.failed || r.emailFailures ? 'warning' : 'success',
         message: data.message || 'Upload complete.',
+        errors: r.errors || [],
+        emailErrors: r.emailErrors || [],
       });
       setFile(null);
+      if (fileInput.current) fileInput.current.value = '';
 
-      await load();
+      await Promise.all([load(), loadStrands()]);
     } catch (err) {
       setUploadResult({ kind: 'error', message: err.message });
     } finally {
@@ -221,6 +234,22 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
       setError(err.message);
     }
   };
+
+  async function submitAccountReport(event) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setReportSaving(true);
+    setReportError('');
+    try {
+      const result = await createStudentAccountReport(reportingStudent.id, { reason: data.get('reason'), comments: data.get('comments') });
+      setReportingStudent(null);
+      setMessage(result.message);
+    } catch (err) {
+      setReportError(err.message);
+    } finally {
+      setReportSaving(false);
+    }
+  }
 
   // Resends the appropriate activation message: temporary credentials for a
   // newly uploaded student, or a one-time set-password link for legacy accounts.
@@ -466,7 +495,7 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
       {/* HEADER */}
       <div className={styles.pageHeader}>
         <div>
-          <h1>Student Approvals</h1>
+          <h1>Upload Students</h1>
 
           <p>
             Review accounts awaiting activation, approve student access, and manage uploaded
@@ -539,6 +568,7 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
               <input
                 type="file"
                 accept=".xlsx,.xls"
+                ref={fileInput}
                 onChange={(e) => {
                   setFile(e.target.files?.[0] || null);
                   setUploadResult(null);
@@ -634,24 +664,6 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
               </button>
             )}
           </div>
-
-          {coordinator && (
-            <div className={styles.limitBannerInline}>
-              <span className={styles.limitBannerLabel}>Your assigned limits</span>
-              <span className={styles.limitBannerStrand}>
-                <strong>Strand:</strong> {coordinator.strand ? coordinator.strand : 'All Strands'}
-              </span>
-              <span className={styles.limitBannerCount}>
-                <strong>Students:</strong> {coordinator.student_count} / {coordinator.student_limit}
-              </span>
-              {coordinator.student_count >= coordinator.student_limit && (
-                <span className={styles.limitBannerLimit}>
-                  ⚠ Student limit reached — you cannot approve more students until
-                  an admin raises your limit.
-                </span>
-              )}
-            </div>
-          )}
 
           <div className={`${styles.filterGroup} ${styles.filterStrand}`}>
             <label className={`${styles.filterLabel} ${styles.filterLabelNoIcon}`}>Strand</label>
@@ -907,6 +919,10 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                                       </button>
                                     </>
                                   )}
+                                  <button type="button" className={styles.dropdownItem} role="menuitem"
+                                    onClick={() => { setReportingStudent(student); setReportError(''); setOpenDropdownId(null); }}>
+                                    <Flag size={14} /> Report account issue
+                                  </button>
                                   <button
                                     className={`${styles.dropdownItem} ${styles.dropdownItemDestructive}`}
                                     onClick={() => { handleArchiveConfirm(student.id); setOpenDropdownId(null); }}
@@ -929,10 +945,31 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
         )}
        </section>
 
+        {reportingStudent && (
+          <div className={styles.editEmailOverlay} role="dialog" aria-modal="true" aria-labelledby="student-report-title">
+            <form className={styles.editEmailModal} onSubmit={submitAccountReport}>
+              <h2 id="student-report-title">Report student account issue</h2>
+              <p>The admin team will review the report for {reportingStudent.first_name} {reportingStudent.last_name}.</p>
+              {reportError && <p role="alert">{reportError}</p>}
+              <label htmlFor="intake-report-reason">Reason</label>
+              <select id="intake-report-reason" className={styles.editEmailInput} name="reason" defaultValue="" required>
+                <option value="">Select a reason</option>
+                {Object.entries(reportReasons).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+              <label htmlFor="intake-report-comments">Comments</label>
+              <textarea id="intake-report-comments" className={styles.editEmailInput} name="comments" rows={4} maxLength={2000} required />
+              <div className={styles.editEmailActions}>
+                <button type="button" className={styles.editEmailCancelBtn} disabled={reportSaving} onClick={() => setReportingStudent(null)}>Cancel</button>
+                <button type="submit" className={styles.editEmailSaveBtn} disabled={reportSaving}>{reportSaving ? 'Sending…' : 'Send report'}</button>
+              </div>
+            </form>
+          </div>
+        )}
+
         <ConfirmModal
           isOpen={deleteConfirmId === 'bulk'}
           title="Remove Selected Students"
-          message={`This will permanently remove ${selectedIds.length} student account(s) to the archive. This action cannot be undone from this page. Restore them from the Archived section below.`}
+          message={`This will archive ${selectedIds.length} student account(s). You can restore them under Archived Students.`}
           confirmLabel={deleting ? 'Removing...' : 'Remove All'}
           isDestructive
           onConfirm={handleBulkArchiveConfirm}
@@ -969,6 +1006,12 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
                     : 'Upload complete'}
               </h2>
               <p>{uploadResult.message}</p>
+              {Boolean(uploadResult.errors?.length || uploadResult.emailErrors?.length) && (
+                <ul className={styles.uploadIssues}>
+                  {uploadResult.errors.map(({ row, error }) => <li key={row}>Row {row}. {error}</li>)}
+                  {uploadResult.emailErrors.map(({ email }) => <li key={email}>Credentials could not be emailed to {email}.</li>)}
+                </ul>
+              )}
               <button
                 type="button"
                 className={styles.uploadResultButton}
@@ -1162,57 +1205,6 @@ const [archivedModalOpen, setArchivedModalOpen] = useState(false);
           </div>
         </div>
 
-        <ConfirmModal
-          isOpen={deleteConfirmId === 'bulk'}
-          title="Remove Selected Students"
-          message={`This will permanently remove ${selectedIds.length} student account(s) to the archive. This action cannot be undone from this page. Restore them from the Archived section below.`}
-          confirmLabel={deleting ? 'Removing...' : 'Remove All'}
-          isDestructive
-          onConfirm={handleBulkArchiveConfirm}
-          onClose={() => {
-            setDeleteConfirmId(null);
-          }}
-        />
-        {uploadResult && (
-          <div
-            className={styles.uploadResultOverlay}
-            onClick={() => setUploadResult(null)}
-          >
-            <div
-              className={styles.uploadResultModal}
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="student-upload-result-title"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className={`${styles.uploadResultIcon} ${
-                uploadResult.kind === 'error'
-                  ? styles.uploadResultError
-                  : uploadResult.kind === 'warning'
-                    ? styles.uploadResultWarning
-                    : styles.uploadResultSuccess
-              }`}>
-                {uploadResult.kind === 'error' ? <X size={22} /> : <Check size={22} />}
-              </div>
-              <h2 id="student-upload-result-title">
-                {uploadResult.kind === 'error'
-                  ? 'Upload failed'
-                  : uploadResult.kind === 'warning'
-                    ? 'Upload completed with issues'
-                    : 'Upload complete'}
-              </h2>
-              <p>{uploadResult.message}</p>
-              <button
-                type="button"
-                className={styles.uploadResultButton}
-                onClick={() => setUploadResult(null)}
-                autoFocus
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        )}
         {editingEmailId && (
           <div
             className={styles.editEmailOverlay}

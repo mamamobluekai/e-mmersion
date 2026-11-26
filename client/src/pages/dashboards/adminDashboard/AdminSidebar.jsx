@@ -13,6 +13,11 @@ import {
   ShieldCheck,
   Flag,
   ClipboardList,
+  Bell,
+  BookOpenCheck,
+  BriefcaseBusiness,
+  GraduationCap,
+  CalendarCheck2,
 } from 'lucide-react';
 
 const links = [
@@ -26,6 +31,7 @@ const links = [
     to: '/dashboard/admin/users',
     label: 'User Management',
     icon: Users,
+    group: 'Monitor Users',
   },
   {
     to: '/dashboard/admin/upload-users',
@@ -48,14 +54,45 @@ const links = [
     icon: ClipboardList,
   },
   {
+    to: '/dashboard/admin/student-monitoring',
+    label: 'Student Monitoring',
+    icon: GraduationCap,
+  },
+  {
+    to: '/dashboard/admin/student-attendance-monitoring',
+    label: 'Student Attendance Monitoring',
+    icon: CalendarCheck2,
+  },
+  {
+    to: '/dashboard/admin/supervisor-monitoring',
+    label: 'Supervisor Monitoring',
+    icon: BriefcaseBusiness,
+  },
+  {
+    to: '/dashboard/admin/teacher-monitoring',
+    label: 'Teacher Monitoring',
+    icon: BookOpenCheck,
+  },
+  {
     to: '/dashboard/admin/account-problems',
     label: 'Account Problems',
     icon: Flag,
+    group: 'SYSTEM & SUPPORT',
+  },
+  {
+    to: '/dashboard/admin/support-management',
+    label: 'Support Management',
+    icon: Bell,
   },
   {
     to: '/dashboard/admin/access-logs',
     label: 'Access Logs',
     icon: Search,
+  },
+  {
+    to: '/dashboard/admin/login-activity',
+    label: 'Login Activity',
+    icon: ShieldCheck,
   },
   {
     to: '/dashboard/admin/settings',
@@ -66,6 +103,7 @@ const links = [
     to: '/dashboard/admin/profile',
     label: 'Profile Settings',
     icon: User,
+    group: 'Additional Features',
   },
   {
     to: '/dashboard/admin/about',

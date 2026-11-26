@@ -1,17 +1,27 @@
-import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Bell, ChevronDown, KeyRound, Laptop, LogOut, Smartphone, Tablet, Trash2 } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { Bell, ChevronDown, ChevronRight, KeyRound, Laptop, LogOut, Smartphone, Tablet, Trash2, X } from 'lucide-react';
 import ConfirmModal from '../../components/admin/ConfirmModal';
-import { getAccountDevices, getLoginActivity, removeAccountDevice, requestDeviceCode,
+import { getAccountDevices, getLoginActivity, removeAccountDevice, requestDeviceCode, revokeAccountDeviceTrust,
   saveDeviceAlerts, signOutDevice, signOutOtherDevices, verifyDeviceCode } from '../../api/userApi';
 import styles from './AccountDevices.module.css';
 
 const eventNames = {
   login: 'Successful sign-in', new_device: 'New device sign-in', failed: 'Failed sign-in', logout: 'Signed out', terminated: 'Session terminated',
+  otp_required: 'Sign-in code requested', otp_failed: 'Sign-in verification failed',
 };
 const dateTime = new Intl.DateTimeFormat('en-PH', { timeZone: 'Asia/Manila', dateStyle: 'medium', timeStyle: 'short' });
 const formatTime = (value) => value ? dateTime.format(new Date(value)) : 'Unavailable';
 const icons = { Mobile: Smartphone, Desktop: Laptop, Tablet };
+
+function useModalDialog() {
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    dialog.showModal();
+    return () => dialog.close();
+  }, []);
+  return ref;
+}
 
 function LoginActivity({ devices }) {
   const [query, setQuery] = useState({ date: '', device: '', before: null });
@@ -38,7 +48,7 @@ function LoginActivity({ devices }) {
 
   return (
     <section className={styles.section} aria-label="Login Activity">
-      <h4>Login Activity</h4>
+      <h3>Login Activity</h3>
       <div className={styles.filters}>
         <label> Date (Philippine time)<input type="date" value={query.date} onChange={(event) => updateFilter({ date: event.target.value })} /></label>
         <label>Device<select value={query.device} onChange={(event) => updateFilter({ device: event.target.value })}>
@@ -70,7 +80,23 @@ function LoginActivity({ devices }) {
   );
 }
 
-export default function AccountDevices() {
+function DeviceConfirmation({ pending, onClose, ...props }) {
+  const dialogRef = useModalDialog();
+  function dismiss(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!pending) onClose();
+  }
+
+  return <dialog ref={dialogRef} className={styles.confirmDialog} aria-labelledby="confirm-title"
+    onCancel={dismiss} onKeyDown={(event) => { if (event.key === 'Escape') dismiss(event); }}>
+    <ConfirmModal {...props} isOpen isDestructive inNativeDialog onClose={onClose} />
+  </dialog>;
+}
+
+function AccountDevicesModal({ onClose }) {
+  const dialogRef = useModalDialog();
+  const titleId = useId();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -108,15 +134,30 @@ export default function AccountDevices() {
     void run(async () => { await requestDeviceCode(); setChallenge(true); }, 'Verification code sent to your account email.').catch(() => {});
   }
 
+  function dismiss(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    onClose();
+  }
+
   return (
-    <div className={styles.panel}>
+    <dialog ref={dialogRef} className={styles.dialog} aria-labelledby={titleId}
+      onCancel={dismiss} onKeyDown={(event) => { if (event.key === 'Escape') dismiss(event); }}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <header className={styles.dialogHeader}>
+        <h2 id={titleId}>Devices and sessions</h2>
+        <button type="button" className={styles.closeButton} aria-label="Close devices and sessions" onClick={onClose}>
+          <X size={20} aria-hidden="true" />
+        </button>
+      </header>
+      <div className={`${styles.dialogBody} ${styles.panel}`}>
       {!data && !error && <p role="status">Loading devices…</p>}
       {error && <p className={styles.error} role="alert">{error}</p>}
       {notice && <p className={styles.notice} role="status">{notice}</p>}
       {retry && <button type="button" onClick={() => { setError(''); reload(); }}>Try again</button>}
       {data && <>
         <section className={styles.section} aria-label="Logged-in Devices">
-          <h4>Logged-in Devices</h4>
+          <h3>Logged-in Devices</h3>
           {!devices.length && <p>No devices have signed in yet.</p>}
           <ul className={styles.devices}>
             {devices.map((device) => {
@@ -130,13 +171,20 @@ export default function AccountDevices() {
                   <span data-current={device.is_current}>{device.is_current ? 'Current Device' : 'Other Device'}</span>
                   <span>{device.active ? 'Active' : 'Signed out'}</span>
                   <span>{device.verified_at ? 'Verified' : 'Unverified'}</span>
+                  <span>{device.trusted ? 'Trusted' : 'OTP required at sign-in'}</span>
                 </div>
                 <dl className={styles.details}>
                   <div><dt>Last sign-in</dt><dd>{formatTime(device.last_login_at)}</dd></div>
                   <div><dt>Last active</dt><dd>{formatTime(device.last_active_at)}</dd></div>
+                  {device.created_at && <div><dt>Added</dt><dd>{formatTime(device.created_at)}</dd></div>}
+                  {device.trusted && <div><dt>Trust expires</dt><dd>{formatTime(device.trust_expires_at)}</dd></div>}
+                  {device.trusted && <div><dt>Trust last used</dt><dd>{formatTime(device.trust_last_used_at)}</dd></div>}
                   {device.info.ip && <div><dt>IP address</dt><dd>{device.info.ip}</dd></div>}
                   {device.info.location && <div><dt>Approximate location</dt><dd>{device.info.location}</dd></div>}
                 </dl>
+                {device.trusted && <div className={styles.actions}>
+                  <button type="button" disabled={pending} onClick={() => setConfirm({ type: 'trust', device })}>Remove trust</button>
+                </div>}
                 {!device.is_current && <div className={styles.actions}>
                   {device.active && <button type="button" disabled={pending} onClick={() => setConfirm({ type: 'logout', device })}><LogOut size={15} aria-hidden="true" /> Sign out</button>}
                   <button type="button" disabled={pending} onClick={() => setConfirm({ type: 'remove', device })}><Trash2 size={15} aria-hidden="true" /> Remove</button>
@@ -158,7 +206,7 @@ export default function AccountDevices() {
         </section>
         <LoginActivity key={revision} devices={data.devices} />
         <section className={styles.section} aria-label="New Login Alerts">
-          <h4>New Login Alerts</h4>
+          <h3>New Login Alerts</h3>
           <label className={styles.toggle}>
             <Bell size={17} aria-hidden="true" /> Email me when a new device signs in
             <input type="checkbox" checked={data.emailAlerts} disabled={pending} onChange={(event) => {
@@ -171,24 +219,40 @@ export default function AccountDevices() {
           </label>
         </section>
         <section className={styles.section} aria-label="Session Management">
-          <h4>Session Management</h4>
+          <h3>Session Management</h3>
           <p>Sign out other devices while keeping this session active.</p>
           <button type="button" disabled={!otherActive || pending} onClick={() => setConfirm({ type: 'others' })}>
             <LogOut size={16} aria-hidden="true" /> Sign out of all other devices
           </button>
         </section>
       </>}
-      {confirm && createPortal(<div className={styles.confirmLayer}><ConfirmModal isOpen isDestructive
-        title={activeAction === 'remove' ? 'Remove device?' : 'Sign out devices?'}
-        message={<>{activeAction === 'others' ? 'All other devices will need to sign in again.' : `${confirm.device.info.name} will need to sign in again.${activeAction === 'remove' ? ' Its device verification will be removed.' : ''}`}{error && <><br /><strong role="alert">{error}</strong></>}</>}
-        confirmLabel={activeAction === 'remove' ? 'Remove device' : 'Sign out'}
+      </div>
+      {confirm && <DeviceConfirmation pending={pending}
+        title={activeAction === 'trust' ? 'Remove device trust?' : activeAction === 'remove' ? 'Remove device?' : 'Sign out devices?'}
+        message={<>{activeAction === 'trust' ? 'This device will require an email code at its next sign-in.' :
+          activeAction === 'others' ? 'All other devices will need to sign in again.' : `${confirm.device.info.name} will need to sign in again.${activeAction === 'remove' ? ' Its device verification will be removed.' : ''}`}{error && <><br /><strong role="alert">{error}</strong></>}</>}
+        confirmLabel={activeAction === 'trust' ? 'Remove trust' : activeAction === 'remove' ? 'Remove device' : 'Sign out'}
         onClose={() => setConfirm(null)} onConfirm={() => run(async () => {
           if (activeAction === 'remove') await removeAccountDevice(confirm.device.id);
+          else if (activeAction === 'trust') await revokeAccountDeviceTrust(confirm.device.id);
           else if (activeAction === 'logout') await signOutDevice(confirm.device.id);
           else await signOutOtherDevices();
           reload();
-        }, activeAction === 'remove' ? 'Device removed.' : 'Selected sessions ended.')}
-      /></div>, document.body)}
-    </div>
+        }, activeAction === 'trust' ? 'Device trust removed.' : activeAction === 'remove' ? 'Device removed.' : 'Selected sessions ended.')}
+      />}
+    </dialog>
   );
+}
+
+export default function AccountDevices() {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return <div className={styles.launcher}>
+    <button type="button" className={styles.launchButton} aria-haspopup="dialog" onClick={() => setIsOpen(true)}>
+      <Laptop size={17} aria-hidden="true" />
+      Manage devices and sessions
+      <ChevronRight size={17} aria-hidden="true" />
+    </button>
+    {isOpen && <AccountDevicesModal onClose={() => setIsOpen(false)} />}
+  </div>;
 }

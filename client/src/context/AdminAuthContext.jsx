@@ -7,7 +7,7 @@ export function AdminAuthProvider({ children }) {
 
   const adminLogin = async (credentials) => {
     const data = await loginAdmin(credentials);
-    auth.login(data);
+    if (!data.otpRequired) auth.login(data);
     return data;
   };
 
@@ -34,6 +34,7 @@ export function AdminAuthProvider({ children }) {
     isAuthenticated: auth.isAuthenticated,
     isAdmin: auth.user?.role === 'admin',
     login: adminLogin,
+    finishLogin: auth.login,
     logout: adminLogout,
     loading: auth.loading,
   };

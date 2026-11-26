@@ -22,11 +22,6 @@ const links = [
     icon: LayoutDashboard,
   },
   {
-    to: '/dashboard/coordinator/students',
-    label: 'Student Approvals',
-    icon: Users,
-  },
-  {
     to: '/dashboard/coordinator/student-list',
     label: 'Student List',
     icon: List,
@@ -38,7 +33,7 @@ const links = [
   },
   {
     to: '/dashboard/coordinator/requirements',
-    label: 'Requirements',
+    label: 'Student Requirements',
     icon: ClipboardList,
   },
   {

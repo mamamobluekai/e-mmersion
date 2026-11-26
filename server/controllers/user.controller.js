@@ -6,9 +6,7 @@ const { validatePassword, validateConfirmation } = require('../utils/passwordPol
 const { normalizeEmail } = require('../utils/normalizeEmail');
 const { getRefreshCookieOptions } = require('../utils/refreshCookie');
 const {
-  getLoginAttempts,
   incrementLoginAttempts,
-  resetLoginAttempts,
   getLockoutState,
 } = require('../utils/loginAttempts');
 const { sendLoginError } = require('../utils/loginErrors');
@@ -18,11 +16,8 @@ const { readMaintenance } = require('../middleware/maintenance');
 const { logSecurityEvent, countRecentEvents, SECURITY_EVENTS, SEVERITY } = require('../utils/securityLogger');
 const tokenStore = require('../utils/tokenStore');
 const deviceSessions = require('../services/deviceSessions.service');
+const loginOtp = require('../services/loginOtp.service');
 const { notifyNewLogin } = require('../services/loginAlerts.service');
-
-const attemptLogged = (req, email) => {
-  void deviceSessions.recordFailedLogin(req, email).catch((error) => console.error('Login activity:', error.message));
-};
 
 // Every login failure reason, its wording and its status code live in
 // utils/loginErrors.js, shared with the admin sign-in so both pages behave the
@@ -50,16 +45,16 @@ function parseLocalDate(dateStr) {
   return new Date(y, m - 1, d);
 }
 
-async function checkImmersionPeriodAccess(role) {
+async function checkImmersionPeriodAccess(role, db = pool) {
   try {
-    const settingsResult = await pool.query(
+    const settingsResult = await db.query(
       `SELECT immersion_start_date, immersion_end_date,
               access_student, access_teacher, access_coordinator, access_supervisor
        FROM system_settings WHERE id = 1`
     );
     const settings = settingsResult.rows[0] || {};
 
-    const periodsResult = await pool.query(
+    const periodsResult = await db.query(
       `SELECT id, period_name, start_date, end_date, is_active, status
        FROM immersion_periods
        WHERE is_active = true
@@ -168,7 +163,7 @@ async function sendRegistrationReceivedEmail(user) {
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #2a5298;">Registration Received</h2>
           <p>Hello <strong>${name}</strong>,</p>
-          <p>Thanks for registering for the Work Immersion Management System. Your account is <strong>pending approval</strong> from your coordinator.</p>
+          <p>Thanks for registering for the Work Immersion Management System. Your account is <strong>pending approval</strong> from your teacher.</p>
           <p><strong>Student ID:</strong> ${escapeHtml(user.student_id)}</p>
           <p><strong>Email:</strong> ${escapeHtml(user.email)}</p>
           <p style="color: #666; font-size: 12px;">You will receive another email once your account is approved.</p>
@@ -177,7 +172,7 @@ async function sendRegistrationReceivedEmail(user) {
       `,
     // Gmail filters HTML-only mail into spam far more aggressively, so the
     // plain-text twin is sent alongside it.
-    text: `Hello ${name},\n\nThanks for registering for the Work Immersion Management System. Your account is pending approval from your coordinator.\n\nStudent ID: ${user.student_id}\nEmail: ${user.email}\n\nYou will receive another email once your account is approved.\n\nMarinduque National High School - Work Immersion Office`,
+    text: `Hello ${name},\n\nThanks for registering for the Work Immersion Management System. Your account is pending approval from your teacher.\n\nStudent ID: ${user.student_id}\nEmail: ${user.email}\n\nYou will receive another email once your account is approved.\n\nMarinduque National High School - Work Immersion Office`,
   });
 
   if (sent) {
@@ -320,7 +315,7 @@ async function dummyCompare() {
 // Records a failed attempt and, if the failure count crosses the behavioural
 // thresholds, emits a brute-force / credential-stuffing security event.
 async function registerFailedLogin(req, email, reason) {
-  const attempts = await incrementLoginAttempts(email);
+  const attempts = await incrementLoginAttempts(email, req.ip);
   const ip = require('../utils/securityLogger').getClientIp(req);
 
   await logSecurityEvent({
@@ -367,6 +362,35 @@ async function registerFailedLogin(req, email, reason) {
   return attempts;
 }
 
+async function loginAccessBlock(role, db) {
+  if (role === 'admin') return null;
+  const maintenance = await readMaintenance(db);
+  if (maintenance.enabled) return { code: 'MAINTENANCE', context: { detail: maintenance.message }, extra: {
+    maintenance: true, startedAt: maintenance.startedAt, estimatedEnd: maintenance.estimatedEnd,
+  } };
+  const access = await checkImmersionPeriodAccess(role, db);
+  if (access.blocked) return { code: 'PERIOD_CLOSED', context: { detail: access.message }, extra: {
+    phase: access.phase, startDate: access.startDate, endDate: access.endDate,
+  } };
+  return null;
+}
+
+const loginProfiles = { student: 'students', teacher: 'teachers', admin: 'admins', supervisor: 'supervisors', coordinator: 'coordinators' };
+
+async function completeLogin(req, res, user, session) {
+  const { rows: [profile] } = await pool.query(`SELECT first_name, last_name, photo_url FROM ${loginProfiles[user.role]} WHERE user_id = $1`, [user.id]);
+  void notifyNewLogin(user, session).catch(() => console.error('Login alert could not be sent.'));
+  await logSecurityEvent({ type: SECURITY_EVENTS.LOGIN_SUCCESS, severity: SEVERITY.INFO, req, userId: user.id, email: user.email });
+  const safeUser = { id: user.id, email: user.email, role: user.role, status: user.status,
+    first_name: profile?.first_name || null, last_name: profile?.last_name || null, photo_url: profile?.photo_url || null,
+    terms_accepted: Boolean(user.terms_accepted), skip_splash_screen: Boolean(user.skip_splash_screen),
+    temporary_password_expires_at: user.temporary_password_expires_at,
+    must_change_password: String(user.status || '').toLowerCase() === 'pending_activation' };
+  void recordActivity(safeUser, 'sign-in', 'account', 'Signed in').catch(reportActivityError);
+  return res.set('Cache-Control', 'no-store').json({ message: 'Login successful.', accessToken: session.accessToken,
+    csrfToken: req.cookies?.csrfToken || res.locals.csrfToken || null, user: safeUser });
+}
+
 const login = async (req, res, endpointRole) => {
   try {
     const { email, password } = req.body;
@@ -384,7 +408,6 @@ const login = async (req, res, endpointRole) => {
     // Check lockout before even hitting the DB / comparing password.
     const lockout = await getLockoutState(trimmedEmail);
     if (lockout.locked) {
-      attemptLogged(req, trimmedEmail);
       await logSecurityEvent({
         type: SECURITY_EVENTS.LOGIN_LOCKED,
         severity: SEVERITY.WARNING,
@@ -415,7 +438,6 @@ const login = async (req, res, endpointRole) => {
     // The role-specific endpoint takes precedence over a role sent in the body.
     // See loginErrors.js for the privacy setting that controls role disclosure.
     if (role && user.role !== role) {
-      attemptLogged(req, trimmedEmail);
       await registerFailedLogin(req, trimmedEmail, 'role mismatch');
       return sendLoginError(res, 'WRONG_ROLE_SELECTED', { role: user.role, selected: role }, {
         actualRole: user.role,
@@ -423,46 +445,8 @@ const login = async (req, res, endpointRole) => {
       });
     }
 
-    let profile = {};
-    if (user.role === 'student') {
-      const studentResult = await pool.query(
-        `SELECT first_name, last_name, photo_url FROM students WHERE user_id = $1`,
-        [user.id]
-      );
-      profile = studentResult.rows[0] || {};
-    } else if (user.role === 'teacher') {
-      const teacherResult = await pool.query(
-        `SELECT first_name, last_name, photo_url FROM teachers WHERE user_id = $1`,
-        [user.id]
-      );
-      profile = teacherResult.rows[0] || {};
-    } else if (user.role === 'admin') {
-      const adminResult = await pool.query(
-        `SELECT first_name, last_name, photo_url FROM admins WHERE user_id = $1`,
-        [user.id]
-      );
-      profile = adminResult.rows[0] || {};
-    } else if (user.role === 'supervisor') {
-      const supervisorResult = await pool.query(
-        `SELECT first_name, last_name, photo_url FROM supervisors WHERE user_id = $1`,
-        [user.id]
-      );
-      profile = supervisorResult.rows[0] || {};
-    } else if (user.role === 'coordinator') {
-      const coordinatorResult = await pool.query(
-        `SELECT first_name, last_name, photo_url FROM coordinators WHERE user_id = $1`,
-        [user.id]
-      );
-      profile = coordinatorResult.rows[0] || {};
-    }
-
-    user.first_name = profile.first_name || null;
-    user.last_name = profile.last_name || null;
-    user.photo_url = profile.photo_url || null;
-
     const match = await comparePassword(password, user.password);
     if (!match) {
-      attemptLogged(req, trimmedEmail);
       await registerFailedLogin(req, trimmedEmail, 'bad password');
       return sendLoginError(res, 'WRONG_PASSWORD');
     }
@@ -470,17 +454,14 @@ const login = async (req, res, endpointRole) => {
     // Account-state failures only surface *after* the password is proven
     // correct, so they cannot be used to probe which emails exist.
     if (user.status === 'pending') {
-      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_PENDING');
     }
     if (user.status === 'disapproved') {
-      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_DISAPPROVED_USER');
     }
     if (String(user.status || '').toLowerCase() === 'pending_activation') {
       const expiresAt = new Date(user.temporary_password_expires_at).getTime();
       if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-        attemptLogged(req, trimmedEmail);
         return sendLoginError(res, 'TEMPORARY_PASSWORD_EXPIRED');
       }
       user.must_change_password = true;
@@ -488,62 +469,13 @@ const login = async (req, res, endpointRole) => {
       user.must_change_password = false;
     }
 
-    // Block login outside the active immersion period (except for admins).
-    if (user.role !== 'admin') {
-      const maintenance = await readMaintenance();
-      if (maintenance.enabled) {
-        attemptLogged(req, trimmedEmail);
-        return sendLoginError(res, 'MAINTENANCE', { detail: maintenance.message }, {
-          maintenance: true,
-          startedAt: maintenance.startedAt,
-          estimatedEnd: maintenance.estimatedEnd,
-        });
-      }
-
-      const accessBlock = await checkImmersionPeriodAccess(user.role);
-      if (accessBlock.blocked) {
-        attemptLogged(req, trimmedEmail);
-        return sendLoginError(res, 'PERIOD_CLOSED', { detail: accessBlock.message }, {
-          phase: accessBlock.phase,
-          startDate: accessBlock.startDate,
-          endDate: accessBlock.endDate,
-        });
-      }
+    const blocked = await loginAccessBlock(user.role);
+    if (blocked) {
+      return sendLoginError(res, blocked.code, blocked.context, blocked.extra);
     }
 
-    // Successful login — clear any failed attempt counter
-    await resetLoginAttempts(trimmedEmail);
-
-    // Update last_login timestamp
-    await pool.query(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1`, [user.id]);
-
-    const session = await deviceSessions.startSession(req, res, user);
-    if (!session) return sendLoginError(res, 'WRONG_PASSWORD');
-    void notifyNewLogin(user, session).catch((error) => console.error('Login alert:', error.message));
-
-    await logSecurityEvent({
-      type: SECURITY_EVENTS.LOGIN_SUCCESS,
-      severity: SEVERITY.INFO,
-      req,
-      userId: user.id,
-      email: user.email,
-    });
-
-    delete user.password;
-
-    user.terms_accepted = Boolean(user.terms_accepted);
-    user.skip_splash_screen = Boolean(user.skip_splash_screen);
-
-    void recordActivity(user, 'sign-in', 'account', 'Signed in').catch(reportActivityError);
-
-    // The CSRF cookie is issued globally by middleware; echo it so the SPA can
-    // begin sending the X-CSRF-Token header immediately after login.
-    res.json({
-      message: 'Login successful.',
-      accessToken: session.accessToken,
-      csrfToken: req.cookies?.csrfToken || null,
-      user,
-    });
+    const step = await loginOtp.startLogin(req, res, user);
+    return step.session ? await completeLogin(req, res, user, step.session) : loginOtp.sendLoginStep(res, step);
   } catch (err) {
     console.error('Login error:', err);
     sendLoginError(res, 'SERVER_ERROR');
@@ -726,14 +658,14 @@ const refreshAccessToken = async (req, res) => {
     const session = await deviceSessions.refreshSession(req, presented);
     if (!session || session.inactive) {
       res.clearCookie('refreshToken', getRefreshCookieOptions());
-      return res.status(session?.inactive ? 403 : 401).json({ error: session?.inactive ? 'Account is not active.' : 'Session ended. Sign in again.' });
+      return res.status(session?.inactive ? 403 : 401).json({
+        code: 'SESSION_ENDED', error: session?.inactive ? 'Account is not active.' : 'Session ended. Sign in again.',
+      });
     }
-    res.cookie('refreshToken', session.refreshToken, {
-      ...getRefreshCookieOptions(),
-      maxAge: tokenStore.REFRESH_TTL_MS,
-    });
+    deviceSessions.setRefreshCookie(res, session);
 
-    return res.json({ accessToken: session.accessToken, csrfToken: req.cookies?.csrfToken || null });
+    return res.set('Cache-Control', 'no-store').json({ accessToken: session.accessToken,
+      csrfToken: req.cookies?.csrfToken || res.locals.csrfToken || null });
   } catch (err) {
     console.error('Refresh token error:', err);
     return res.status(500).json({ error: 'Server error during token refresh.' });
@@ -767,6 +699,7 @@ const logout = async (req, res) => {
 };
 
 module.exports = {
+  completeLogin, loginAccessBlock,
   registerStudent,
   login,
   refreshAccessToken,

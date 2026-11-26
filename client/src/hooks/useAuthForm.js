@@ -26,6 +26,14 @@ export function useAuthForm(onAuthSuccess, initialRole) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [loginSuccess, setLoginSuccess] = useState(null);
+  const [challenge, setChallenge] = useState(null);
+  const [remember, setRemember] = useState(false);
+
+  function finishLogin(data) {
+    onAuthSuccess?.(data);
+    setLoginSuccess(data.user.role);
+    showToast(`Welcome back, ${data.user.first_name || data.user.email}!`, 'success');
+  }
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -55,7 +63,7 @@ export function useAuthForm(onAuthSuccess, initialRole) {
 
     try {
       const payload = mode === 'login'
-        ? { email: form.email, password: form.password, role }
+        ? { email: form.email, password: form.password, role, rememberMe: remember }
         : {
             studentId: form.studentId,
             firstName: form.firstName,
@@ -77,14 +85,12 @@ export function useAuthForm(onAuthSuccess, initialRole) {
         : await registerUser(payload);
 
       if (mode === 'login') {
-        onAuthSuccess?.(data);
-        setLoginSuccess(data.user?.role || null);
-        // A toast rather than an inline banner: the form navigates away on the
-        // next tick, so an inline message would flash and vanish unread.
-        showToast(
-          `Welcome back, ${data.user?.first_name || data.user?.email || 'student'}!`,
-          'success',
-        );
+        if (data.otpRequired) {
+          setChallenge(data);
+          setForm((current) => ({ ...current, password: '' }));
+          return;
+        }
+        finishLogin(data);
       } else {
         setMessage(data.message || 'Account created successfully.');
       }
@@ -119,5 +125,6 @@ export function useAuthForm(onAuthSuccess, initialRole) {
     }
   };
 
-  return { mode, setMode, role, setRole, form, handleChange, loading, message, setMessage, error, setError, handleSubmit, loginSuccess };
+  return { mode, setMode, role, setRole, form, handleChange, loading, message, setMessage, error, setError,
+    handleSubmit, loginSuccess, challenge, setChallenge, finishLogin, remember, setRemember };
 }

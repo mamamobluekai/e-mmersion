@@ -1,45 +1,55 @@
-const pool = require('../db');
+﻿const pool = require('../db');
 
 const MAX_ATTEMPTS = 5;
 const LOCK_TIME_MINUTES = 15;
 
-const getLoginAttempts = async (email, ipAddress) => {
-  const result = await pool.query(
-    'SELECT * FROM login_attempts WHERE LOWER(email) = LOWER($1) ORDER BY last_attempt DESC LIMIT 1',
+const getLoginAttempts = async (email, db = pool) => {
+  const result = await db.query(
+    'SELECT * FROM login_attempts WHERE LOWER(email) = LOWER($1) ORDER BY last_attempt DESC, id DESC LIMIT 1',
     [email]
   );
   return result.rows[0];
 };
 
-const incrementLoginAttempts = async (email, ipAddress) => {
-  const existing = await getLoginAttempts(email, ipAddress);
+function lockAttempts(db, email) {
+  return db.query('SELECT pg_advisory_xact_lock(53025, hashtext(lower($1)))', [email]);
+}
 
-  if (existing) {
-    const newAttempts = existing.attempts + 1;
-    const lockedUntil = newAttempts >= MAX_ATTEMPTS
+const incrementLoginAttempts = async (email, ipAddress) => {
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    await lockAttempts(db, email);
+    const existing = await getLoginAttempts(email, db);
+    if (isAccountLocked(existing)) {
+      await db.query('COMMIT');
+      return { attempts: existing.attempts, lockedUntil: existing.locked_until };
+    }
+    const attempts = existing && !existing.locked_until ? existing.attempts + 1 : 1;
+    const lockedUntil = attempts >= MAX_ATTEMPTS
       ? new Date(Date.now() + LOCK_TIME_MINUTES * 60 * 1000)
       : null;
-
-    await pool.query(
-      'UPDATE login_attempts SET attempts = $1, last_attempt = CURRENT_TIMESTAMP, locked_until = $2 WHERE id = $3',
-      [newAttempts, lockedUntil, existing.id]
-    );
-
-    return { attempts: newAttempts, lockedUntil };
-  } else {
-    await pool.query(
-      'INSERT INTO login_attempts (email, ip_address, attempts, last_attempt) VALUES ($1, $2, 1, CURRENT_TIMESTAMP)',
-      [email, ipAddress]
-    );
-    return { attempts: 1, lockedUntil: null };
+    if (existing) {
+      await db.query(
+        'UPDATE login_attempts SET attempts = $1, locked_until = $2, ip_address = $3, last_attempt = now() WHERE id = $4',
+        [attempts, lockedUntil, ipAddress, existing.id]
+      );
+    } else {
+      await db.query('INSERT INTO login_attempts (email, ip_address, attempts) VALUES ($1, $2, 1)', [email, ipAddress]);
+    }
+    await db.query('COMMIT');
+    return { attempts, lockedUntil };
+  } catch (error) {
+    await db.query('ROLLBACK');
+    throw error;
+  } finally {
+    db.release();
   }
 };
 
-const resetLoginAttempts = async (email, ipAddress) => {
-  await pool.query(
-    'DELETE FROM login_attempts WHERE LOWER(email) = LOWER($1)',
-    [email]
-  );
+const resetLoginAttempts = async (email, db) => {
+  await lockAttempts(db, email);
+  await db.query('DELETE FROM login_attempts WHERE LOWER(email) = LOWER($1)', [email]);
 };
 
 // Kept for callers that already hold an attempts row.

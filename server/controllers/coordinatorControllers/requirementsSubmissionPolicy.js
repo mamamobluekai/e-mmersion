@@ -4,7 +4,7 @@ const studentSubmissionBlockMessage = (status) => {
     return 'Approved requirements cannot be resubmitted by the student.';
   }
   if (normalizedStatus === 'hold') {
-    return 'A coordinator must release this submission from hold before it can be resubmitted.';
+    return 'Your teacher must release this submission from hold before it can be resubmitted.';
   }
   return null;
 };

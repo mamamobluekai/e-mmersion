@@ -1277,6 +1277,22 @@ function PartnerDetail({ id, refresh, openRequest, back }) {
   </>;
 }
 
+function PartnerDetailDialog({ role, id, refresh, openRequest }) {
+  const list = useDeploymentData(role, `?partner=${id}`, refresh);
+  const partnerData = useDeploymentData(role, `/partners/${id}`, refresh);
+  return <>
+    <LoadState result={partnerData}>{({ partner }) => <section className={styles.panel}>
+      <h2>{partner.name}</h2>
+      <p>{[partner.industry, partner.address, partner.is_active ? 'Active partner' : 'Inactive partner'].filter(Boolean).join(' · ')}</p>
+      {partner.description && <p>{partner.description}</p>}
+    </section>}</LoadState>
+    <section className={styles.panel}>
+      <h3>Deployment history</h3>
+      <LoadState result={list}>{({ requests }) => <RequestList requests={requests} onOpen={openRequest} empty="This partner has no deployment requests yet." />}</LoadState>
+    </section>
+  </>;
+}
+
 export default function PartnerDeployments({ role = 'coordinator' }) {
   const [params, setParams] = useSearchParams();
   const { state: navigation } = useLocation();
@@ -1292,6 +1308,7 @@ export default function PartnerDeployments({ role = 'coordinator' }) {
   const [cancellationRequestId, setCancellationRequestId] = useState(null);
   const [editingRequestId, setEditingRequestId] = useState(null);
   const [assignmentPartner, setAssignmentPartner] = useState(null);
+  const [viewPartnerId, setViewPartnerId] = useState(null);
   const [showRequestHistory, setShowRequestHistory] = useState(false);
   const school = role !== 'supervisor';
   const coordinator = role === 'coordinator';
@@ -1379,7 +1396,6 @@ export default function PartnerDeployments({ role = 'coordinator' }) {
         <h1>Deployment</h1>
         <p>Coordinate work immersion with partner institutions and manage student placements.</p>
       </div>
-      {!showMonitoredRequest && settings}
     </header> : <header className={styles.supervisorHeader}>
       <div>
         <h1>Deployment Request</h1>
@@ -1390,8 +1406,11 @@ export default function PartnerDeployments({ role = 'coordinator' }) {
     {!showMonitoredRequest && actionFeedback}
     {!school && detail.error && <p className={styles.error} role="alert">{detail.error}</p>}
     {schoolIndex && <nav className={styles.tabs} aria-label="Deployment sections">
-      <button type="button" aria-pressed={browse} onClick={() => setSection('partners')}>Partner institutions</button>
-      <button type="button" aria-pressed={monitor} onClick={() => setSection('monitor')}>Request monitoring</button>
+      <div className={styles.tabGroup}>
+        <button type="button" aria-pressed={browse} onClick={() => setSection('partners')}>Partner institutions</button>
+        <button type="button" aria-pressed={monitor} onClick={() => setSection('monitor')}>Request monitoring</button>
+      </div>
+      {!showMonitoredRequest && settings}
     </nav>}
     {browse && coordinator && <nav className={styles.tabs} aria-label="Deployment stages">
       {deploymentStages.map(([value, label], index) => <div key={value} className={styles.deploymentStage}>
@@ -1418,7 +1437,7 @@ export default function PartnerDeployments({ role = 'coordinator' }) {
     {showRequestHistory && <CancelledRequestHistory refresh={refresh} onClose={() => setShowRequestHistory(false)} />}
     {browsePartners && (stage === 'completed' ? <ReadyDeploymentPartners result={partners} studentApprovals={studentApprovals} /> :
       <Partners key={stage} result={partners} filters={filters} setFilter={changeFilter} stage={stage}
-      supervisors={options.data?.supervisors || []} onOpen={coordinator ? undefined : (id) => setParams({ partner: id })}
+      supervisors={options.data?.supervisors || []} onOpen={coordinator ? undefined : setViewPartnerId}
       onCreate={createRequest} onCancelRequest={requesting ? setCancellationRequestId : undefined}
       onEditRequest={requesting && requestingStage === 'changes_requested' ? setEditingRequestId : undefined}
       onAssignStudents={stage === 'approved' ? setAssignmentPartner : undefined}
@@ -1470,6 +1489,9 @@ export default function PartnerDeployments({ role = 'coordinator' }) {
       <StudentApprovalPanel result={studentApprovals} mode="supervisor"
         linkedRequestId={linkedStudentReview ? params.get('request') : null} onChanged={() => setRefresh((value) => value + 1)} />
     </SupervisorRequests>}
+    {viewPartnerId && <DeploymentDialog title="View Partner" onClose={() => setViewPartnerId(null)}>
+      <PartnerDetailDialog role={role} id={viewPartnerId} refresh={refresh} openRequest={openRequest} />
+    </DeploymentDialog>}
     {showMonitoredRequest ? <DeploymentDialog title="Deployment request" settings={settings} busy={action.busy} onClose={() => selectMonitoredRequest(null)}>
       {actionFeedback}
       {selectedDetail}

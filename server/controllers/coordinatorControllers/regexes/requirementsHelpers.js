@@ -348,7 +348,7 @@ const getOrCreateSubmission = async (client, student, userId) => {
   return created.rows[0];
 };
 
-const calculateProgress = async (client, studentId) => {
+const calculateProgress = async (client, studentId, { persist = true } = {}) => {
   const studentResult = await client.query('SELECT * FROM students WHERE id = $1', [studentId]);
   const student = studentResult.rows[0] || {};
   const docs = await client.query(
@@ -381,10 +381,12 @@ const calculateProgress = async (client, studentId) => {
 
   const sections = { personalComplete, guardianComplete, medicalComplete, academicComplete };
   const progress = Object.values(sections).filter(Boolean).length * 25;
-  await client.query(
-    `UPDATE student_requirement_submissions SET progress = $1, updated_at = CURRENT_TIMESTAMP WHERE student_id = $2`,
-    [progress, studentId]
-  );
+  if (persist) {
+    await client.query(
+      `UPDATE student_requirement_submissions SET progress = $1, updated_at = CURRENT_TIMESTAMP WHERE student_id = $2`,
+      [progress, studentId]
+    );
+  }
 
   const missingCodes = missingRequirementCodes(statuses);
   const completedCount = statuses.length - missingCodes.length;
@@ -414,7 +416,7 @@ const recalculateAllProgress = async (client) => {
   return students.rows.length;
 };
 
-const serializeRequirements = async (client, studentId) => {
+const serializeRequirements = async (client, studentId, { readOnly = false } = {}) => {
   await ensureRequirementReviewSchema();
   const student = await client.query('SELECT * FROM students WHERE id = $1', [studentId]);
   const submission = await client.query(
@@ -430,11 +432,11 @@ const serializeRequirements = async (client, studentId) => {
      LEFT JOIN coordinators c ON c.user_id = s.reviewed_by
      LEFT JOIN admins a ON a.user_id = s.reviewed_by
      LEFT JOIN students st ON st.user_id = s.reviewed_by
-     WHERE s.student_id = $1 ORDER BY s.created_at DESC LIMIT 1`,
+     WHERE s.student_id = $1 ORDER BY s.created_at DESC, s.id DESC LIMIT 1`,
     [studentId]
   );
   const documents = await client.query(
-    `SELECT sd.*, dt.code, dt.section
+    `SELECT sd.*, dt.code, dt.section, dt.name AS requirement_name
      FROM student_documents sd
      LEFT JOIN document_types dt ON dt.id = sd.document_type_id
      WHERE sd.student_id = $1
@@ -458,7 +460,7 @@ const serializeRequirements = async (client, studentId) => {
      ORDER BY sl.created_at DESC LIMIT 20`,
     [submission.rows[0]?.id || 0]
   );
-  const progress = await calculateProgress(client, studentId);
+  const progress = await calculateProgress(client, studentId, { persist: !readOnly });
   const formVerificationResult = await client.query(
     `SELECT document_type_id, verified_at
        FROM student_form_requirement_verifications

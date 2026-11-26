@@ -38,17 +38,27 @@ export async function loginUser(credentials) {
   // Login is the first mutating request a fresh browser makes, and it may have
   // no CSRF token yet (the cookie lives on the API origin and cannot be read
   // cross-site). Fetch one before sending.
-  await ensureCsrfToken();
+  await ensureCsrfToken({ force: true });
   const data = await fetchJsonOrThrow(url, {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(credentials),
   });
-  if (data.user?.role !== role) {
+  if (!data.otpRequired && data.user?.role !== role) {
     throw Object.assign(new Error('This account cannot sign in on this page.'), { code: 'WRONG_ROLE_SELECTED' });
   }
   return data;
+}
+
+export async function submitLoginOtp(action, body) {
+  await ensureCsrfToken();
+  return fetchJsonOrThrow(`${API_BASE}/users/login/otp/${action}`, {
+    method: 'POST',
+    headers: withCsrf({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
 }
 
 export async function registerUser(payload) {

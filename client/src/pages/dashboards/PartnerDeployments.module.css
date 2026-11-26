@@ -32,10 +32,33 @@
 }
 
 .page .header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 22px;
+  padding: 22px 24px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.page .header h1 {
+  margin: 0;
+  color: var(--about-ink);
+  font-size: 1.85rem;
+  font-weight: 780;
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+}
+
+.page .header p {
+  margin: 8px 0 0;
+  max-width: 700px;
+  color: #596579;
+  font-size: 0.95rem;
+  line-height: 1.6;
 }
 
 .supervisorHeader {
@@ -145,6 +168,21 @@
   flex-wrap: wrap;
   gap: 6px;
   border-bottom: 1px solid var(--about-border);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tabGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tabs .dialogClose {
+  padding: 0;
+  border-bottom: none;
+  width: 44px;
+  height: 44px;
 }
 
 .deploymentStage {

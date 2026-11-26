@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { logoutUser } from '../api/userApi';
+import { useSessionActivity } from '../hooks/useSessionActivity';
+import { authSessionId, sameAuthSession, SESSION_ENDED, SESSION_TOKEN_UPDATED } from '../utils/authRefresh';
 
 const AuthContext = createContext(null);
 
@@ -15,6 +17,32 @@ export function AuthProvider({ children }) {
 
   const [token, setToken] = useState(() => localStorage.getItem('wim-token') || '');
   const [csrfToken, setCsrfToken] = useState(() => localStorage.getItem('wim-csrf') || '');
+
+  useEffect(() => {
+    function updateToken(event) {
+      setToken(event.detail);
+      setCsrfToken(localStorage.getItem('wim-csrf') || '');
+    }
+    function endSession() {
+      setUser(null);
+      setToken('');
+      setCsrfToken('');
+    }
+    function syncSession(event) {
+      if (event.key !== 'wim-token') return;
+      if (!event.newValue) endSession();
+      else if (sameAuthSession(event.oldValue, event.newValue)) setToken(event.newValue);
+      else window.location.reload();
+    }
+    window.addEventListener(SESSION_TOKEN_UPDATED, updateToken);
+    window.addEventListener(SESSION_ENDED, endSession);
+    window.addEventListener('storage', syncSession);
+    return () => {
+      window.removeEventListener(SESSION_TOKEN_UPDATED, updateToken);
+      window.removeEventListener(SESSION_ENDED, endSession);
+      window.removeEventListener('storage', syncSession);
+    };
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -40,8 +68,16 @@ export function AuthProvider({ children }) {
     }
   }, [csrfToken]);
 
+  useSessionActivity(user ? authSessionId(token) : null);
+
   const login = (authData) => {
     const nextUser = authData?.user || null;
+    // The dashboard can make its first requests as soon as the login form navigates.
+    if (nextUser && authData.accessToken) {
+      localStorage.setItem('wim-user', JSON.stringify(nextUser));
+      localStorage.setItem('wim-token', authData.accessToken);
+      if (authData.csrfToken) localStorage.setItem('wim-csrf', authData.csrfToken);
+    }
     setUser(nextUser);
     setToken(authData?.accessToken || '');
     setCsrfToken(authData?.csrfToken || '');

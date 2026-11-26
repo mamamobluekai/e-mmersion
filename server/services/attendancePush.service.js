@@ -1,5 +1,6 @@
 const webpush = require('web-push');
 const pool = require('../db');
+const queryReadOnly = require('../db/queryReadOnly');
 const { getBatchScheduleForDate } = require('../controllers/teacherControllers/immersionSchedule.controller');
 
 const SYSTEM_TIMEZONE = 'Asia/Manila';
@@ -115,7 +116,7 @@ async function processAttendanceReminders(now = new Date()) {
   webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
 
   const reminderDate = dateInTimezone(SYSTEM_TIMEZONE, now);
-  const result = await pool.query(
+  const result = await queryReadOnly(
     `SELECT DISTINCT u.id AS user_id, tbs.teacher_batch_id,
             ac.timezone, ac.time_in_open, ac.time_in_close,
             ac.time_out_open, ac.time_out_close,

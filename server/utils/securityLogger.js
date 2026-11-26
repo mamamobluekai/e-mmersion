@@ -88,7 +88,7 @@ async function logSecurityEvent({
         email ? String(email).slice(0, 255) : null,
         getClientIp(req),
         req?.headers?.['user-agent']?.slice(0, 500) || null,
-        (req?.originalUrl || req?.path || '')?.slice(0, 500) || null,
+        (req?.originalUrl || req?.path || '').split('?')[0].slice(0, 500) || null,
         req?.method?.slice(0, 10) || null,
         detail ? String(detail).slice(0, 2000) : null,
         metadata ? JSON.stringify(metadata) : null,

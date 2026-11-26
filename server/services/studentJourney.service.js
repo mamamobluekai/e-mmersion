@@ -5,37 +5,73 @@ const { HOURS_PER_IMMERSION_DAY, isDayCompleted } = require('../utils/immersionD
 const {
   getActiveDocumentTypes,
   ensureRequirementReviewSchema,
+  buildRequirementStatuses,
 } = require('../controllers/coordinatorControllers/regexes/requirementsHelpers');
 
-async function getPreImmersion(userId) {
+function requirementSummary(student, types, includeChecklist) {
+  const status = student.submission_status || 'Not started';
+  const normalized = status.trim().toLowerCase();
+  const approved = types.filter(({ id }) => student.reviews[id] === 'APPROVED').length;
+  const complete = normalized === 'approved' && approved === types.length;
+  const submitted = Boolean(student.submitted_at) || ['submitted', 'under review', 'resubmitted'].includes(normalized);
+  const statusLabels = {
+    approved: complete ? 'Completed' : 'Incomplete',
+    pending: submitted ? 'Pending review' : 'Not submitted',
+    submitted: 'Pending review',
+    hold: 'On hold',
+  };
+  const summary = {
+    studentId: student.student_id ?? undefined,
+    status,
+    displayStatus: Object.hasOwn(statusLabels, normalized) ? statusLabels[normalized] : status,
+    total: types.length,
+    approved,
+    complete,
+  };
+
+  if (includeChecklist) {
+    summary.checklist = buildRequirementStatuses(types, student.profile, student.uploaded_type_ids)
+      .map(({ id, name, completed }) => {
+        const review = student.reviews[id];
+        let itemStatus = review;
+        if (!review || review === 'PENDING') {
+          itemStatus = !completed ? 'Missing' : submitted ? 'Pending review' : 'Ready to submit';
+        }
+        return { id, name, status: itemStatus };
+      });
+  }
+  return summary;
+}
+
+async function getRequirementProgress(userIds, { includeChecklist = false } = {}) {
+  if (!userIds.length) return new Map();
   await ensureRequirementReviewSchema();
   const [types, result] = await Promise.all([
     getActiveDocumentTypes(pool),
     pool.query(
-      `SELECT s.id AS student_id, ss.status AS submission_status,
+      `SELECT requested.user_id, s.id AS student_id, ss.status AS submission_status, ss.submitted_at,
+              ${includeChecklist ? `to_jsonb(s) AS profile,
+              ARRAY(SELECT DISTINCT d.document_type_id FROM student_documents d WHERE d.submission_id = ss.id) AS uploaded_type_ids,` : ''}
               COALESCE(
                 (SELECT jsonb_object_agg(rs.document_type_id, rs.status)
                  FROM student_requirement_statuses rs WHERE rs.submission_id = ss.id),
                 '{}'::jsonb
               ) AS reviews
-       FROM students s
+       FROM unnest($1::int[]) AS requested(user_id)
+       LEFT JOIN students s ON s.user_id = requested.user_id
        LEFT JOIN LATERAL (
-         SELECT id, status FROM student_requirement_submissions
+         SELECT id, status, submitted_at FROM student_requirement_submissions
          WHERE student_id = s.id ORDER BY created_at DESC, id DESC LIMIT 1
-       ) ss ON TRUE
-       WHERE s.user_id = $1`,
-      [userId]
+       ) ss ON TRUE`,
+      [userIds]
     ),
   ]);
-  const student = result.rows[0];
-  const approved = types.filter((type) => student?.reviews[type.id] === 'APPROVED').length;
-  return {
-    studentId: student?.student_id,
-    status: student?.submission_status || 'Not started',
-    total: types.length,
-    approved,
-    complete: String(student?.submission_status || '').trim().toLowerCase() === 'approved' && approved === types.length,
-  };
+  return new Map(result.rows.map((student) => [student.user_id, requirementSummary(student, types, includeChecklist)]));
+}
+
+async function getPreImmersion(userId, options) {
+  const id = Number(userId);
+  return (await getRequirementProgress([id], options)).get(id);
 }
 
 function progressForDays(schedule, attendance, documentation, appeals, today) {
@@ -194,4 +230,4 @@ async function getStudentJourney(userId, preImmersion) {
   });
 }
 
-module.exports = { getPreImmersion, getStudentJourney, progressForDays, summarizeJourney };
+module.exports = { getPreImmersion, getRequirementProgress, getStudentJourney, progressForDays, summarizeJourney };

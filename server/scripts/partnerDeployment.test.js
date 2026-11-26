@@ -13,8 +13,9 @@ assert.ok(['127.0.0.1', 'localhost'].includes(database.hostname) && database.pat
 process.env.DB_SSL = 'false';
 process.env.JWT_SECRET = 'local-integration-test-only';
 
-const jwt = require('jsonwebtoken');
 const pool = require('../db');
+const { ensureLoginSchema } = require('../services/deviceSessions.service');
+const { generateAccessToken } = require('../utils/generateToken');
 const { nowInManilaDateOnly } = require('../utils/manilaDate');
 const { dateAfter } = require('../services/partnerDeploymentPolicy');
 const { getStudentSchedules } = require('../controllers/teacherControllers/immersionSchedule.controller');
@@ -23,6 +24,9 @@ const { initializeSocket, getIO } = require('../sockets');
 const { getPreImmersion } = require('../services/studentJourney.service');
 const { archivePeriod } = require('../services/periodArchive.service');
 const { io: connectSocket } = require('../../client/node_modules/socket.io-client');
+const xlsx = require('xlsx');
+const mailer = require('../utils/mailer');
+const { getActiveDocumentTypes } = require('../controllers/coordinatorControllers/regexes/requirementsHelpers');
 
 test('bilateral deployment agreement, roster, attendance, and role scope', async () => {
   const app = require('../app');
@@ -46,11 +50,18 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     return (await pool.query(sql, params)).rows[0];
   }
   async function user(role, alias, period) {
-    return query(`INSERT INTO users (email,password,role,status,terms_accepted,immersion_period_id)
+    const account = await query(`INSERT INTO users (email,password,role,status,terms_accepted,immersion_period_id)
       VALUES ($1,'test-only',$2,'approved',true,$3) RETURNING id, email, role`, [`${alias}-${tag}@example.test`, role, period]);
+    const deviceId = randomUUID();
+    const sid = randomUUID();
+    await query("INSERT INTO account_devices (id, user_id, registration_hash, info) VALUES ($1::uuid, $2, $1::uuid::text, '{}')",
+      [deviceId, account.id]);
+    await query(`INSERT INTO account_sessions (id, user_id, device_id, expires_at, authentication_method)
+      VALUES ($1, $2, $3, now() + interval '1 hour', 'otp')`, [sid, account.id, deviceId]);
+    return { ...account, sid };
   }
   async function call(actor, path, method = 'GET', body, expected = 200, role = actor.role) {
-    const token = jwt.sign({ id: actor.id }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const token = generateAccessToken(actor);
     const response = await fetch(`${base}/${role}${path}`, {
       method,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Cookie: cookie, 'X-CSRF-Token': csrf },
@@ -61,6 +72,7 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     return expected === null ? response.status : data;
   }
   try {
+    await ensureLoginSchema();
     const period = await query(`INSERT INTO immersion_periods (period_name, academic_year, semester, start_date, end_date, required_hours)
       VALUES ($1, 'test', 'test', $2, $3, 80) RETURNING id`, [tag, today, dateAfter(today, 75)]);
     const school = await user('coordinator', 'coordinator', period.id);
@@ -94,6 +106,37 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
       eligible.push(student.id);
       studentsById.set(student.id, account);
     }
+    const monitoringAdmin = await user('admin', 'monitoring-admin', period.id);
+    const completedStudent = studentsById.get(eligible[0]);
+    const pendingStudent = studentsById.get(eligible[2]);
+    const directory = await call(monitoringAdmin, `/monitoring/student?search=${tag}`);
+    assert.equal(directory.profiles.find(({ id }) => id === completedStudent.id).requirements.status, 'Completed');
+    assert.equal(directory.profiles.find(({ id }) => id === pendingStudent.id).requirements.status, 'Pending review');
+    await call(school, `/monitoring/student/${completedStudent.id}`, 'GET', undefined, 403, 'admin');
+
+    const completedRecord = await call(monitoringAdmin, `/monitoring/student/${completedStudent.id}`);
+    const completedRequirements = completedRecord.details.journey.requirements;
+    assert.equal(completedRequirements.displayStatus, 'Completed');
+    assert.ok(completedRequirements.checklist.length > 0);
+    assert.ok(completedRequirements.checklist.every(({ status }) => status === 'APPROVED'));
+    assert.equal(completedRequirements.approved, completedRequirements.total);
+
+    const { id: pendingSubmissionId } = await query(`UPDATE student_requirement_submissions SET status = 'Hold'
+      WHERE student_id = $1 RETURNING id`, [eligible[2]]);
+    const { rows: requirementTypes } = await pool.query('SELECT id FROM document_types WHERE COALESCE(is_active, true) ORDER BY id LIMIT 2');
+    await query(`INSERT INTO student_requirement_statuses (submission_id, document_type_id, status)
+      VALUES ($1, $2, 'NEEDS REVISION'), ($1, $3, 'RESUBMITTED - AWAITING REVIEW')`,
+    [pendingSubmissionId, requirementTypes[0].id, requirementTypes[1].id]);
+    const heldRecord = await call(monitoringAdmin, `/monitoring/student/${pendingStudent.id}`);
+    const heldRequirements = heldRecord.details.journey.requirements;
+    assert.equal(heldRequirements.displayStatus, 'On hold');
+    assert.ok(heldRequirements.checklist.some(({ status }) => status === 'NEEDS REVISION'));
+    assert.ok(heldRequirements.checklist.some(({ status }) => status === 'RESUBMITTED - AWAITING REVIEW'));
+    assert.ok(heldRequirements.checklist.some(({ status }) => status === 'Missing'));
+    assert.ok(heldRequirements.checklist.every((item) => Object.keys(item).sort().join() === 'id,name,status'));
+    await query('DELETE FROM student_requirement_statuses WHERE submission_id = $1', [pendingSubmissionId]);
+    await query("UPDATE student_requirement_submissions SET status = 'Submitted' WHERE id = $1", [pendingSubmissionId]);
+
     const listing = await call(school, `${prefix}/partners?search=${tag}`);
     assert.ok(listing.partners.some((item) => item.id === empty.id && item.request_count === 0));
     const registerSupervisor = (institution, account) => query(`
@@ -328,7 +371,7 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     assert.deepEqual((await tracking(secondTeacherAccount, livePath)).students, []);
     await tracking(outsideTeacherAccount, livePath, 'GET', undefined, 403);
     const trackingSocket = (account) => connectSocket(base.replace(/\/api$/, ''), {
-      auth: { token: jwt.sign({ id: account.id, role: account.role }, process.env.JWT_SECRET) },
+      auth: { token: generateAccessToken(account) },
       autoConnect: false, reconnection: false,
     });
     const mapViewer = trackingSocket(secondTeacherAccount);
@@ -389,14 +432,18 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
       const criteriaRatings = criteria.map(({ id }) => ({ id, stars: 4 }));
       const gradePath = `/daily/${doc.id}/grade`;
       const gradePayload = { teacherFeedback: 'Keep documenting your progress.', criteriaRatings };
-      await documentation(outsider, gradePath, 'POST', gradePayload, 404);
+      await documentation(host, gradePath, 'POST', gradePayload, 403);
+      await documentation(outsider, gradePath, 'POST', gradePayload, 403);
       await documentation(outsideTeacherAccount, gradePath, 'POST', gradePayload, 404);
-      await documentation(host, gradePath, 'POST', {
+      await documentation(teacherAccount, gradePath, 'POST', {
         criteriaRatings: [...criteriaRatings.slice(1), criteriaRatings[1]],
       }, 400);
-      const { grade, doc: gradedDoc } = await documentation(host, gradePath, 'POST', gradePayload);
+      const { grade, doc: gradedDoc } = await documentation(teacherAccount, gradePath, 'POST', gradePayload);
       assert.equal(grade.total, 80);
-      assert.equal(gradedDoc.graded_by, host.id);
+      assert.equal(gradedDoc.graded_by, teacherAccount.id);
+      const { docs: [viewedGrade] } = await documentation(host, dailyDocsPath);
+      assert.equal(viewedGrade.teacher_feedback, gradePayload.teacherFeedback);
+      assert.equal(Number(viewedGrade.teacher_score), grade.total);
       assert.equal((await documentation(student, '/daily')).docs[0].teacher_feedback, gradePayload.teacherFeedback);
       await documentation(student, '/daily/submit', 'POST', submission, 409);
       const { students: [gradedRoster] } = await documentation(secondTeacherAccount, documentationSummary);
@@ -865,7 +912,7 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
       assert.equal((await query('SELECT template_snapshot FROM certificates WHERE id = $1', [issued.id])).template_snapshot.school_name, template.school_name);
       assert.equal((await call(student, '/me', 'GET', undefined, 200, 'certificate')).certificate.certificate_number, issued.certificate_number);
       const download = await fetch(base + '/certificate/me/download', {
-        headers: { Authorization: 'Bearer ' + jwt.sign({ id: student.id }, process.env.JWT_SECRET) },
+        headers: { Authorization: 'Bearer ' + generateAccessToken(student) },
       });
       assert.equal(download.status, 200);
       assert.equal(download.headers.get('content-type'), 'application/pdf');
@@ -882,6 +929,115 @@ test('bilateral deployment agreement, roster, attendance, and role scope', async
     const trail = (await read(school, draft)).history;
     assert.ok(trail.some(({ action, after_state }) => action === 'counterproposal_accepted' && after_state.agreement.supervisor_id === host.id));
     await call(school, '/deployment-requests/me', 'GET', undefined, 404);
+
+    const previousSendMail = mailer.sendMail;
+    const previousMailConfigError = mailer.mailConfigError;
+    const sentMail = [];
+    mailer.sendMail = async (message) => { sentMail.push(message); return { sent: true }; };
+    mailer.mailConfigError = () => null;
+    try {
+      const email = `teacher-upload-${tag}@example.test`;
+      const studentNumber = `UPLOAD-${tag}`;
+      const workbook = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(workbook, xlsx.utils.json_to_sheet([{
+        'Student ID': studentNumber, 'First Name': 'Uploaded', 'Last Name': 'Student', Email: email,
+        Section: '12-A', Strand: 'STEM', 'Contact Number': '09123456789', Gender: 'Female',
+      }]), 'Students');
+      const file = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      async function upload(actor, expected) {
+        const body = new FormData();
+        body.append('file', new Blob([file], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'students.xlsx');
+        const response = await fetch(`${base}/coordinator/students/upload`, {
+          method: 'POST', headers: { Authorization: `Bearer ${generateAccessToken(actor)}`, Cookie: cookie, 'X-CSRF-Token': csrf }, body,
+        });
+        const data = await response.json();
+        assert.equal(response.status, expected, JSON.stringify(data));
+        return data;
+      }
+      await upload(school, 403);
+      const uploaded = await upload(teacherAccount, 200);
+      assert.equal(uploaded.results.success, 1);
+      assert.equal(uploaded.results.credentialsSent, 1);
+      assert.equal((await upload(teacherAccount, 200)).results.failed, 1);
+      const row = await query(`SELECT s.id, s.user_id, s.intake_teacher_id, s.uploaded_by_teacher_id, u.status, u.immersion_period_id
+        FROM students s JOIN users u ON u.id = s.user_id WHERE u.email = $1`, [email]);
+      assert.equal(row.intake_teacher_id, teacherAccount.id);
+      assert.equal(row.uploaded_by_teacher_id, teacherAccount.id);
+      assert.equal(row.immersion_period_id, period.id);
+      assert.equal(row.status, 'pending_activation');
+      const intake = (actor) => call(actor, '/students/pending', 'GET', undefined, 200, 'coordinator');
+      assert.ok((await intake(teacherAccount)).students.some(({ id }) => id === row.user_id));
+      assert.ok(!(await intake(outsideTeacherAccount)).students.some(({ id }) => id === row.user_id));
+      await call(outsideTeacherAccount, `/students/${row.user_id}/resend-approval`, 'POST', undefined, 404, 'coordinator');
+      await call(teacherAccount, `/students/${row.user_id}/resend-approval`, 'POST', undefined, 200, 'coordinator');
+      await call(school, `/students/${row.user_id}/email`, 'PUT', { email }, 403);
+      const reportPath = `/students/${row.user_id}/reports`;
+      const report = { reason: 'other', comments: 'Sample account issue for admin review.' };
+      await call(school, reportPath, 'POST', report, 403);
+      await call(outsideTeacherAccount, reportPath, 'POST', report, 404, 'coordinator');
+      await call(teacherAccount, reportPath, 'POST', report, 201, 'coordinator');
+      assert.ok((await call(monitoringAdmin, '/account-problems')).reports.some((entry) => entry.student_user_id === row.user_id
+        && entry.reported_by === 'Teacher Test'));
+      const listed = await call(school, '/students/all?search=' + encodeURIComponent(email));
+      assert.equal(listed.students[0].uploaded_by_teacher, 'Teacher Test');
+      assert.equal(listed.students[0].requirements_completed, false);
+
+      const legacy = await user('student', 'legacy-intake', period.id);
+      await query(`INSERT INTO students (user_id, first_name, last_name, student_number) VALUES ($1, 'Legacy', 'Student', $2)`,
+        [legacy.id, `LEGACY-${tag}`]);
+      await call(teacherAccount, '/students/claim', 'POST', { studentNumber: `LEGACY-${tag}`, email: legacy.email }, 200, 'coordinator');
+      await call(outsideTeacherAccount, '/students/claim', 'POST', { studentNumber: `LEGACY-${tag}`, email: legacy.email }, 404, 'coordinator');
+      const legacyOwnership = await query('SELECT intake_teacher_id, uploaded_by_teacher_id FROM students WHERE user_id = $1', [legacy.id]);
+      assert.equal(legacyOwnership.intake_teacher_id, teacherAccount.id);
+      assert.equal(legacyOwnership.uploaded_by_teacher_id, null);
+
+      // Populate a submitted student record, then review it through the teacher API.
+      await query(`UPDATE students SET birthdate='2007-02-01', age=18, home_address='Sample address',
+        career_goal='Sample goal', industry_reason='Sample reason', guardian_name='Sample guardian',
+        guardian_relationship='Parent', guardian_contact='09123456789', guardian_email='guardian@example.test',
+        guardian_address='Sample address', emergency_contact='Sample contact', emergency_contact_number='09123456789'
+        WHERE id = $1`, [row.id]);
+      const submission = await query(`INSERT INTO student_requirement_submissions
+        (student_id,user_id,status,progress,submitted_at) VALUES ($1,$2,'Pending',100,now()) RETURNING id`, [row.id, row.user_id]);
+      const types = await getActiveDocumentTypes(pool);
+      const fileTypes = types.filter(({ input_type }) => input_type === 'file');
+      for (const type of fileTypes) {
+        await query(`INSERT INTO student_documents (student_id,submission_id,document_type_id,original_name,mime_type,cloudinary_url)
+          VALUES ($1,$2,$3,$4,'image/png','https://example.test/fixture.png')`, [row.id, submission.id, type.id, `${type.code}.png`]);
+      }
+      const listPath = '/submissions?search=' + encodeURIComponent(email);
+      const detailPath = `/requirements/${row.id}`;
+      const decisionPath = `/submissions/${submission.id}/review`;
+      const teacher = (actor, path, method = 'GET', body, expected = 200) => call(actor, path, method, body, expected, 'coordinator');
+      assert.equal((await teacher(teacherAccount, listPath)).submissions.length, 1);
+      assert.deepEqual((await teacher(outsideTeacherAccount, listPath)).submissions, []);
+      assert.deepEqual((await call(school, listPath)).submissions, []);
+      await call(school, detailPath, 'GET', undefined, 404);
+      await teacher(outsideTeacherAccount, detailPath, 'GET', undefined, 404);
+      await teacher(outsideTeacherAccount, decisionPath, 'POST', { status: 'Approved' }, 404);
+      await call(school, decisionPath, 'POST', { status: 'Approved' }, 403);
+      await call(school, '/document-types', 'POST', { name: 'Unauthorized' }, 403);
+      await teacher(teacherAccount, decisionPath, 'POST', { status: 'Approved' }, 400);
+      for (const type of types) {
+        await teacher(teacherAccount, `/submissions/${submission.id}/requirements/${type.id}/review`, 'PUT', { status: 'APPROVED' });
+      }
+      await teacher(teacherAccount, decisionPath, 'POST', { status: 'Approved', remarks: 'All files reviewed.' });
+      assert.equal((await call(school, listPath)).submissions[0].status, 'Approved');
+      const original = await query('SELECT updated_at FROM student_requirement_submissions WHERE id = $1', [submission.id]);
+      const approvedView = await call(school, detailPath);
+      assert.equal(approvedView.submission.reviewed_by, teacherAccount.id);
+      assert.equal(approvedView.submission.reviewed_by_name, 'Teacher Test');
+      assert.deepEqual(approvedView.documents.map(({ original_name }) => original_name).sort(), fileTypes.map(({ code }) => `${code}.png`).sort());
+      assert.deepEqual(await query('SELECT updated_at FROM student_requirement_submissions WHERE id = $1', [submission.id]), original);
+      assert.equal((await call(school, '/students/all?search=' + encodeURIComponent(email))).students[0].requirements_completed, true);
+      await teacher(teacherAccount, decisionPath, 'POST', { status: 'Hold' });
+      assert.deepEqual((await call(school, listPath)).submissions, []);
+      assert.ok(sentMail.some(({ subject }) => /requirements are approved/i.test(subject)));
+    } finally {
+      mailer.sendMail = previousSendMail;
+      mailer.mailConfigError = previousMailConfigError;
+    }
+
     await assert.rejects(archivePeriod(period.id, school.id), { status: 409 });
     for (const open of [draft, next, counterBoth, `${prefix}/${previousRequest.id}`]) {
       const { request } = await read(school, open);

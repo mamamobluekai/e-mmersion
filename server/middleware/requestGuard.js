@@ -60,7 +60,7 @@ function requestGuard(req, res, next) {
       severity: SEVERITY.HIGH,
       req,
       detail: `${finding.category} pattern in field "${finding.field}"`,
-      metadata: { field: finding.field, sample: finding.sample },
+      metadata: { field: finding.field },
     });
   });
   Promise.allSettled(logPromises).catch(() => {});

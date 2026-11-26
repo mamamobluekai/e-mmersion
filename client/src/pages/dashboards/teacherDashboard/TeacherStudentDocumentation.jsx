@@ -139,7 +139,7 @@ function FilePreview({ doc }) {
 
 const errorText = (err, fallback) => err.response?.data?.error || fallback;
 
-export function StudentDocumentation({ institutionId, scopeLoading, scopeError, scopePicker, canEditCriteria }) {
+export function StudentDocumentation({ institutionId, scopeLoading, scopeError, scopePicker, canEditCriteria, readOnly = false }) {
   const { token } = useAuth();
   const [students, setStudents] = useState([]);
   const [query, setQuery] = useState('');
@@ -270,6 +270,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
 
   const openReview = (doc) => {
     setReviewModal(doc);
+    if (readOnly) return;
     setGradeError('');
     setFeedback(doc.teacher_feedback || '');
     // Restore the stars this teacher gave previously, so "Update Grade" keeps
@@ -312,7 +313,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
 
   const submitGrade = async (e) => {
     e.preventDefault();
-    if (!reviewModal) return;
+    if (readOnly || !reviewModal) return;
     if (!allRated) {
       setGradeError(`Rate all ${criteria.length} criteria with stars before submitting.`);
       return;
@@ -352,6 +353,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
   };
 
   const saveCriteria = async () => {
+    if (readOnly || !canEditCriteria) return;
     setCriteriaLoading(true);
     try {
       const { criteria: saved } = await saveDocumentationCriteria(
@@ -388,11 +390,13 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
         <div>
           <h2 className={styles.title}>Student Documentation</h2>
           <p className={styles.pageDescription}>
-            Review and grade your students' submitted daily documentation.
+            {readOnly
+              ? 'View grading criteria and daily documentation for your assigned students.'
+              : "Review and grade your students' submitted daily documentation."}
           </p>
         </div>
         <button type="button" className={styles.criteriaToggleBtn} onClick={openCriteria}>
-          Grading Criteria ({criteria.length})
+          {readOnly ? 'View Grading Criteria' : 'Grading Criteria'} ({criteria.length})
         </button>
       </div>
 
@@ -457,7 +461,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
                       openStudentDocs(s);
                     }
                   }}
-                  aria-label={`Review documentation for ${s.first_name} ${s.last_name}`}
+                  aria-label={`${readOnly ? 'View' : 'Review'} documentation for ${s.first_name} ${s.last_name}`}
                 >
                   <span className={styles.rosterStudent}>
                     <strong>{s.first_name} {s.last_name}</strong>
@@ -473,7 +477,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
                     {s.pending_count || 0}
                   </span>
                   <span className={styles.rosterAction}>
-                    <span className={styles.reviewBtn}>Review Documentation</span>
+                    <span className={styles.reviewBtn}>{readOnly ? 'View Documentation' : 'Review Documentation'}</span>
                   </span>
                 </div>
               ))}
@@ -585,7 +589,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
                   <button className={styles.cancelBtn} type="button" onClick={closeCriteria}>
                     Close
                   </button>
-                  {canEditCriteria && (
+                  {!readOnly && canEditCriteria && (
                     <button className={styles.saveCriteriaBtn} type="button" onClick={() => setEditingCriteria(true)}>
                       Edit Criteria
                     </button>
@@ -665,9 +669,9 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
                           <span className={`${styles.badge} ${styles[getDocStatusBadge(doc.status)]}`}>{doc.status}</span>
                         </td>
                         <td>
-                          {doc.status !== 'pending' && (
+                          {(readOnly || doc.status !== 'pending') && (
                             <button className={styles.reviewBtnSmall} onClick={() => openReview(doc)}>
-                              {doc.status === 'graded' ? 'Update Grade' : 'Review & Grade'}
+                              {readOnly ? 'View' : doc.status === 'graded' ? 'Update Grade' : 'Review & Grade'}
                             </button>
                           )}
                         </td>
@@ -686,7 +690,7 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
         <div className={styles.modal} onClick={closeReview}>
           <div className={styles.reviewModalContent} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHeader}>
-              <h3>Review & Grade — Day {reviewModal.day_number} ({reviewModal.date})</h3>
+              <h3>{readOnly ? 'Daily Documentation' : 'Review & Grade'} — Day {reviewModal.day_number} ({reviewModal.date})</h3>
               <button className={styles.closeBtn} onClick={closeReview}>×</button>
             </div>
             <div className={styles.modalBody}>
@@ -698,93 +702,97 @@ export function StudentDocumentation({ institutionId, scopeLoading, scopeError, 
                   No file was attached to this documentation entry.
                 </div>
               )}
-              <form onSubmit={submitGrade} className={styles.gradeForm}>
+              <div className={styles.gradeForm}>
                 {reviewModal.reasoning && (
                   <div className={styles.field}>
                     <strong>Student reflection</strong>
                     <p>{reviewModal.reasoning}</p>
                   </div>
                 )}
-                {/* Live grade, derived from the star ratings below */}
-                <div
-                  className={`${styles.gradeTotalPanel} ${allRated ? styles.gradeTotalReady : ''}`}
-                >
-                  <div className={styles.gradeTotalHead}>
-                    <span className={styles.gradeTotalLabel}>Calculated Grade</span>
-                    {computedGrade && (
-                      <>
-                        <StarRating value={computedGrade.stars} size={18} />
-                        <span className={styles.gradeTotalLabelValue}>{computedGrade.label}</span>
-                        <span className={styles.gradeTotalValue}>{computedGrade.total} / 100</span>
-                      </>
-                    )}
-                  </div>
-                  <p className={styles.gradeTotalHint}>
-                    {criteria.length === 0
-                      ? 'No grading criteria configured yet.'
-                      : allRated
-                        ? `All ${criteria.length} criteria rated. This is the grade that will be saved.`
-                        : `Rate every criterion with stars — ${ratedCount} of ${criteria.length} done.`}
-                  </p>
-                  <span className={styles.gradeTotalTrack}>
-                    <span
-                      className={styles.gradeTotalFill}
-                      style={{ width: `${computedGrade ? computedGrade.total : 0}%` }}
-                    />
-                  </span>
-                </div>
-
-                {/* One 5-star rating per criterion */}
-                <div className={styles.criteriaChecklist}>
-                  <h4>Rate each criterion</h4>
-                  {criteria.length === 0 && (
-                    <p className={styles.criteriaEmpty}>
-                      No grading criteria are configured.
-                    </p>
-                  )}
-                  {criteria.map((c, idx) => (
+                {!readOnly && (
+                  <form onSubmit={submitGrade} className={styles.gradeForm}>
+                    {/* Live grade, derived from the star ratings below */}
                     <div
-                      key={c.id}
-                      className={`${styles.criterionRateRow} ${
-                        criterionRatings[c.id] ? styles.criterionRateDone : ''
-                      }`}
+                      className={`${styles.gradeTotalPanel} ${allRated ? styles.gradeTotalReady : ''}`}
                     >
-                      <div className={styles.criterionRateInfo}>
-                        <span className={styles.criterionIndex}>{idx + 1}</span>
-                        <div>
-                          <span className={styles.criterionRateName}>{c.criterion_name}</span>
-                          <span className={styles.criterionRateDesc}>
-                            {c.description} · {c.points} pts
-                          </span>
-                        </div>
+                      <div className={styles.gradeTotalHead}>
+                        <span className={styles.gradeTotalLabel}>Calculated Grade</span>
+                        {computedGrade && (
+                          <>
+                            <StarRating value={computedGrade.stars} size={18} />
+                            <span className={styles.gradeTotalLabelValue}>{computedGrade.label}</span>
+                            <span className={styles.gradeTotalValue}>{computedGrade.total} / 100</span>
+                          </>
+                        )}
                       </div>
-                      <StarRating
-                        value={criterionRatings[c.id] || 0}
-                        onChange={(starsValue) => rateCriterion(c.id, starsValue)}
-                        size={24}
-                      />
+                      <p className={styles.gradeTotalHint}>
+                        {criteria.length === 0
+                          ? 'No grading criteria configured yet.'
+                          : allRated
+                            ? `All ${criteria.length} criteria rated. This is the grade that will be saved.`
+                            : `Rate every criterion with stars — ${ratedCount} of ${criteria.length} done.`}
+                      </p>
+                      <span className={styles.gradeTotalTrack}>
+                        <span
+                          className={styles.gradeTotalFill}
+                          style={{ width: `${computedGrade ? computedGrade.total : 0}%` }}
+                        />
+                      </span>
                     </div>
-                  ))}
-                </div>
 
-                <label className={styles.field}>
-                  Feedback
-                  <textarea
-                    value={feedback}
-                    onChange={(e) => setFeedback(e.target.value)}
-                    rows={4}
-                    placeholder="Provide feedback to the student..."
-                  />
-                </label>
+                    {/* One 5-star rating per criterion */}
+                    <div className={styles.criteriaChecklist}>
+                      <h4>Rate each criterion</h4>
+                      {criteria.length === 0 && (
+                        <p className={styles.criteriaEmpty}>
+                          No grading criteria are configured.
+                        </p>
+                      )}
+                      {criteria.map((c, idx) => (
+                        <div
+                          key={c.id}
+                          className={`${styles.criterionRateRow} ${
+                            criterionRatings[c.id] ? styles.criterionRateDone : ''
+                          }`}
+                        >
+                          <div className={styles.criterionRateInfo}>
+                            <span className={styles.criterionIndex}>{idx + 1}</span>
+                            <div>
+                              <span className={styles.criterionRateName}>{c.criterion_name}</span>
+                              <span className={styles.criterionRateDesc}>
+                                {c.description} · {c.points} pts
+                              </span>
+                            </div>
+                          </div>
+                          <StarRating
+                            value={criterionRatings[c.id] || 0}
+                            onChange={(starsValue) => rateCriterion(c.id, starsValue)}
+                            size={24}
+                          />
+                        </div>
+                      ))}
+                    </div>
 
-                <div className={styles.gradeActions}>
-                  {gradeError && <p className={styles.error} role="alert">{gradeError}</p>}
-                  <button type="submit" className={styles.primaryBtn} disabled={grading || !allRated}>
-                    {grading ? 'Saving...' : 'Submit Grade'}
-                  </button>
-                  <button type="button" className={styles.cancelBtn} onClick={closeReview}>Cancel</button>
-                </div>
-              </form>
+                    <label className={styles.field}>
+                      Feedback
+                      <textarea
+                        value={feedback}
+                        onChange={(e) => setFeedback(e.target.value)}
+                        rows={4}
+                        placeholder="Provide feedback to the student..."
+                      />
+                    </label>
+
+                    <div className={styles.gradeActions}>
+                      {gradeError && <p className={styles.error} role="alert">{gradeError}</p>}
+                      <button type="submit" className={styles.primaryBtn} disabled={grading || !allRated}>
+                        {grading ? 'Saving...' : 'Submit Grade'}
+                      </button>
+                      <button type="button" className={styles.cancelBtn} onClick={closeReview}>Cancel</button>
+                    </div>
+                  </form>
+                )}
+              </div>
             </div>
           </div>
         </div>

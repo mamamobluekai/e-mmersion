@@ -59,14 +59,16 @@ const listAccountProblemReports = async (req, res) => {
               s.student_number, s.track_strand, s.archived_at,
               COALESCE(
                 NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), ''),
+                NULLIF(TRIM(CONCAT_WS(' ', t.first_name, t.last_name)), ''),
                 reporter.email,
-                'Former coordinator'
+                'Former staff member'
               ) AS reported_by
        FROM student_account_reports r
        LEFT JOIN users u ON u.id = r.student_user_id
        LEFT JOIN students s ON s.user_id = u.id
        LEFT JOIN users reporter ON reporter.id = r.submitted_by
        LEFT JOIN coordinators c ON c.user_id = reporter.id
+       LEFT JOIN teachers t ON t.user_id = reporter.id
        WHERE $1 = 'all' OR r.status = $1
        ORDER BY r.created_at DESC, r.id DESC`,
       [status]

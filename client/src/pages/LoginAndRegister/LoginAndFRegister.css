@@ -552,6 +552,40 @@ background:
   cursor: not-allowed;
 }
 
+/* ---------- REPORT LINK ---------- */
+
+.report-link {
+  border: none;
+
+  background: none;
+
+  padding: 0;
+
+  margin-top: 10px;
+
+  font-size: 12.5px;
+
+  font-weight: 700;
+
+  color: #c71f3e;
+
+  cursor: pointer;
+
+  text-align: center;
+
+  width: 100%;
+}
+
+.report-link:hover {
+  text-decoration: underline;
+}
+
+.report-link:focus-visible {
+  outline: 2px solid #c71f3e;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* ---------- FOOTER ---------- */
 
 .helper-text {

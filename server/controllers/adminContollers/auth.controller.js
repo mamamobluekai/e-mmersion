@@ -1,9 +1,6 @@
 const pool = require('../../db');
 const { hashPassword, comparePassword } = require('../../utils/hashPassword');
-const {
-  resetLoginAttempts,
-  getLockoutState,
-} = require('../../utils/loginAttempts');
+const { getLockoutState } = require('../../utils/loginAttempts');
 const { sendLoginError, recordFailure } = require('../../utils/loginErrors');
 const { writeAuditLog } = require('./admin.controller');
 const { normalizeEmail } = require('../../utils/normalizeEmail');
@@ -12,11 +9,8 @@ const { logSecurityEvent, SECURITY_EVENTS, SEVERITY } = require('../../utils/sec
 const tokenStore = require('../../utils/tokenStore');
 const { getRefreshCookieOptions } = require('../../utils/refreshCookie');
 const deviceSessions = require('../../services/deviceSessions.service');
+const loginOtp = require('../../services/loginOtp.service');
 const { notifyNewLogin } = require('../../services/loginAlerts.service');
-
-const attemptLogged = (req, email) => {
-  void deviceSessions.recordFailedLogin(req, email).catch((error) => console.error('Login activity:', error.message));
-};
 
 const login = async (req, res) => {
   try {
@@ -32,7 +26,6 @@ const login = async (req, res) => {
 
     const lockout = await getLockoutState(trimmedEmail);
     if (lockout.locked) {
-      attemptLogged(req, trimmedEmail);
       await logSecurityEvent({
         type: SECURITY_EVENTS.LOGIN_LOCKED,
         severity: SEVERITY.WARNING,
@@ -44,7 +37,7 @@ const login = async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT id, email, password, role, status, terms_accepted FROM users WHERE email = $1`,
+      `SELECT id, email, password, role, status, terms_accepted, skip_splash_screen FROM users WHERE email = $1`,
       [trimmedEmail]
     );
 
@@ -61,7 +54,6 @@ const login = async (req, res) => {
     // what makes "wrong tab" recoverable; see utils/loginErrors.js for the
     // privacy switch.
     if (user.role !== 'admin') {
-      attemptLogged(req, trimmedEmail);
       await recordFailure(trimmedEmail, req.ip);
       await logSecurityEvent({ type: SECURITY_EVENTS.LOGIN_FAILED, severity: SEVERITY.WARNING, req, email: trimmedEmail, detail: 'admin login: non-admin account' });
       return sendLoginError(res, 'WRONG_ROLE_ADMIN', { role: user.role });
@@ -69,79 +61,77 @@ const login = async (req, res) => {
 
     const match = await comparePassword(password, user.password);
     if (!match) {
-      attemptLogged(req, trimmedEmail);
       await recordFailure(trimmedEmail, req.ip);
       await logSecurityEvent({ type: SECURITY_EVENTS.LOGIN_FAILED, severity: SEVERITY.WARNING, req, email: trimmedEmail, detail: 'admin login: bad password' });
       return sendLoginError(res, 'WRONG_PASSWORD');
     }
 
     if (user.status === 'pending') {
-      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_PENDING');
     }
     if (user.status === 'disapproved') {
-      attemptLogged(req, trimmedEmail);
       return sendLoginError(res, 'ACCOUNT_DISAPPROVED_ADMIN');
     }
 
-    await resetLoginAttempts(trimmedEmail);
-
-    const adminResult = await pool.query(
-      `SELECT first_name, last_name, employee_id, department, photo_url FROM admins WHERE user_id = $1`,
-      [user.id]
-    );
-    const profile = adminResult.rows[0] || {};
-
-    const session = await deviceSessions.startSession(req, res, user);
-    if (!session) return sendLoginError(res, 'WRONG_PASSWORD');
-    void notifyNewLogin(user, session).catch((error) => console.error('Login alert:', error.message));
-
-    await logSecurityEvent({
-      type: SECURITY_EVENTS.LOGIN_SUCCESS,
-      severity: SEVERITY.INFO,
-      req,
-      userId: user.id,
-      email: user.email,
-      detail: 'admin login',
-    });
-
-    const safeUser = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      first_name: profile.first_name || null,
-      last_name: profile.last_name || null,
-      employee_id: profile.employee_id || null,
-      department: profile.department || null,
-      photo_url: profile.photo_url || null,
-      terms_accepted: Boolean(user.terms_accepted),
-      skip_splash_screen: Boolean(user.skip_splash_screen),
-    };
-
-    req.user = { id: user.id, role: user.role, email: user.email };
-    await writeAuditLog(req, 'login', `${safeUser.first_name || ''} ${safeUser.last_name || ''}`.trim());
-
-    try {
-      await ensureAdminTables();
-      await ensureCoordinatorRegistrationNotifications(user.id);
-    } catch (notifErr) {
-      console.error('Notification sync error:', notifErr.message);
-    }
-
-    const unread = await getUnreadNotificationCount(user.id);
-    res.json({
-      message: 'Login successful.',
-      accessToken: session.accessToken,
-      csrfToken: req.cookies?.csrfToken || null,
-      user: safeUser,
-      unreadNotifications: unread,
-    });
+    const step = await loginOtp.startLogin(req, res, user);
+    return step.session ? await completeAdminLogin(req, res, user, step.session) : loginOtp.sendLoginStep(res, step);
   } catch (err) {
     console.error('Admin login error:', err);
     sendLoginError(res, 'SERVER_ERROR');
   }
 };
+
+async function completeAdminLogin(req, res, user, session) {
+  const adminResult = await pool.query(
+    `SELECT first_name, last_name, employee_id, department, photo_url FROM admins WHERE user_id = $1`,
+    [user.id]
+  );
+  const profile = adminResult.rows[0] || {};
+
+  void notifyNewLogin(user, session).catch((error) => console.error('Login alert:', error.message));
+
+  await logSecurityEvent({
+    type: SECURITY_EVENTS.LOGIN_SUCCESS,
+    severity: SEVERITY.INFO,
+    req,
+    userId: user.id,
+    email: user.email,
+    detail: 'admin login',
+  });
+
+  const safeUser = {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    first_name: profile.first_name || null,
+    last_name: profile.last_name || null,
+    employee_id: profile.employee_id || null,
+    department: profile.department || null,
+    photo_url: profile.photo_url || null,
+    terms_accepted: Boolean(user.terms_accepted),
+    skip_splash_screen: Boolean(user.skip_splash_screen),
+  };
+
+  req.user = { id: user.id, role: user.role, email: user.email };
+  await writeAuditLog(req, 'login', `${safeUser.first_name || ''} ${safeUser.last_name || ''}`.trim());
+
+  try {
+    await ensureAdminTables();
+    await ensureCoordinatorRegistrationNotifications(user.id);
+  } catch (notifErr) {
+    console.error('Notification sync error:', notifErr.message);
+  }
+
+  const unread = await getUnreadNotificationCount(user.id);
+  return res.set('Cache-Control', 'no-store').json({
+    message: 'Login successful.',
+    accessToken: session.accessToken,
+    csrfToken: req.cookies?.csrfToken || res.locals.csrfToken || null,
+    user: safeUser,
+    unreadNotifications: unread,
+  });
+}
 
 const logout = async (req, res) => {
   try {
@@ -275,4 +265,4 @@ const profile = async (req, res) => {
   }
 };
 
-module.exports = { login, logout, profile, updateProfile };
+module.exports = { login, completeAdminLogin, logout, profile, updateProfile };

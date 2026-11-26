@@ -14,13 +14,14 @@ const {
 
 router.use(authenticate);
 
-const reviewers = ['teacher', 'supervisor', 'coordinator', 'admin'];
+const graders = ['teacher', 'coordinator', 'admin'];
+const reviewers = [...graders, 'supervisor'];
 
 router.get('/daily', authorize(...reviewers, 'student'), requireImmersion, getStudentDailyDocs);
 router.post('/daily/submit', authorize('student'), requireImmersion, submitDailyDoc);
-router.post('/daily/:docId/grade', authorize(...reviewers), gradeDailyDoc);
+router.post('/daily/:docId/grade', authorize(...graders), gradeDailyDoc);
 router.get('/criteria', authorize(...reviewers, 'student'), requireImmersion, getDocumentationCriteria);
-router.put('/criteria', authorize('teacher', 'coordinator', 'admin'), saveDocumentationCriteria);
+router.put('/criteria', authorize(...graders), saveDocumentationCriteria);
 router.get('/batch/:batchId/summary', authorize(...reviewers), getDailyDocSummary);
 router.get('/partner-institutions/:institutionId/summary', authorize(...reviewers), getDailyDocSummary);
 

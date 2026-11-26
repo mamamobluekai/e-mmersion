@@ -4,13 +4,14 @@ import { useAdminAuth } from '../../context/useAdminAuth';
 import { getLoginErrorTitle } from '../../utils/errors';
 import { useToast } from '../../components/admin/toastContext';
 import SplashScreen from '../../components/auth/SplashScreen';
+import LoginOtpForm from '../../components/auth/LoginOtpForm';
 import styles from './AdminLogin.module.css';
 
 
 export default function AdminLogin() {
   const navigate = useNavigate();
   const openSecurity = useLocation().state?.securityRole === 'admin';
-  const { login } = useAdminAuth();
+  const { login, finishLogin } = useAdminAuth();
   const { showToast } = useToast();
 
   const [form, setForm] = useState({
@@ -20,6 +21,12 @@ export default function AdminLogin() {
 
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [challenge, setChallenge] = useState(null);
+  const [remember, setRemember] = useState(false);
+
+  function openDashboard() {
+    navigate(openSecurity ? '/dashboard/admin/settings/security' : '/dashboard/admin', { replace: true });
+  }
 
   // Failures are reported as a toast rather than as text above the form. The
   // server names the exact reason (wrong password, wrong account type, locked,
@@ -43,15 +50,15 @@ export default function AdminLogin() {
       const data = await login({
         email: form.email,
         password: form.password,
+        rememberMe: remember,
       });
 
-      const role = data.user?.role;
-
-      if (role === 'admin') {
-        navigate(openSecurity ? '/dashboard/admin/settings/security' : '/dashboard/admin', { replace: true });
-      } else {
-        navigate(`/dashboard/${role}`, { replace: true });
+      if (data.otpRequired) {
+        setChallenge(data);
+        setForm((current) => ({ ...current, password: '' }));
+        return;
       }
+      openDashboard();
     } catch (err) {
       // err.code identifies the failure; err.message is the server's full
       // explanation. Both are shown so the user knows what to change.
@@ -90,6 +97,12 @@ export default function AdminLogin() {
 
         <div className={styles.divider} />
 
+        {challenge ? <LoginOtpForm initialChallenge={challenge} role="admin" submitClass={styles.submitBtn}
+          onBack={() => setChallenge(null)} onSuccess={(data) => {
+            finishLogin(data);
+            showToast('Sign-in verified.', 'success');
+            openDashboard();
+          }} /> : <>
         <div className={styles.headerBlock}>
           <h1>Admin Login</h1>
           <p>Sign in to access the administration dashboard.</p>
@@ -228,12 +241,17 @@ export default function AdminLogin() {
             </label>
           </div>
 
+          <label className={styles.checkboxRow}>
+            <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
+            <span>Remember me</span>
+          </label>
           <div className={styles.forgotRow}>
             <span>Forgot Password?</span>
 
             <button
               type="button"
               className={styles.forgotBtn}
+              onClick={() => navigate('/forgot-password')}
             >
               click here
             </button>
@@ -256,6 +274,7 @@ export default function AdminLogin() {
               'Login'
             )}
           </button>
+
         </form>
 
         <div className={styles.signupText}>
@@ -268,6 +287,7 @@ export default function AdminLogin() {
             Student/Teacher login
           </button>
         </div>
+        </>}
       </div>
     </div>
   );

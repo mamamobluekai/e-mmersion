@@ -7,6 +7,8 @@ import TeacherDocuments from './TeacherDocuments';
 import LiveMap from './LiveMap';
 import TeacherAttendance from './TeacherAttendance';
 import TeacherStudents from './TeacherStudents';
+import StudentApprovals from './StudentApprovals';
+import RequirementsReview from '../coordinatorDashboard/RequirementsReview';
 import TeacherStudentEvaluations from './TeacherStudentEvaluations';
 import TeacherStudentDocumentation from './TeacherStudentDocumentation';
 import TeacherReportsConcerns from './TeacherReportsConcerns';
@@ -29,6 +31,8 @@ function TeacherDashboard({ user, onLogout }) {
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<TeacherOverview user={user} />} />
          <Route path="students" element={<TeacherStudents />} />
+         <Route path="upload-students" element={<StudentApprovals />} />
+         <Route path="requirements" element={<RequirementsReview />} />
          <Route path="evaluations" element={<TeacherStudentEvaluations />} />
          <Route path="attendance" element={<TeacherAttendance />} />
           <Route path="student-documentation" element={<TeacherStudentDocumentation />} />

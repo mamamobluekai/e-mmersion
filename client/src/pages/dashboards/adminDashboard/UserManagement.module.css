@@ -47,10 +47,10 @@
   gap: 7px;
   height: 38px;
   padding: 0 18px;
-  border: 1px solid var(--about-border);
-  border-radius: 9px;
-  background: #fff;
-  color: var(--about-muted);
+  border: 1px solid var(--about-maroon);
+  border-radius: 999px;
+  background: var(--about-maroon);
+  color: #fff;
   font-family: inherit;
   font-size: 0.78rem;
   font-weight: 700;
@@ -116,8 +116,8 @@
 .statsGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  gap: 18px;
+  margin-bottom: 22px;
 }
 
 .statCard {
@@ -125,9 +125,9 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  column-gap: 11px;
+  column-gap: 14px;
   min-width: 0;
-  padding: 12px 14px;
+  padding: 20px 22px;
   overflow: hidden;
   background: #fff;
   border: 1px solid var(--about-border);
@@ -160,7 +160,7 @@
 .statLabel {
   display: block;
   color: var(--about-muted);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -169,7 +169,7 @@
   display: block;
   margin-top: 1px;
   color: var(--about-ink);
-  font-size: 1.4rem;
+  font-size: 2rem;
   font-weight: 780;
   letter-spacing: -0.035em;
   line-height: 1.1;
@@ -434,9 +434,10 @@
   padding: 14px 15px;
   overflow: hidden;
   text-align: left;
-  background: #fff;
-  border: 1px solid var(--about-border);
-  border-radius: 16px;
+  background: var(--about-maroon);
+  border: 1px solid var(--about-maroon);
+  border-radius: 999px;
+  color: #fff;
   font: inherit;
   cursor: pointer;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
@@ -482,15 +483,14 @@
 
 .roleButtonLabel {
   display: block;
-  color: var(--about-muted);
-  font-size: 0.74rem;
+  color: #fff;
   font-weight: 700;
 }
 
 .roleButtonCount {
   display: block;
   margin-top: 1px;
-  color: var(--about-ink);
+  color: #fff;
   font-size: 1.45rem;
   font-weight: 780;
   letter-spacing: -0.035em;

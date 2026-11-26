@@ -28,6 +28,7 @@ const {
   reviewStatusTransitionError,
 } = require('./requirementsSubmissionPolicy');
 const streamifier = require('streamifier');
+const { ensureIntakeSchema, teacherReviewScope } = require('../../services/teacherStudentIntake.service');
 
 const lockSubmissionStatus = async (client, submissionId) => {
   const result = await client.query(
@@ -129,9 +130,9 @@ const sendStudentRequirementsEmail = async ({
   const escapedFeedback = mailer.escapeHtml(cleanFeedback);
   const escapedUrl = mailer.escapeHtml(requirementsUrl);
   const feedbackHtml = cleanFeedback
-    ? `<p style="white-space:pre-wrap;"><strong>Coordinator feedback:</strong> ${escapedFeedback}</p>`
+    ? `<p style="white-space:pre-wrap;"><strong>Review feedback:</strong> ${escapedFeedback}</p>`
     : '';
-  const feedbackText = cleanFeedback ? `\n\nCoordinator feedback:\n${cleanFeedback}` : '';
+  const feedbackText = cleanFeedback ? `\n\nReview feedback:\n${cleanFeedback}` : '';
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#26313f;line-height:1.6;">
       <h2 style="color:#8b1e2d;">${escapedTitle}</h2>
@@ -167,8 +168,8 @@ const sendRequirementDecisionEmail = (student, requirementName, status, feedback
       : 'Requirement Approved',
     title: needsRevision ? 'Requirement Needs Revision' : 'Requirement Approved',
     message: needsRevision
-      ? `Your requirement "${name}" was reviewed and needs revision. Please sign in to review the coordinator feedback and submit a corrected version.`
-      : `Your requirement "${name}" has been approved by your coordinator.`,
+      ? `Your requirement "${name}" needs revision. Sign in to read the feedback and submit a corrected version.`
+      : `Your requirement "${name}" has been approved.`,
     feedback,
   });
 };
@@ -178,7 +179,7 @@ const sendSubmissionApprovalEmail = (student, feedback) =>
     student,
     subject: 'Congratulations! Your Work Immersion Requirements Are Approved',
     title: 'Congratulations! Your Requirements Are Approved',
-    message: 'Your complete Work Immersion requirements submission has been approved by your coordinator.',
+    message: 'Your Work Immersion requirements submission has been approved.',
     feedback,
   });
 
@@ -417,25 +418,33 @@ const getRequirements = async (req, res) => {
   const client = await pool.connect();
   try {
     const studentIdParam = req.params.studentId;
+    const { role, id: actorId } = req.user;
     let student;
-    if (studentIdParam === 'me' || req.user.role === 'student') {
-      student = await getOrCreateStudent(client, req.user.id, {});
+    if (role === 'student') {
+      student = await getOrCreateStudent(client, actorId, {});
+      await getOrCreateSubmission(client, student, student.user_id);
     } else {
+      const staffScope = role === 'teacher' ? `s.archived_at IS NULL AND ${teacherReviewScope('s', '$2')}` : 'TRUE';
+      if (role === 'teacher') await ensureIntakeSchema();
       const result = await client.query(
-        `SELECT * FROM students WHERE id::text = $1 OR student_number = $1 OR user_id::text = $1 LIMIT 1`,
-        [studentIdParam]
+        `SELECT s.id FROM students s WHERE ${staffScope}
+          AND (${role === 'admin' ? 's.id::text = $1 OR s.student_number = $1 OR s.user_id::text = $1' : 's.id::text = $1'})
+          ORDER BY (s.id::text = $1) DESC, (s.student_number = $1) DESC, s.id LIMIT 1`,
+        role === 'teacher' ? [studentIdParam, actorId] : [studentIdParam]
       );
       if (!result.rows.length) return res.status(404).json({ error: 'Student requirements not found.' });
       student = result.rows[0];
     }
-    await getOrCreateSubmission(client, student, student.user_id);
-    const data = await serializeRequirements(client, student.id);
+    const data = await serializeRequirements(client, student.id, { readOnly: role !== 'student' });
+    if (role === 'coordinator' && data.submission?.status?.trim().toLowerCase() !== 'approved') {
+      return res.status(404).json({ error: 'Approved student requirements not found.' });
+    }
     if (req.user.role === 'student') {
       const { rows } = await client.query(`SELECT id, name, is_active FROM partner_institutions
         WHERE is_active OR id = $1 ORDER BY name, id`, [student.preferred_partner_institution_id ?? null]);
       data.partnerInstitutions = rows;
     }
-    res.json(data);
+    res.set('Cache-Control', 'private, no-store').json(data);
   } catch (err) {
     console.error('getRequirements error:', err);
     res.status(500).json({ error: 'Server error.' });
@@ -605,7 +614,7 @@ const uploadDocument = async (req, res) => {
     await client.query('COMMIT');
     res.status(201).json({
       message: reopened
-        ? 'Missing requirement uploaded. Your coordinator can now review it.'
+        ? 'Missing requirement uploaded. Your teacher can now review it.'
         : isResubmission
           ? 'Corrected requirement uploaded and resubmitted for review.'
           : 'File uploaded successfully.',
@@ -774,6 +783,11 @@ const listSubmissions = async (req, res) => {
   try {
     await ensureDocumentTypesSchema();
     const { status = null, search = null, strand = null } = req.query;
+    const { role, id: actorId } = req.user;
+    const scope = role === 'teacher' ? `AND st.archived_at IS NULL AND ${teacherReviewScope('st', '$4')}` : '';
+    if (role === 'teacher') await ensureIntakeSchema();
+    const params = [role === 'coordinator' ? 'Approved' : status === 'all' ? null : status, search || null, strand || null];
+    if (role === 'teacher') params.push(actorId);
     const result = await pool.query(
       `SELECT s.*, st.student_number, st.first_name, st.last_name, st.email, st.grade_level, st.track_strand,
               -- Full student row, so form requirements (Personal Information,
@@ -781,11 +795,12 @@ const listSubmissions = async (req, res) => {
               to_jsonb(st) AS student
          FROM student_requirement_submissions s
          JOIN students st ON st.id = s.student_id
-         WHERE ($1::text IS NULL OR s.status = $1)
+         WHERE ($1::text IS NULL OR lower(trim(s.status)) = lower($1))
            AND ($2::text IS NULL OR LOWER(st.student_number || ' ' || st.first_name || ' ' || st.last_name || ' ' || COALESCE(st.email,'') || ' ' || COALESCE(st.track_strand,'')) LIKE LOWER('%' || $2 || '%'))
            AND ($3::text IS NULL OR st.track_strand = $3)
+           ${scope}
          ORDER BY s.updated_at DESC`,
-      [status === 'all' ? null : status, search || null, strand || null]
+      params
     );
 
     // Completeness is resolved here rather than in SQL because form
@@ -864,7 +879,11 @@ const reviewSubmission = async (req, res) => {
     if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid review status.' });
 
     await ensureRevisionDocumentColumn();
-
+    if (status === 'Approved') {
+      await ensureDocumentTypesSchema();
+      await ensureRequirementReviewSchema();
+    }
+    await client.query('BEGIN');
     const currentRow = await client.query(
       `SELECT srs.status, srs.student_id, st.first_name, st.last_name,
               st.student_number,
@@ -872,7 +891,7 @@ const reviewSubmission = async (req, res) => {
          FROM student_requirement_submissions srs
          LEFT JOIN students st ON st.id = srs.student_id
          LEFT JOIN users u ON u.id = st.user_id
-        WHERE srs.id = $1`,
+        WHERE srs.id = $1 FOR UPDATE OF srs`,
       [req.params.id]
     );
     if (!currentRow.rows.length) {
@@ -910,7 +929,6 @@ const reviewSubmission = async (req, res) => {
       }
     }
 
-    await client.query('BEGIN');
     const result = await client.query(
       `UPDATE student_requirement_submissions
        SET status = $1, coordinator_feedback = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP,
@@ -949,11 +967,12 @@ const reviewSubmission = async (req, res) => {
         : {}),
     });
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('reviewSubmission error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    if (!clientReleased) client.release();
+    if (!clientReleased) {
+      try { await client.query('ROLLBACK'); } finally { client.release(); }
+    }
   }
 };
 
@@ -968,6 +987,16 @@ const bulkReviewSubmissions = async (req, res) => {
   const client = await pool.connect();
   let clientReleased = false;
   try {
+    if (status === 'Approved') {
+      await ensureDocumentTypesSchema();
+      await ensureRequirementReviewSchema();
+    }
+    await client.query('BEGIN');
+    const locked = await client.query(`SELECT id, status FROM student_requirement_submissions
+      WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE`, [submission_ids]);
+    if (locked.rowCount !== new Set(submission_ids.map(Number)).size) {
+      return res.status(404).json({ error: 'One or more submissions were not found.' });
+    }
     // Approved submissions can only stay approved or be put on hold.
     if (!['Approved', 'Hold'].includes(status)) {
       const approvedRows = await client.query(
@@ -1045,18 +1074,8 @@ const bulkReviewSubmissions = async (req, res) => {
       }
     }
 
-    await client.query('BEGIN');
-    const previousApprovalStates = status === 'Approved'
-      ? await client.query(
-        `SELECT id, status
-           FROM student_requirement_submissions
-          WHERE id = ANY($1)
-          FOR UPDATE`,
-        [submission_ids]
-      )
-      : { rows: [] };
     const previouslyApprovedIds = new Set(
-      previousApprovalStates.rows
+      locked.rows
         .filter((row) => row.status === 'Approved')
         .map((row) => row.id)
     );
@@ -1138,11 +1157,12 @@ const bulkReviewSubmissions = async (req, res) => {
       ...(emailNotification ? { emailNotification } : {}),
     });
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('bulkReviewSubmissions error:', err);
     res.status(500).json({ error: 'Server error.' });
   } finally {
-    if (!clientReleased) client.release();
+    if (!clientReleased) {
+      try { await client.query('ROLLBACK'); } finally { client.release(); }
+    }
   }
 };
 
@@ -1323,8 +1343,8 @@ const listDocumentTypes = async (req, res) => {
   try {
     await ensureDocumentTypesSchema();
     const { all } = req.query;
-    const isCoordOrAdmin = ['coordinator', 'admin'].includes(req.user?.role);
-    const showAll = isCoordOrAdmin && (all === 'true' || all === '1');
+    const canViewCatalog = ['teacher', 'admin'].includes(req.user?.role);
+    const showAll = canViewCatalog && (all === 'true' || all === '1');
     // `input_type` tells the client whether a requirement is satisfied by an
     // upload ('file') or by filling in the student's own information ('form').
     const query = showAll

@@ -425,6 +425,15 @@
 
 .studentsCard { margin-top: 24px; overflow: visible; }
 
+.uploadIssues {
+  max-height: 12rem;
+  overflow: auto;
+  padding-inline-start: 1.5rem;
+  text-align: start;
+  color: var(--about-muted);
+  font-size: 0.85rem;
+}
+
 .studentsHeader {
   display: flex;
   align-items: center;

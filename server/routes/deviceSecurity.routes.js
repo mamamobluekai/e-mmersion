@@ -4,7 +4,8 @@ const pool = require('../db');
 const mailer = require('../utils/mailer');
 const { hashToken } = require('../utils/tokenStore');
 const { writeLimiter } = require('../middleware/rateLimiters');
-const { ensureSchema, withAccount, endSessions, disconnectSessions, browserToken, isUuid } = require('../services/deviceSessions.service');
+const { sessionDeadline } = require('../config/sessionPolicy');
+const { ensureLoginSchema, withAccount, endSessions, disconnectSessions, browserToken, isUuid, revokeDeviceTrust } = require('../services/deviceSessions.service');
 
 const router = express.Router();
 const pageSize = 25;
@@ -17,7 +18,7 @@ function endpoint(operation) {
   return async (req, res) => {
     try {
       if (!req.user.sid || !req.user.deviceId) fail(401, 'Sign in again to manage your devices.');
-      await ensureSchema();
+      await ensureLoginSchema();
       res.set('Cache-Control', 'private, no-store');
       res.json(await operation(req));
     } catch (error) {
@@ -30,7 +31,8 @@ function endpoint(operation) {
 async function currentDevice(db, user, registration = null) {
   const { rows: [device] } = await db.query(`SELECT d.id, d.verified_at, d.registration_hash
     FROM account_sessions s JOIN account_devices d ON d.id = s.device_id
-    WHERE s.id = $1 AND s.user_id = $2 AND s.ended_at IS NULL AND s.expires_at > now() AND d.removed_at IS NULL`, [user.sid, user.id]);
+    WHERE s.id = $1 AND s.user_id = $2 AND s.ended_at IS NULL AND ${sessionDeadline('$3::text')} > now()
+      AND d.removed_at IS NULL`, [user.sid, user.id, user.role]);
   if (!device || (registration && device.registration_hash !== registration)) fail(401, 'Sign in again from this browser to verify your device.');
   return device;
 }
@@ -38,10 +40,12 @@ async function currentDevice(db, user, registration = null) {
 router.get('/devices', endpoint(async ({ user }) => {
   const [devices, settings] = await Promise.all([
     pool.query(`SELECT d.id, d.info, d.last_login_at, d.verified_at, d.removed_at, d.id = $2::uuid AS is_current,
+      d.created_at, d.trusted_at, d.trust_expires_at, d.trust_last_used_at,
+      coalesce(d.trust_token_hash IS NOT NULL AND d.trust_expires_at > now() AND d.removed_at IS NULL, false) AS trusted,
       max(s.last_active_at) AS last_active_at,
-      coalesce(bool_or(s.ended_at IS NULL AND s.expires_at > now()), false) AS active
+      coalesce(bool_or(s.ended_at IS NULL AND ${sessionDeadline('$3::text')} > now()), false) AS active
       FROM account_devices d LEFT JOIN account_sessions s ON d.id = s.device_id
-      WHERE d.user_id = $1 GROUP BY d.id ORDER BY is_current DESC, d.last_login_at DESC`, [user.id, user.deviceId]),
+      WHERE d.user_id = $1 GROUP BY d.id ORDER BY is_current DESC, d.last_login_at DESC`, [user.id, user.deviceId, user.role]),
     pool.query('SELECT new_login_email_alerts FROM users WHERE id = $1', [user.id]),
   ]);
   return { devices: devices.rows, emailAlerts: settings.rows[0].new_login_email_alerts };
@@ -56,7 +60,7 @@ router.get('/activity', endpoint(async ({ user, query }) => {
     fail(400, 'Choose a valid date or device.');
   }
   const { rows } = await pool.query(`SELECT id, device_id, event_type, info, occurred_at
-    FROM account_login_events WHERE user_id = $1
+    FROM account_login_events WHERE user_id = $1 AND occurred_at > now() - interval '90 days'
       AND ($2::date IS NULL OR (occurred_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Manila')
         AND occurred_at < (($2::date + 1)::timestamp AT TIME ZONE 'Asia/Manila')))
       AND (NOT $3::boolean OR device_id IS NULL) AND ($4::uuid IS NULL OR device_id = $4)
@@ -86,6 +90,7 @@ function manageDevice(remove) {
       if (!rowCount) fail(404, 'Device not found.');
       const sessions = await endSessions(db, req.user.id, { deviceId: target });
       if (remove) {
+        await revokeDeviceTrust(db, req.user.id, target);
         await db.query('UPDATE account_devices SET removed_at = now(), verified_at = NULL WHERE id = $1 AND user_id = $2', [target, req.user.id]);
       }
       return sessions;
@@ -97,6 +102,16 @@ function manageDevice(remove) {
 
 router.post('/devices/:id/logout', writeLimiter, manageDevice(false));
 router.delete('/devices/:id', writeLimiter, manageDevice(true));
+router.delete('/devices/:id/trust', writeLimiter, endpoint(async (req) => {
+  const target = req.params.id;
+  if (!isUuid(target)) fail(400, 'Choose a valid device.');
+  const revoked = await withAccount(req.user.id, async (db) => {
+    await currentDevice(db, req.user);
+    return revokeDeviceTrust(db, req.user.id, target);
+  });
+  if (!revoked) fail(404, 'Trusted device not found.');
+  return { revoked };
+}));
 
 router.post('/logout-others', writeLimiter, endpoint(async ({ user }) => {
   const ended = await withAccount(user.id, async (db) => {

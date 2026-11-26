@@ -128,7 +128,7 @@ export default function UserProfileSettings({ section = null, onNavigate }) {
     if (!modalSection) return undefined;
 
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') setModalSection(null);
+      if (event.key === 'Escape' && !document.querySelector('dialog[open]')) setModalSection(null);
     };
 
     document.addEventListener('keydown', handleKeyDown);

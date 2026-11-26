@@ -31,13 +31,14 @@ const pages = {
   },
   teacher: {
     overview: ['general', 'Teacher Dashboard'], students: ['students', 'Students'], evaluations: ['evaluation', 'Student Grades'],
+    'upload-students': ['students', 'Upload Students'], requirements: ['requirements', 'Requirements Review'],
     attendance: ['attendance', 'Attendance Monitor'], 'student-documentation': ['documents', 'Student Documentation'],
     'reports-concerns': ['communication', 'Reports & Concerns'], 'live-map': ['attendance', 'Live Map'],
     settings: ['account', 'Settings'], profile: ['account', 'Profile Settings'], documents: ['documents', 'Documents'],
   },
   coordinator: {
-    '': ['general', 'Coordinator Dashboard'], students: ['students', 'Student Approvals'], 'student-list': ['students', 'Student List'],
-    'special-students': ['students', 'Special Students'], requirements: ['requirements', 'Requirements'], batches: ['deployments', 'Batches'],
+    '': ['general', 'Coordinator Dashboard'], students: ['students', 'Student List'], 'student-list': ['students', 'Student List'],
+    'special-students': ['students', 'Special Students'], requirements: ['requirements', 'Student Requirements'], batches: ['deployments', 'Batches'],
     'partner-institutions': ['deployments', 'Partner Institutions'], 'evaluation-criteria': ['evaluation', 'Evaluation Criteria'],
     deployment: ['deployments', 'Deployment Requests'], 'deployment/:id/students': ['deployments', 'Choose Students for Deployment'],
     profile: ['account', 'Profile Settings'],

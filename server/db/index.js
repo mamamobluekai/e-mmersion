@@ -56,11 +56,16 @@ if (useSsl) {
   poolConfig.ssl = { rejectUnauthorized: false };
 }
 
-const pool = new Pool(poolConfig);
+const pool = new Pool({
+  ...poolConfig,
+  connectionTimeoutMillis: 8000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 5000,
+});
 
 pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
-  process.exit(-1);
+  // pg-pool removes the failed idle client before emitting the error.
+  console.error('Idle database connection lost:', err.code || err.name, err.message);
 });
 
 module.exports = pool;

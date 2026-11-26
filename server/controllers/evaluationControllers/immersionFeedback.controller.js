@@ -182,4 +182,4 @@ const getMySupervisorRatings = endpoint(async (req) => {
   return summary;
 });
 
-module.exports = { getCriteria, saveCriteria, getMyFeedbackForm, submitMyFeedback, getInstitutionRatings, getMySupervisorRatings };
+module.exports = { ensureFeedbackSchema: ensureSchema, getCriteria, saveCriteria, getMyFeedbackForm, submitMyFeedback, getInstitutionRatings, getMySupervisorRatings };

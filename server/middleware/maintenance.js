@@ -6,7 +6,7 @@
 //
 // Admins are deliberately exempt: if the flag applied to them too, an
 // accidental toggle would lock every account out with no in-app way to recover.
-const pool = require('../db');
+const queryReadOnly = require('../db/queryReadOnly');
 const { verifyAccessToken } = require('../utils/generateToken');
 
 const DEFAULT_MAINTENANCE_MESSAGE =
@@ -31,12 +31,12 @@ const isAllowedPath = (req) => {
 
 // Reads the flag straight from system_settings. Fails open so a database error
 // cannot lock out every user; an outage is preferable to a total lockout.
-async function readMaintenance() {
+async function readMaintenance(db) {
   try {
-    const result = await pool.query(
+    const sql =
       `SELECT maintenance_mode, maintenance_message, maintenance_started_at, maintenance_estimated_end
-       FROM system_settings WHERE id = 1`
-    );
+       FROM system_settings WHERE id = 1`;
+    const result = db ? await db.query(sql) : await queryReadOnly(sql);
     const row = result.rows[0] || {};
     return {
       enabled: Boolean(row.maintenance_mode),

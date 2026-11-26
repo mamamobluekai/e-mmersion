@@ -8,6 +8,7 @@ export default function ConfirmModal({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   isDestructive = false,
+  inNativeDialog = false,
   // Shown in place of `confirmLabel` while the action is still running, e.g.
   // "Sending email..." for an approval. Falls back to `confirmLabel`.
   loadingLabel,
@@ -42,7 +43,8 @@ export default function ConfirmModal({
   };
 
   return (
-    <div className={styles.overlay} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div className={styles.overlay} role={inNativeDialog ? undefined : 'dialog'}
+      aria-modal={inNativeDialog ? undefined : true} aria-labelledby={inNativeDialog ? undefined : 'confirm-title'}>
       <div className={styles.modal}>
         <h2 id="confirm-title" className={styles.title}>{title}</h2>
         {message ? <p className={styles.message}>{message}</p> : null}

@@ -50,6 +50,7 @@ export const verifyDeviceCode = (code) => apiFetch(`${securityPath}/verification
 });
 export const signOutDevice = (id) => apiFetch(`${securityPath}/devices/${encodeURIComponent(id)}/logout`, { method: 'POST' });
 export const removeAccountDevice = (id) => apiFetch(`${securityPath}/devices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const revokeAccountDeviceTrust = (id) => apiFetch(`${securityPath}/devices/${encodeURIComponent(id)}/trust`, { method: 'DELETE' });
 export const signOutOtherDevices = () => apiFetch(`${securityPath}/logout-others`, { method: 'POST' });
 
 // Revokes the refresh cookie and the access token server-side. Without this the

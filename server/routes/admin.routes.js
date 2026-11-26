@@ -4,8 +4,9 @@ const multer = require('multer');
 const authenticate = require('../middleware/verifyToken');
 const authorize = require('../middleware/authorizeRole');
 const loginLimiter = require('../middleware/loginLimter');
-const { authLimiter, credentialLimiter, uploadLimiter } = require('../middleware/rateLimiters');
+const { authLimiter, credentialLimiter, uploadLimiter, writeLimiter } = require('../middleware/rateLimiters');
 const { uploadGuard } = require('../middleware/uploadGuard');
+const { loginValidation, handleValidation } = require('../validators/auth.validator');
 
 const {
   getAllUsers,
@@ -55,6 +56,9 @@ const {
 
 const { login, logout, profile, updateProfile } = require('../controllers/adminContollers/auth.controller');
 const { dashboard, periodAnalytics } = require('../controllers/adminContollers/dashboard.controller');
+const { listLoginActivity, terminateLoginSession, revokeTrustedDevice } = require('../controllers/adminContollers/loginActivity.controller');
+const { listMonitoring, monitoringDetail } = require('../controllers/adminContollers/monitoring.controller');
+const { listAttendancePartners, attendancePartner, attendanceDay } = require('../controllers/adminContollers/studentAttendance.controller');
 const {
   listAccountProblemReports,
   resolveAccountProblemReport,
@@ -72,7 +76,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const adminOnly = [authenticate, authorize('admin')];
 
-router.post('/login', authLimiter, credentialLimiter, loginLimiter, login);
+router.post('/login', authLimiter, credentialLimiter, loginLimiter, loginValidation, handleValidation, login);
 
 router.use(...adminOnly);
 
@@ -85,6 +89,14 @@ router.post('/profile/picture', uploadLimiter, upload.single('photo'), uploadGua
 
 router.get('/dashboard', dashboard);
 router.get('/dashboard/period-analytics', periodAnalytics);
+router.get('/login-activity', listLoginActivity);
+router.delete('/login-activity/:userId/sessions/:id', writeLimiter, terminateLoginSession);
+router.delete('/login-activity/:userId/devices/:id/trust', writeLimiter, revokeTrustedDevice);
+router.get('/monitoring/:role', listMonitoring);
+router.get('/monitoring/:role/:userId', monitoringDetail);
+router.get('/student-attendance', listAttendancePartners);
+router.get('/student-attendance/:partnerId', attendancePartner);
+router.get('/student-attendance/:partnerId/day', attendanceDay);
 
 router.get('/users', getAllUsers);
 router.get('/account-problems', listAccountProblemReports);

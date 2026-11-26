@@ -3,8 +3,7 @@
 const crypto = require('crypto');
 const pool = require('../db');
 
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days, matches the cookie
-const ACCESS_TTL_MS = 60 * 60 * 1000; // 1 hour, matches the access token
+const { REFRESH_TTL_MS, ACCESS_TTL_MS } = require('../config/sessionPolicy');
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');

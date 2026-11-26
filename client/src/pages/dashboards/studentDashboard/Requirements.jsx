@@ -1102,7 +1102,7 @@ function Requirements({ checklistOnly = false }) {
         <header className={`${styles.pageHeader} ${styles.missionHeader}`}>
           <div className={styles.headerMain}>
             <h2>Pre-Immersion</h2>
-            <p>Complete your requirement missions and submit them to your coordinator for approval.</p>
+            <p>Complete your requirement missions and submit them to your teacher for approval.</p>
           </div>
         </header>
         {error && <p className={styles.error} role="alert">{error}</p>}
@@ -1141,7 +1141,7 @@ function Requirements({ checklistOnly = false }) {
               <h2 id="requirement-missions-title">Requirement missions</h2>
               {missions.length === 0 ? <p>No requirements have been configured.</p> : (
                 <>
-                  <p>{approvedCount}/{missions.length} approved by your coordinator</p>
+                  <p>{approvedCount}/{missions.length} approved by your teacher</p>
                   <ul className={styles.missionChecklist}>
                     {missions.map(({ item, done, canGo, waiting, label, needsRevision }) => {
                       const Icon = needsRevision ? CircleAlert : done ? CheckCircle2 : Circle;
@@ -1220,7 +1220,7 @@ function Requirements({ checklistOnly = false }) {
           <strong>Changes needed</strong>
           <p>
             Only the items below are editable. Correct each file or form and
-            it will return to the coordinator for review automatically.
+            it will return to your teacher for review automatically.
           </p>
           <ul className={styles.revisionList}>
             {revisionDocuments.map((doc) => (
@@ -1241,7 +1241,7 @@ function Requirements({ checklistOnly = false }) {
         <div className={styles.section}>
           {submission?.coordinator_feedback && (
             <div className={styles.feedbackNotice}>
-              <strong>Coordinator feedback</strong>
+              <strong>Review feedback</strong>
               <p>{submission.coordinator_feedback}</p>
             </div>
           )}
@@ -1249,15 +1249,14 @@ function Requirements({ checklistOnly = false }) {
             <div className={styles.holdNotice} role="status">
               <strong>Submission on hold</strong>
               <p>
-                Your coordinator has placed this approved submission on hold. You
-                cannot edit or resubmit it until the coordinator releases the hold.
-                Contact your coordinator if you have questions.
+                This approved submission is on hold. You cannot edit or resubmit it
+                until your teacher releases the hold. Contact your teacher if you have questions.
               </p>
             </div>
           )}
           {isApproved && hasMissingUpload && (
             <p role="status">
-              A required document is missing. Upload it from its section to send it to your coordinator for review.
+              A required document is missing. Upload it from its section to send it to your teacher for review.
             </p>
           )}
         </div>

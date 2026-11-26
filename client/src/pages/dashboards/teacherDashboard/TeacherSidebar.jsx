@@ -13,7 +13,8 @@ import {
   User,
   FolderOpen,
   Info,
-  Building2,
+  Upload,
+  ClipboardCheck,
 } from 'lucide-react';
 
 const links = [
@@ -25,11 +26,23 @@ const links = [
   },
 
   {
+    to: '/dashboard/teacher/upload-students',
+    label: 'Upload Students',
+    icon: Upload,
+    group: 'Pre-Immersion Deployment',
+  },
+  {
+    to: '/dashboard/teacher/requirements',
+    label: 'Requirements Review',
+    icon: ClipboardCheck,
+  },
+
+  {
     to: '/dashboard/teacher/students',
     label: 'Students',
     icon: Users,
+    group: 'Work Immersion Proper',
   },
-
   {
     to: '/dashboard/teacher/attendance',
     label: 'Attendance Monitor',
@@ -52,6 +65,7 @@ const links = [
     to: '/dashboard/teacher/evaluations',
     label: 'Student Grades',
     icon: ClipboardPenLine,
+    group: 'Post-Work Immersion',
   },
 
   {
@@ -64,6 +78,7 @@ const links = [
     to: '/dashboard/teacher/announcements',
     label: 'Announcements',
     icon: Megaphone,
+    group: 'Additional Features',
   },
 
   {

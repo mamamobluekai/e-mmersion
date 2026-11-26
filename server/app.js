@@ -23,7 +23,9 @@ const documentationRoutes = require('./routes/documentationRoutes');
 const notificationRoutes = require('./routes/notification.routes');
 const appealRoutes = require('./routes/appeal.routes');
 const activityHistoryRoutes = require('./routes/activityHistory.routes');
+const supportReportRoutes = require('./routes/supportReport.routes');
 const { maintenanceGuard, readMaintenance } = require('./middleware/maintenance');
+const { observeLoginFailure } = require('./services/deviceSessions.service');
 
 const app = express();
 
@@ -44,6 +46,7 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 app.use(cookieParser());
+app.use(/^\/api\/(?:admin\/login|users\/login(?:\/(?:student|teacher|coordinator|supervisor|otp\/verify))?)\/?$/i, observeLoginFailure);
 
 // Issue a CSRF token cookie before any state-changing route can be reached.
 app.use(issueCsrfToken);
@@ -99,6 +102,7 @@ app.use('/api/documentation', documentationRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/appeals', appealRoutes);
 app.use('/api/activity-history', activityHistoryRoutes);
+app.use('/api/support', supportReportRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found.' });

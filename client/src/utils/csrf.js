@@ -61,6 +61,7 @@ export async function ensureCsrfToken({ force = false } = {}) {
   if (!inFlightRequest) {
     inFlightRequest = fetch(`${API_BASE}/users/csrf-token`, {
       credentials: 'include',
+      cache: 'no-store',
     })
       .then((res) => (res.ok ? res.json() : {}))
       .then((data) => {
@@ -107,10 +108,10 @@ export function installFetchCsrfInterceptor() {
     if (!methodNeedsCsrf(method)) return originalFetch(input, init);
 
     // Build the header set from whatever the caller supplied plus the token.
-    const send = (token) => {
+    const send = (token, replace = false) => {
       // `Headers` normalises casing and merges any Headers/init headers object.
       const headers = new Headers(init.headers ?? input?.headers ?? undefined);
-      if (token && !headers.has(CSRF_HEADER)) headers.set(CSRF_HEADER, token);
+      if (token && (replace || !headers.has(CSRF_HEADER))) headers.set(CSRF_HEADER, token);
       return originalFetch(input, { ...init, headers });
     };
 
@@ -137,7 +138,7 @@ export function installFetchCsrfInterceptor() {
     if (response.status !== 403 || init.__csrfRetried) return response;
 
     dropCsrfToken();
-    return send(await ensureCsrfToken({ force: true }));
+    return send(await ensureCsrfToken({ force: true }), true);
   };
 
   patchedFetch.__csrfPatched = true;

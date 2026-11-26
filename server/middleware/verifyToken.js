@@ -28,7 +28,7 @@ const authenticate = async (req, res, next) => {
 
     // The token payload is not authoritative for identity or authorisation. A
     // role change, demotion or account freeze must take effect immediately
-    // rather than whenever the (1h) access token happens to expire, so the
+    // rather than whenever the access token expires, so the
     // current role/status is re-read from the users table on every request.
     let current;
     try {
@@ -70,12 +70,15 @@ const authenticate = async (req, res, next) => {
     const isTermsAcceptance = req.method === 'POST' && path === '/terms/accept';
     const isPasswordSetup = req.method === 'POST' && path === '/activation/set-password';
     const isLogout = req.method === 'POST' && path === '/logout';
+    const sessionStatus = req.method === 'GET' && path === '/session';
+    const sessionActivity = req.method === 'POST' && path === '/session/activity';
+    const sessionCheck = sessionStatus || sessionActivity;
 
     if (
       ['student', 'supervisor'].includes(current.role) &&
       !current.terms_accepted &&
       !isTermsAcceptance &&
-      !isLogout
+      !isLogout && !sessionCheck
     ) {
       return res.status(403).json({
         error: 'Accept the Terms and Agreement to continue.',
@@ -83,7 +86,7 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    if (status === 'pending_activation' && !isLogout && !isPasswordSetup && !isTermsAcceptance) {
+    if (status === 'pending_activation' && !isLogout && !isPasswordSetup && !isTermsAcceptance && !sessionCheck) {
       return res.status(403).json({
         error: 'Set your permanent password to activate your account.',
         code: 'PASSWORD_SETUP_REQUIRED',
@@ -96,10 +99,11 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    const session = await checkAccessSession(decoded, true);
+    const session = await checkAccessSession(decoded, req, sessionActivity);
     if (!session) return res.status(401).json({ error: 'Session ended. Sign in again.' });
     req.user = { ...decoded, ...current, deviceId: session.device_id };
-    observeActivity(req, res);
+    if (sessionCheck) res.locals.sessionDeadline = session.deadline;
+    else observeActivity(req, res);
     next();
   } catch (err) {
     console.error('verifyAccessToken failed:', err.name, err.message, 'path=', req.path, 'method=', req.method);

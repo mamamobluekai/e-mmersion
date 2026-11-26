@@ -1,7 +1,62 @@
-.panel { display: grid; gap: 16px; margin-block-start: 22px; min-width: 0; color: var(--wim-text); }
-.panel h4 { margin: 0; color: var(--wim-text-strong); font-size: 1rem; }
+.launcher {
+  margin-block-start: 20px;
+  padding-block-start: 16px;
+  border-block-start: 1px solid var(--wim-border);
+}
+
+.launchButton, .closeButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 44px;
+  border: 1px solid var(--wim-border-input);
+  border-radius: 10px;
+  background: var(--wim-bg-surface);
+  color: var(--wim-text-strong);
+  font: inherit;
+  cursor: pointer;
+}
+
+.launchButton { padding: 8px 12px; font-size: .85rem; font-weight: 700; text-align: left; }
+.closeButton { flex: 0 0 44px; }
+.launchButton svg, .closeButton svg { flex: none; color: var(--wim-brand); }
+.launchButton:hover, .closeButton:hover { background: var(--wim-bg-hover); }
+.launchButton:focus-visible, .closeButton:focus-visible { outline: 2px solid var(--wim-brand); outline-offset: 2px; }
+
+.dialog {
+  width: min(46rem, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--wim-border);
+  border-radius: 16px;
+  background: var(--wim-bg-raised);
+  color: var(--wim-text);
+  box-shadow: 0 20px 50px rgb(15 23 42 / 22%);
+}
+
+.dialog[open] { display: flex; flex-direction: column; }
+.dialog::backdrop { background: var(--wim-overlay); }
+
+.dialogHeader {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: clamp(12px, 3vw, 20px);
+  border-block-end: 1px solid var(--wim-border);
+}
+
+.dialogHeader h2 { margin: 0; font-size: clamp(1.1rem, 3vw, 1.45rem); color: var(--wim-text-strong); }
+.dialogBody { min-height: 0; padding: clamp(12px, 3vw, 20px); overflow: auto; overscroll-behavior: contain; }
+.panel { display: grid; gap: 16px; min-width: 0; color: var(--wim-text); }
+.panel h3 { margin: 0; color: var(--wim-text-strong); font-size: 1rem; }
 .panel p { margin: 0; color: var(--wim-text-secondary); font-size: .82rem; line-height: 1.5; }
-.section { display: grid; min-width: 0; gap: 12px; border-block-start: 1px solid var(--wim-border-maroon); padding-block-start: 16px; }
+.section { display: grid; min-width: 0; gap: 12px; }
+.section + .section { border-block-start: 1px solid var(--wim-border-maroon); padding-block-start: 16px; }
 .devices, .events { margin: 0; padding: 0; list-style: none; }
 .devices { display: grid; gap: 9px; }
 .device {
@@ -52,7 +107,20 @@
 .panel .notice, .panel .error { padding: 8px 10px; border-radius: 8px; }
 .panel .notice { color: var(--wim-success-text); background: var(--wim-success-bg); }
 .panel .error { color: var(--wim-danger-text); background: var(--wim-danger-bg); }
-.confirmLayer { position: fixed; inset: 0; z-index: 100010; }
+.confirmDialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.confirmDialog::backdrop { background: transparent; }
 
 @media (max-width: 420px) {
   .filters, .verifyForm { grid-template-columns: minmax(0, 1fr); }

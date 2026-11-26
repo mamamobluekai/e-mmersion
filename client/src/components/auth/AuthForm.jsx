@@ -2,6 +2,7 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuthForm } from '../../hooks/useAuthForm';
 import SplashScreen from './SplashScreen';
+import LoginOtpForm from './LoginOtpForm';
 import '../../pages/LoginAndRegister/LoginAndFRegister.css';
 import {
   AlertCircle,
@@ -13,6 +14,7 @@ import {
   UserCog,
   Users,
 } from 'lucide-react';
+import SupportReportModal from '../support/SupportReportModal';
 
 const STAFF_ROLES = [
   { id: 'teacher', Icon: Users },
@@ -58,6 +60,11 @@ function AuthForm({ onAuthSuccess, initialRole = 'student', allowRoleSwitch = fa
     error,
     handleSubmit,
     loginSuccess,
+    challenge,
+    setChallenge,
+    finishLogin,
+    remember,
+    setRemember,
   } = useAuthForm((data) => {
     onAuthSuccess?.(data);
   }, startingRole);
@@ -71,7 +78,8 @@ function AuthForm({ onAuthSuccess, initialRole = 'student', allowRoleSwitch = fa
   }, [loginSuccess, navigate, securityRole]);
 
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [splashCompleted, setSplashCompleted] = useState(false);
 
   /* Registration runs as two screens so the form stays short on phones. */
 const [regStep, setRegStep] = useState(1);
@@ -129,7 +137,7 @@ useEffect(() => {
 
                 <p className="brand-description">
                   Create your student account and wait for approval from
-                  your coordinator before you can sign in.
+                  your teacher before you can sign in.
                 </p>
               </>
             )}
@@ -147,6 +155,8 @@ useEffect(() => {
               <span className="eyebrow-line" />
             </div>
 
+            {challenge ? <LoginOtpForm initialChallenge={challenge} role={role} onSuccess={finishLogin}
+              onBack={() => setChallenge(null)} submitClass="submit-btn" /> : <>
             <h2 className="panel-title">
               {mode === 'login' ? 'Welcome Back' : 'Create Account'}
             </h2>
@@ -473,7 +483,7 @@ useEffect(() => {
               </div>
 
               <div className="field-row">
-                <label className="remember-row">
+                {mode === 'login' && <label className="remember-row">
                   <input
                     type="checkbox"
                     checked={remember}
@@ -483,7 +493,7 @@ useEffect(() => {
                   />
 
                   <span>Remember me</span>
-                </label>
+                </label>}
 
                 {mode === 'login' ? (
                   <button
@@ -527,16 +537,39 @@ useEffect(() => {
                   </>
                 )}
               </button>
+              {mode === 'login' && (
+                <button
+                  type="button"
+                  className="report-link"
+                  onClick={() => setShowReportModal(true)}
+                >
+                  Report a Problem / Submit a Concern
+                </button>
+              )}
+              {showReportModal && (
+                <SupportReportModal
+                  role={role}
+                  isOpen={showReportModal}
+                  onClose={() => setShowReportModal(false)}
+                />
+              )}
                 </>
               ) : null}
             </form>
 
+            </>}
           </section>
         </div>
       </div>
     );
-  return storedSkipSplash ? content : (
-    <SplashScreen variant="user">
+  // When the support report modal is open (especially while submitting),
+  // skip the full-screen splash overlay so the user only sees the modal
+  // with its loading animation instead of being covered by the splash.
+  // Once the splash has completed at least once, never re-show it even
+  // after the modal closes, so the user isn't forced to watch the
+  // animation again.
+  return storedSkipSplash || showReportModal || splashCompleted ? content : (
+    <SplashScreen variant="user" onDone={setSplashCompleted}>
       {content}
     </SplashScreen>
   );

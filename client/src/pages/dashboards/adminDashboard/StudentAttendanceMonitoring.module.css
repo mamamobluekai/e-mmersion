@@ -1,0 +1,203 @@
+.heading {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+  max-width: 420px;
+  margin-bottom: 18px;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--about-border);
+  border-radius: 10px;
+  background: white;
+  color: var(--about-ink);
+  font: inherit;
+  font-weight: 400;
+}
+
+.partnerCard {
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+}
+
+.partnerCard .partnerCounts {
+  margin: 8px 0 16px;
+}
+
+.cardAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--about-maroon);
+  font-size: 0.88rem;
+  font-weight: 700;
+  margin-top: auto;
+}
+
+.partnerModal {
+  width: min(75rem, calc(100% - 24px));
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.65fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.panel {
+  min-width: 0;
+  padding: clamp(14px, 2.2vw, 24px);
+  border: 1px solid var(--about-border);
+  border-radius: 16px;
+  background: white;
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: clamp(1.18rem, 2vw, 1.55rem);
+  font-weight: 760;
+  letter-spacing: -0.035em;
+  line-height: 1.2;
+}
+
+.monthNav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0;
+  font-size: 0.92rem;
+}
+
+.monthNav button,
+.calendar button {
+  display: grid;
+  min-height: 36px;
+  place-items: center;
+  border: 1px solid var(--about-border);
+  border-radius: 8px;
+  background: var(--about-blush);
+  color: var(--about-maroon);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monthNav button {
+  flex: 0 0 38px;
+}
+
+.monthNav button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.calendar button[aria-pressed='true'] {
+  border-color: var(--about-maroon);
+  background: var(--about-maroon);
+  color: white;
+}
+
+.weekday,
+.unscheduled {
+  color: var(--about-muted);
+}
+
+.weekday {
+  padding-bottom: 3px;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.unscheduled {
+  display: grid;
+  min-height: 36px;
+  place-items: center;
+}
+
+.hint,
+.selectedDate,
+.batchInfo {
+  color: var(--about-muted);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.hint {
+  margin: 14px 0 0;
+}
+
+.selectedDate {
+  margin: 8px 0 14px;
+}
+
+.batchInfo {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--about-border);
+  border-radius: 10px;
+  background: var(--about-blush);
+}
+
+.batchInfo summary {
+  color: var(--about-maroon);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.batchInfo div {
+  margin-top: 12px;
+}
+
+.batchInfo p {
+  margin: 2px 0 0;
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 16px 0;
+  padding: 0;
+  color: var(--about-muted);
+  font-size: 0.8rem;
+  list-style: none;
+}
+
+.summary strong {
+  color: var(--about-ink);
+}
+
+.partnerCard:focus-visible,
+.panel :is(button, input, summary):focus-visible,
+.field :is(input, select):focus-visible {
+  outline: 3px solid rgb(190 140 63 / 55%);
+  outline-offset: 2px;
+}
+
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

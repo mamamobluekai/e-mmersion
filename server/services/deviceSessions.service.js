@@ -1,4 +1,4 @@
-const { createHmac, randomBytes, randomUUID, timingSafeEqual } = require('node:crypto');
+const { createHmac, randomUUID, timingSafeEqual } = require('node:crypto');
 const { isIP } = require('node:net');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
@@ -6,11 +6,17 @@ const pool = require('../db');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/generateToken');
 const tokens = require('../utils/tokenStore');
 const { getRefreshCookieOptions } = require('../utils/refreshCookie');
+const { normalizeEmail } = require('../utils/normalizeEmail');
+const { resetLoginAttempts } = require('../utils/loginAttempts');
+const { isTestLoginAccount, isLocalRequest } = require('../config/testLogin');
+const { REFRESH_TTL_MS, REMEMBER_TTL_MS, sessionDeadline } = require('../config/sessionPolicy');
 const { logSecurityEvent, SECURITY_EVENTS, SEVERITY } = require('../utils/securityLogger');
 
 const deviceCookie = () => process.env.NODE_ENV === 'production' ? '__Host-accountDevice' : 'accountDevice';
 const isUuid = (value) => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 let schemaReady;
+let loginSchemaReady;
+let testLoginSchemaReady;
 
 function ensureSchema() {
   schemaReady ??= (async () => {
@@ -18,6 +24,35 @@ function ensureSchema() {
     if (!schema.ready) await pool.query(await readFile(path.join(__dirname, '../db/migrations/051_device_sessions.sql'), 'utf8'));
   })().catch((error) => { schemaReady = undefined; throw error; });
   return schemaReady;
+}
+
+function ensureLoginSchema() {
+  loginSchemaReady ??= (async () => {
+    await ensureSchema();
+    const { rows: [schema] } = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'login_otp_verifications' AND column_name = 'previous_code_hashes') AS ready`);
+    if (!schema.ready) await pool.query(await readFile(path.join(__dirname, '../db/migrations/053_login_otp.sql'), 'utf8'));
+    const { rows: [policy] } = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'login_otp_verifications' AND column_name = 'remember_me') AS ready`);
+    if (!policy.ready) await pool.query(await readFile(path.join(__dirname, '../db/migrations/055_session_expiration.sql'), 'utf8'));
+  })().catch((error) => { loginSchemaReady = undefined; throw error; });
+  return loginSchemaReady;
+}
+
+function ensureTestLoginSchema() {
+  testLoginSchemaReady ??= (async () => {
+    await ensureLoginSchema();
+    const { rows: [schema] } = await pool.query(`SELECT EXISTS (SELECT 1 FROM pg_constraint
+      WHERE conrelid = 'public.account_sessions'::regclass
+        AND conname = 'account_sessions_authentication_method_with_test_check') AS ready`);
+    if (!schema.ready) await pool.query(await readFile(path.join(__dirname, '../db/migrations/054_test_login_sessions.sql'), 'utf8'));
+  })().catch((error) => { testLoginSchemaReady = undefined; throw error; });
+  return testLoginSchemaReady;
+}
+
+function usableSession(method, email, req) {
+  return method === 'otp' || method === 'trusted'
+    || (method === 'test' && isTestLoginAccount(email) && isLocalRequest(req));
 }
 
 function deviceInfo(req) {
@@ -53,12 +88,17 @@ function browserToken(req) {
   return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(deviceSignature(token), 'hex')) ? token : null;
 }
 
+function setBrowserCookie(res, token) {
+  res.cookie(deviceCookie(), `${token}.${deviceSignature(token)}`, { ...getRefreshCookieOptions(), path: '/', maxAge: 180 * 24 * 60 * 60 * 1000 });
+}
+
 async function withAccount(userId, operation) {
-  await ensureSchema();
+  await ensureLoginSchema();
   const db = await pool.connect();
   try {
     await db.query('BEGIN');
-    const { rows: [user] } = await db.query(`SELECT id, email, role, status, password, new_login_email_alerts
+    const { rows: [user] } = await db.query(`SELECT id, email, role, status, password, new_login_email_alerts,
+      terms_accepted, skip_splash_screen, temporary_password_expires_at, login_security_version
       FROM users WHERE id = $1 FOR UPDATE`, [userId]);
     const result = user ? await operation(db, user) : null;
     await db.query('COMMIT');
@@ -71,33 +111,84 @@ async function withAccount(userId, operation) {
   }
 }
 
-function recordEvent(db, userId, deviceId, type, info) {
-  return db.query(`INSERT INTO account_login_events (user_id, device_id, event_type, info)
-    VALUES ($1, $2, $3, $4)`, [userId, deviceId, type, info]);
+function recordEvent(db, userId, deviceId, type, info, { sid = null, otp = null, trusted = null, flags = [] } = {}) {
+  return db.query(`INSERT INTO account_login_events (user_id, device_id, event_type, info, session_id, otp_status, was_trusted, flags)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [userId, deviceId, type, info, sid, otp, trusted, flags]);
 }
 
-async function recordFailedLogin(req, email) {
-  await ensureSchema();
+async function revokeDeviceTrust(db, userId, deviceId) {
+  const { rows: [device] } = await db.query(`UPDATE account_devices
+    SET trust_token_hash = NULL, trust_expires_at = NULL, trust_revoked_at = now()
+    WHERE user_id = $1 AND id = $2 AND removed_at IS NULL AND trust_token_hash IS NOT NULL
+    RETURNING registration_hash`, [userId, deviceId]);
+  if (!device) return false;
+  await db.query('DELETE FROM login_otp_verifications WHERE user_id = $1 AND registration_hash = $2',
+    [userId, device.registration_hash]);
+  return true;
+}
+
+function startLoginActivityCleanup() {
+  let running = false;
+  async function cleanup() {
+    if (running) return;
+    running = true;
+    try {
+      await ensureLoginSchema();
+      await pool.query("DELETE FROM account_login_events WHERE occurred_at < now() - interval '90 days'");
+      await pool.query("DELETE FROM login_otp_verifications WHERE sent_at < now() - interval '1 day'");
+      await pool.query(`UPDATE account_devices SET info = info - 'ip' - 'location'
+        WHERE last_login_at < now() - interval '90 days' AND (info ? 'ip' OR info ? 'location')`);
+    } catch (error) {
+      console.error('Login activity cleanup:', error.code || error.name);
+    } finally {
+      running = false;
+    }
+  }
+  void cleanup();
+  const timer = setInterval(cleanup, 60 * 60 * 1000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+async function recordFailedLogin(req, email, flags = []) {
+  await ensureLoginSchema();
   const token = browserToken(req);
-  await pool.query(`INSERT INTO account_login_events (user_id, device_id, event_type, info)
-    SELECT u.id, d.id, 'failed', $3::jsonb FROM users u
+  await pool.query(`INSERT INTO account_login_events (user_id, device_id, event_type, info, attempted_email, flags)
+    SELECT u.id, d.id, 'failed', $3::jsonb, attempted.email, $4
+    FROM (VALUES ($1::varchar(255))) attempted(email) LEFT JOIN users u ON u.email = attempted.email
     LEFT JOIN account_devices d ON d.user_id = u.id AND d.registration_hash = $2 AND d.removed_at IS NULL
-    WHERE u.email = $1`, [email, token && tokens.hashToken(token), deviceInfo(req)]);
+    `, [typeof email === 'string' && email ? email.slice(0, 255) : null, token && tokens.hashToken(token), deviceInfo(req), flags]);
+}
+
+function observeLoginFailure(req, res, next) {
+  if (req.method !== 'POST') return next();
+  res.set('Cache-Control', 'no-store');
+  const otpVerification = /\/otp\/verify\/?$/i.test(req.originalUrl.split('?')[0]);
+  res.once('finish', () => {
+    if (res.statusCode < 400 || res.locals.loginFailureRecorded) return;
+    const flags = res.statusCode === 429 ? ['repeated_login_failures'] : [];
+    const email = typeof req.body?.email === 'string' ? normalizeEmail(req.body.email) : null;
+    const record = otpVerification
+      ? ensureLoginSchema().then(() => recordEvent(pool, null, null, 'otp_failed', deviceInfo(req), { otp: 'failed', flags }))
+      : recordFailedLogin(req, email, flags);
+    void record.catch((error) => console.error('Login activity:', error.code || error.name));
+  });
+  return next();
 }
 
 async function endSessions(db, userId, { deviceId = null, exceptDevice = null, sessionId = null, event = 'terminated' } = {}) {
   const { rows } = await db.query(`UPDATE account_sessions s SET ended_at = now()
-    FROM account_devices d WHERE s.user_id = $1 AND s.device_id = d.id AND s.ended_at IS NULL
+    FROM account_devices d, users u WHERE s.user_id = $1 AND u.id = s.user_id AND s.device_id = d.id AND s.ended_at IS NULL
       AND ($2::uuid IS NULL OR s.device_id = $2) AND ($3::uuid IS NULL OR s.device_id <> $3)
       AND ($4::uuid IS NULL OR s.id = $4)
-    RETURNING s.id, s.device_id, d.info, s.expires_at > now() AS was_active`, [userId, deviceId, exceptDevice, sessionId]);
+    RETURNING s.id, s.device_id, d.info, ${sessionDeadline()} > now() AS was_active`, [userId, deviceId, exceptDevice, sessionId]);
   const ids = rows.map(({ id }) => id);
   if (ids.length) {
     await db.query('UPDATE refresh_tokens SET revoked_at = now() WHERE session_id = ANY($1::uuid[]) AND revoked_at IS NULL', [ids]);
     await db.query('DELETE FROM device_verification_challenges WHERE session_id = ANY($1::uuid[])', [ids]);
     const active = rows.filter(({ was_active }) => was_active);
-    await db.query(`INSERT INTO account_login_events (user_id, device_id, event_type, info)
-      SELECT $1, item.device_id, $2, item.info FROM jsonb_to_recordset($3::jsonb) AS item(device_id uuid, info jsonb)`,
+    await db.query(`INSERT INTO account_login_events (user_id, device_id, event_type, info, session_id)
+      SELECT $1, item.device_id, $2, item.info, item.id FROM jsonb_to_recordset($3::jsonb) AS item(id uuid, device_id uuid, info jsonb)`,
     [userId, event, JSON.stringify(active)]);
   }
   return ids;
@@ -107,40 +198,55 @@ function disconnectSessions(ids) {
   if (ids?.length) require('../sockets').disconnectAccountSessions(ids);
 }
 
-async function issueTokens(db, user, sid, req, oldRefresh = null) {
-  const accessToken = generateAccessToken({ ...user, sid });
-  const refresh = generateRefreshToken(user);
-  const expiresAt = new Date(Date.now() + tokens.REFRESH_TTL_MS);
+async function issueTokens(db, user, sid, req, testSession, sessionExpiresAt, oldRefresh = null) {
+  const now = Date.now();
+  const refreshLifetime = Math.min(REFRESH_TTL_MS, new Date(sessionExpiresAt).getTime() - now);
+  const refreshSeconds = Math.floor(refreshLifetime / 1000);
+  if (refreshSeconds < 1) return null;
+  const accessToken = generateAccessToken({ ...user, sid }, testSession);
+  const refresh = generateRefreshToken(user, testSession, refreshSeconds);
+  const expiresAt = new Date(now + refreshSeconds * 1000);
   if (oldRefresh) await tokens.rotateRefreshToken(oldRefresh, refresh.jti, db);
   await tokens.storeRefreshToken({ userId: user.id, token: refresh.token, jti: refresh.jti, sessionId: sid, expiresAt, req, db });
-  await db.query('UPDATE account_sessions SET expires_at = $2, last_active_at = now() WHERE id = $1', [sid, expiresAt]);
-  return { accessToken, refreshToken: refresh.token };
+  return { accessToken, refreshToken: refresh.token, refreshMaxAge: refreshSeconds * 1000 };
 }
 
-async function startSession(req, res, verifiedUser) {
-  const token = browserToken(req) || randomBytes(32).toString('base64url');
-  const registrationHash = tokens.hashToken(token);
+async function createSession(db, user, req, registrationHash, { method, trustHash = null, flags = [], rememberMe = false }) {
   const info = deviceInfo(req);
-  const result = await withAccount(verifiedUser.id, async (db, user) => {
-    if (user.password !== verifiedUser.password || user.email !== verifiedUser.email ||
-        user.role !== verifiedUser.role || user.status !== verifiedUser.status) return null;
-    const found = await db.query(`UPDATE account_devices SET info = $3, last_login_at = now()
-      WHERE user_id = $1 AND registration_hash = $2 AND removed_at IS NULL RETURNING id, last_login_at`, [user.id, registrationHash, info]);
-    const newDevice = !found.rowCount;
-    const device = found.rows[0] || (await db.query(`INSERT INTO account_devices (id, user_id, registration_hash, info)
-      VALUES ($1,$2,$3,$4) RETURNING id, last_login_at`, [randomUUID(), user.id, registrationHash, info])).rows[0];
-    const ended = await endSessions(db, user.id, { deviceId: device.id });
-    const sid = randomUUID();
-    await db.query(`INSERT INTO account_sessions (id, user_id, device_id, expires_at) VALUES ($1,$2,$3,$4)`,
-      [sid, user.id, device.id, new Date(Date.now() + tokens.REFRESH_TTL_MS)]);
-    await recordEvent(db, user.id, device.id, newDevice ? 'new_device' : 'login', info);
-    return { ...await issueTokens(db, user, sid, req), ended, newDevice, info, device, sid, alertsEnabled: user.new_login_email_alerts };
-  });
-  if (!result) return null;
+  const found = await db.query(`UPDATE account_devices SET info = $3, last_login_at = now()
+    WHERE user_id = $1 AND registration_hash = $2 AND removed_at IS NULL RETURNING id, last_login_at`, [user.id, registrationHash, info]);
+  const newDevice = !found.rowCount;
+  const device = found.rows[0] || (await db.query(`INSERT INTO account_devices (id, user_id, registration_hash, info)
+    VALUES ($1,$2,$3,$4) RETURNING id, last_login_at`, [randomUUID(), user.id, registrationHash, info])).rows[0];
+  if (method === 'otp') {
+    await db.query(`UPDATE account_devices SET trust_token_hash = $2, trusted_at = CASE WHEN $2::text IS NOT NULL THEN now() END,
+      trust_expires_at = CASE WHEN $2::text IS NOT NULL THEN now() + interval '30 days' END,
+      trust_last_used_at = CASE WHEN $2::text IS NOT NULL THEN now() END,
+      trust_revoked_at = NULL, verified_at = now() WHERE id = $1`, [device.id, trustHash]);
+  } else if (method === 'trusted') {
+    await db.query('UPDATE account_devices SET trust_last_used_at = now() WHERE id = $1', [device.id]);
+  }
+  const ended = await endSessions(db, user.id);
+  const sid = randomUUID();
+  const expiresAt = new Date(Date.now() + (rememberMe ? REMEMBER_TTL_MS : REFRESH_TTL_MS));
+  await db.query(`INSERT INTO account_sessions (id, user_id, device_id, expires_at, authentication_method) VALUES ($1,$2,$3,$4,$5)`,
+    [sid, user.id, device.id, expiresAt, method]);
+  await recordEvent(db, user.id, device.id, newDevice ? 'new_device' : 'login', info,
+    { sid, otp: method === 'otp' ? 'verified' : 'not_required', trusted: method === 'trusted' || Boolean(trustHash), flags });
+  await db.query('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
+  await resetLoginAttempts(user.email, db);
+  return { ...await issueTokens(db, user, sid, req, method === 'test', expiresAt), ended, newDevice, info, device, sid,
+    alertsEnabled: method !== 'test' && user.new_login_email_alerts };
+}
+
+function sendSessionCookies(res, result, token) {
   disconnectSessions(result.ended);
-  res.cookie(deviceCookie(), `${token}.${deviceSignature(token)}`, { ...getRefreshCookieOptions(), path: '/', maxAge: 180 * 24 * 60 * 60 * 1000 });
-  res.cookie('refreshToken', result.refreshToken, { ...getRefreshCookieOptions(), maxAge: tokens.REFRESH_TTL_MS });
-  return result;
+  setBrowserCookie(res, token);
+  setRefreshCookie(res, result);
+}
+
+function setRefreshCookie(res, result) {
+  res.cookie('refreshToken', result.refreshToken, { ...getRefreshCookieOptions(), maxAge: result.refreshMaxAge });
 }
 
 async function refreshSession(req, presented) {
@@ -151,13 +257,15 @@ async function refreshSession(req, presented) {
     if (['pending', 'disapproved'].includes(String(user.status).toLowerCase())) return { inactive: true };
     const row = await tokens.findRefreshToken(presented, db);
     if (!row?.session_id || row.user_id !== user.id || row.jti !== decoded.jti || new Date(row.expires_at) <= new Date()) return null;
-    const active = await db.query('SELECT 1 FROM account_sessions WHERE id = $1 AND user_id = $2 AND ended_at IS NULL AND expires_at > now()', [row.session_id, user.id]);
-    if (!active.rowCount) return null;
+    const { rows: [active] } = await db.query(`SELECT s.authentication_method, s.expires_at FROM account_sessions s
+      WHERE s.id = $1 AND s.user_id = $2 AND s.ended_at IS NULL AND ${sessionDeadline('$3::text')} > now()`,
+    [row.session_id, user.id, user.role]);
+    if (!active || !usableSession(active.authentication_method, user.email, req)) return null;
     if (row.revoked_at) {
       if (!row.replaced_by) return null;
       return { replay: true, ended: await endSessions(db, user.id) };
     }
-    return issueTokens(db, user, row.session_id, req, presented);
+    return issueTokens(db, user, row.session_id, req, active.authentication_method === 'test', active.expires_at, presented);
   });
   if (result?.replay) {
     disconnectSessions(result.ended);
@@ -168,19 +276,21 @@ async function refreshSession(req, presented) {
   return result;
 }
 
-async function checkAccessSession(decoded, touch = false) {
-  if (!decoded?.id || (decoded.type && decoded.type !== 'access')) return null;
-  // Untyped bearer tokens were issued before refresh rotation. Modern tokens require a session.
-  if (!decoded.sid) return decoded.type ? null : {};
-  if (!isUuid(decoded.sid)) return null;
-  await ensureSchema();
-  const { rows: [session] } = await pool.query(`SELECT device_id, last_active_at FROM account_sessions
-    WHERE id = $1 AND user_id = $2 AND ended_at IS NULL AND expires_at > now()`, [decoded.sid, decoded.id]);
-  if (session && touch && Date.now() - new Date(session.last_active_at).getTime() > 60_000) {
-    await pool.query(`UPDATE account_sessions SET last_active_at = now()
-      WHERE id = $1 AND ended_at IS NULL AND last_active_at < now() - interval '1 minute'`, [decoded.sid]);
+async function checkAccessSession(decoded, req, touch = false) {
+  if (!decoded?.id || decoded.type !== 'access' || !isUuid(decoded.sid)) return null;
+  await ensureLoginSchema();
+  const { rows: [session] } = await pool.query(`SELECT s.device_id, s.authentication_method, u.email, ${sessionDeadline()} AS deadline
+    FROM account_sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.id = $1 AND s.user_id = $2 AND s.ended_at IS NULL AND ${sessionDeadline()} > now()`, [decoded.sid, decoded.id]);
+  if (!session || !usableSession(session.authentication_method, session.email, req)) return null;
+  if (touch) {
+    const { rows: [updated] } = await pool.query(`UPDATE account_sessions s SET last_active_at = now() FROM users u
+      WHERE s.id = $1 AND u.id = s.user_id AND s.ended_at IS NULL AND ${sessionDeadline()} > now()
+      RETURNING ${sessionDeadline()} AS deadline`, [decoded.sid]);
+    if (!updated) return null;
+    session.deadline = updated.deadline;
   }
-  return session || null;
+  return session;
 }
 
 async function endCurrentSession(user) {
@@ -188,5 +298,6 @@ async function endCurrentSession(user) {
   disconnectSessions(await withAccount(user.id, (db) => endSessions(db, user.id, { sessionId: user.sid, event: 'logout' })));
 }
 
-module.exports = { ensureSchema, startSession, refreshSession, checkAccessSession, endCurrentSession, recordFailedLogin,
-  withAccount, endSessions, disconnectSessions, browserToken, isUuid };
+module.exports = { ensureSchema, ensureLoginSchema, ensureTestLoginSchema, createSession, sendSessionCookies, setRefreshCookie, setBrowserCookie, refreshSession,
+  checkAccessSession, endCurrentSession, recordFailedLogin, recordEvent, deviceInfo, withAccount, endSessions,
+  disconnectSessions, browserToken, isUuid, revokeDeviceTrust, startLoginActivityCleanup, observeLoginFailure };

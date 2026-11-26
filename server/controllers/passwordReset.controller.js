@@ -5,6 +5,7 @@ const { hashPassword } = require('../utils/hashPassword');
 const { normalizeEmail } = require('../utils/normalizeEmail');
 const { LINK_TTL_MINUTES, LINK_TTL_LABEL } = require('../utils/linkExpiry');
 const { validatePassword, validateConfirmation } = require('../utils/passwordPolicy');
+const { ensureLoginSchema } = require('../services/deviceSessions.service');
 
 function getClientUrl() {
   return process.env.CLIENT_URL || 'http://localhost:5173';
@@ -142,10 +143,18 @@ const resetPassword = async (req, res) => {
     }
 
     const hashedPassword = await hashPassword(password);
+    await ensureLoginSchema();
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [tokenRow.user_id]);
+      const consumed = await client.query(`DELETE FROM password_reset_tokens
+        WHERE token = $1 AND user_id = $2 AND expires_at > now() RETURNING user_id`, [token, tokenRow.user_id]);
+      if (!consumed.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(401).json({ error: 'Invalid or expired reset token.' });
+      }
 
       const updateResult = await client.query(
         `UPDATE users
@@ -161,7 +170,7 @@ const resetPassword = async (req, res) => {
         return res.status(403).json({ error: 'This account cannot use password reset.' });
       }
 
-      await client.query(`DELETE FROM password_reset_tokens WHERE token = $1`, [token]);
+      await client.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [tokenRow.user_id]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -172,7 +181,6 @@ const resetPassword = async (req, res) => {
 
     return res.json({ message: 'Password set successfully. You can now log in.' });
   } catch (err) {
-    await pool.query('ROLLBACK');
     console.error('Reset password error:', err);
     return res.status(500).json({ error: 'Server error while resetting password.' });
   }

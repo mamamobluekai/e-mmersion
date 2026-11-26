@@ -4,15 +4,21 @@ const { normalizeEmail } = require('../../utils/normalizeEmail');
 const { hashPassword } = require('../../utils/hashPassword');
 const { generateTemporaryPassword } = require('../../utils/generatePassword');
 const studentActivation = require('../../services/studentActivation.service');
-const { DEFAULT_GRADE_LEVEL } = require('./helpers/constant');
-
-const DEFAULT_STUDENT_SCHOOL = 'Marinduque National High School';
+const { DEFAULT_GRADE_LEVEL, DEFAULT_STUDENT_SCHOOL } = require('./helpers/constant');
+const { ensureIntakeSchema } = require('../../services/teacherStudentIntake.service');
 
 const uploadStudentsExcel = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
+    await ensureIntakeSchema();
+    const { rows: [teacher] } = await pool.query(`SELECT t.school, COALESCE(
+      (SELECT id FROM immersion_periods WHERE id = u.immersion_period_id AND is_active),
+      (SELECT min(id) FROM immersion_periods WHERE is_active
+        AND (now() AT TIME ZONE 'Asia/Manila')::date BETWEEN start_date AND end_date HAVING count(*) = 1)
+    ) AS period_id FROM teachers t JOIN users u ON u.id = t.user_id WHERE t.user_id = $1`, [req.user.id]);
+    if (!teacher) return res.status(403).json({ error: 'Teacher profile not found.' });
 
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -91,12 +97,18 @@ const uploadStudentsExcel = async (req, res) => {
         const passwordHash = await hashPassword(temporaryPassword);
         const userResult = await client.query(
           `INSERT INTO users
-            (email, password, role, phone, status, temporary_password_expires_at)
+            (email, password, role, phone, status, temporary_password_expires_at, immersion_period_id)
            VALUES ($1, $2, 'student', $3, 'pending_activation',
-                    CURRENT_TIMESTAMP + make_interval(hours => $4))
+                    CURRENT_TIMESTAMP + make_interval(hours => $4), $5)
+           ON CONFLICT (email) DO NOTHING
            RETURNING id, email, role, password`,
-          [email, passwordHash, contact, studentActivation.TEMPORARY_PASSWORD_TTL_HOURS]
+          [email, passwordHash, contact, studentActivation.TEMPORARY_PASSWORD_TTL_HOURS, teacher.period_id]
         );
+        if (!userResult.rowCount) {
+          results.failed++;
+          results.errors.push({ row: i + 2, error: `Duplicate email: ${email}` });
+          continue;
+        }
 
         const userId = userResult.rows[0].id;
         const user = userResult.rows[0];
@@ -104,11 +116,12 @@ const uploadStudentsExcel = async (req, res) => {
         user.last_name = lastName;
         user.temporaryPassword = temporaryPassword;
 
-        await client.query(
+        const insertedStudent = await client.query(
           `INSERT INTO students
             (user_id, student_number, first_name, last_name, middle_name, grade_level,
-             section, track_strand, school, contact_number, gender, email)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+             section, track_strand, school, contact_number, gender, email, intake_teacher_id, uploaded_by_teacher_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+           ON CONFLICT (student_number) DO NOTHING`,
           [
             userId,
             studentId,
@@ -119,12 +132,19 @@ const uploadStudentsExcel = async (req, res) => {
             DEFAULT_GRADE_LEVEL,
             section,
             strand,
-            DEFAULT_STUDENT_SCHOOL,
+            teacher.school?.trim() || DEFAULT_STUDENT_SCHOOL,
             contact,
             gender,
             email,
+            req.user.id,
           ]
         );
+        if (!insertedStudent.rowCount) {
+          await client.query('DELETE FROM users WHERE id = $1', [userId]);
+          results.failed++;
+          results.errors.push({ row: i + 2, error: `Duplicate student ID: ${studentId}` });
+          continue;
+        }
 
         results.success++;
         createdUsers.push(user);
@@ -150,7 +170,7 @@ const uploadStudentsExcel = async (req, res) => {
       res.json({
         message: `Upload complete. ${results.success} students added, ${results.failed} failed.` +
           (credentialsSent > 0 ? ` ${credentialsSent} temporary credential email(s) sent.` : '') +
-          (emailFailures > 0 ? ` ${emailFailures} email(s) failed; resend credentials from Student Approvals.` : ''),
+          (emailFailures > 0 ? ` ${emailFailures} email(s) failed; resend credentials from Upload Students.` : ''),
         results: { ...results, credentialsSent, emailFailures, emailErrors },
       });
     } catch (err) {

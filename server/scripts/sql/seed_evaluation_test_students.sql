@@ -1,5 +1,7 @@
 -- Run this entire query in the PostgreSQL or Supabase SQL editor on a test database.
 -- Login: example1@gmail.com through example10@gmail.com. Password: password123.
+-- For local sign-in without email OTP, add these exact addresses to
+-- LOGIN_OTP_TEST_ACCOUNTS in server/.env and run the backend in development mode.
 -- Set target_request_id to the numeric part of a specific WI request, or keep
 -- NULL to select a deployment automatically. If there is no finished schedule,
 -- the query creates a temporary deployment for an existing partner and supervisor.

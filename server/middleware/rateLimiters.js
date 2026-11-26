@@ -105,6 +105,9 @@ const writeLimiter = rateLimit({
   handler: buildHandler('write'),
 });
 
+const otpVerifyLimiter = rateLimit({ ...commonOptions, windowMs: 15 * 60000, max: 35, handler: buildHandler('otp_verify') });
+const otpResendLimiter = rateLimit({ ...commonOptions, windowMs: 15 * 60000, max: 15, handler: buildHandler('otp_resend') });
+
 // #9 support - uploads are expensive, cap them harder.
 const uploadLimiter = rateLimit({
   ...commonOptions,
@@ -120,4 +123,6 @@ module.exports = {
   credentialLimiter,
   writeLimiter,
   uploadLimiter,
+  otpVerifyLimiter,
+  otpResendLimiter,
 };

@@ -2,6 +2,11 @@ const pool = require('../../db/');
 const approvalLink = require('../../services/approvalLink.service');
 const studentActivation = require('../../services/studentActivation.service');
 const { NO_PASSWORD_SENTINEL } = require('../../utils/passwordPolicy');
+const { ensureIntakeSchema, teacherReviewScope } = require('../../services/teacherStudentIntake.service');
+const { ensureRequirementReviewSchema } = require('./regexes/requirementsHelpers');
+const { ensureDocumentTypesSchema } = require('./regexes/documentTypeSchema');
+
+const uploaderName = "COALESCE(NULLIF(trim(concat_ws(' ', uploader.first_name, uploader.last_name)), ''), uploader_account.email)";
 
 function computeActivityStatus(user) {
   if (String(user.status || '').toLowerCase() === 'pending_activation') {
@@ -36,11 +41,16 @@ function computeActivityStatus(user) {
 
 const getPendingStudents = async (req, res) => {
   try {
+    await ensureIntakeSchema();
     const { status, strand, activity } = req.query;
 
     let whereClause = `WHERE u.role = 'student'`;
     const params = [];
     let paramIdx = 1;
+    if (req.user.role === 'teacher') {
+      whereClause += ` AND s.intake_teacher_id = $${paramIdx++}`;
+      params.push(req.user.id);
+    }
 
     // Exclude archived students from the main approval list
     whereClause += ` AND s.archived_at IS NULL`;
@@ -49,7 +59,8 @@ const getPendingStudents = async (req, res) => {
     // approval, so keep them off this page. They reappear here only if the
     // coordinator removes them from their batch.
     whereClause += ` AND NOT EXISTS (
-      SELECT 1 FROM teacher_batch_students tbs WHERE tbs.student_id = s.id
+      SELECT 1 FROM teacher_batch_students tbs JOIN teacher_batches b ON b.id = tbs.teacher_batch_id
+      WHERE tbs.student_id = s.id AND tbs.deployment_ended_on IS NULL AND b.archived_at IS NULL
     )`;
 
     if (status && status !== 'all') {
@@ -102,12 +113,16 @@ const getPendingStudents = async (req, res) => {
 
 const getStudentStrands = async (req, res) => {
   try {
+    await ensureIntakeSchema();
+    const teacherId = req.user.role === 'teacher' ? req.user.id : null;
     const result = await pool.query(
       `SELECT DISTINCT s.track_strand
        FROM users u
        JOIN students s ON u.id = s.user_id
        WHERE u.role = 'student' AND s.track_strand IS NOT NULL
+         AND ($1::int IS NULL OR ${teacherReviewScope('s', '$1')})
        ORDER BY s.track_strand`,
+      [teacherId],
     );
     res.json({ strands: result.rows.map((r) => r.track_strand) });
   } catch (err) {
@@ -118,6 +133,9 @@ const getStudentStrands = async (req, res) => {
 
 const getAllStudents = async (req, res) => {
   try {
+    await ensureIntakeSchema();
+    await ensureDocumentTypesSchema();
+    await ensureRequirementReviewSchema();
     const {
       strand,
       activity,
@@ -139,13 +157,14 @@ const getAllStudents = async (req, res) => {
       paramIdx++;
     }
 
-    if (search) {
+    if (typeof search === 'string' && search.trim()) {
       whereClause += ` AND (
         POSITION($${paramIdx} IN LOWER(COALESCE(s.first_name, '') || ' ' || COALESCE(s.last_name, ''))) > 0 OR
         POSITION($${paramIdx} IN LOWER(u.email)) > 0 OR
-        POSITION($${paramIdx} IN LOWER(s.student_number)) > 0
+        POSITION($${paramIdx} IN LOWER(s.student_number)) > 0 OR
+        POSITION($${paramIdx} IN LOWER(${uploaderName})) > 0
       )`;
-      params.push(search.toLowerCase());
+      params.push(search.trim().toLowerCase());
       paramIdx++;
     }
 
@@ -153,13 +172,21 @@ const getAllStudents = async (req, res) => {
       `SELECT u.id, u.email, u.role, u.status, u.password, u.created_at, u.last_login,
               s.first_name, s.last_name, s.student_number, s.grade_level, s.section,
               s.track_strand, s.school, s.preferred_company,
-              COALESCE(srs.progress, 0) = 100 AS requirements_completed,
+              ${uploaderName} AS uploaded_by_teacher, srs.status AS requirements_status,
+              COALESCE(lower(srs.status) = 'approved' AND NOT EXISTS (
+                SELECT 1 FROM document_types dt WHERE COALESCE(dt.is_active, true) AND NOT EXISTS (
+                  SELECT 1 FROM student_requirement_statuses review
+                  WHERE review.submission_id = srs.id AND review.document_type_id = dt.id AND review.status = 'APPROVED'
+                )
+              ), false) AS requirements_completed,
               CASE WHEN EXISTS (
                 SELECT 1 FROM teacher_batch_students tbs WHERE tbs.student_id = s.id
               ) THEN true ELSE false END AS is_deployed
        FROM users u
        JOIN students s ON u.id = s.user_id
        LEFT JOIN student_requirement_submissions srs ON srs.student_id = s.id
+       LEFT JOIN users uploader_account ON uploader_account.id = s.uploaded_by_teacher_id
+       LEFT JOIN teachers uploader ON uploader.user_id = uploader_account.id
        ${whereClause}
        ORDER BY u.created_at DESC`,
       params
@@ -251,19 +278,6 @@ const approveStudent = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Resolve the coordinator making the approval so we can enforce their
-    // strand restriction and student limit.
-    const coordinatorRow = await pool.query(
-      `SELECT c.id, c.student_limit, c.strand
-       FROM coordinators c
-       WHERE c.user_id = $1`,
-      [req.user.id]
-    );
-    if (coordinatorRow.rows.length === 0) {
-      return res.status(403).json({ error: 'Coordinator profile not found.' });
-    }
-    const coordinator = coordinatorRow.rows[0];
-
     // Fetch the student being approved (with strand and current status).
     const studentResult = await pool.query(
       `SELECT u.id, u.email, u.role, u.status, u.password, u.last_login, s.track_strand, s.first_name, s.last_name
@@ -288,32 +302,6 @@ const approveStudent = async (req, res) => {
 
     if (student.status !== 'pending') {
       return res.status(400).json({ error: 'Student is not pending approval.' });
-    }
-
-    // Strand check: a coordinator restricted to a strand can only approve
-    // students from that same strand.
-    if (coordinator.strand && student.track_strand && student.track_strand !== coordinator.strand) {
-      return res.status(400).json({
-        error: `Cannot approve student. This coordinator is registered to the "${coordinator.strand}" strand only, but the student belongs to "${student.track_strand}".`,
-      });
-    }
-
-    // Student limit check: count approved students assigned to this coordinator's batches.
-    const currentCount = await pool.query(
-      `SELECT COUNT(tbs.student_id) AS student_count
-       FROM teacher_batches tb
-       JOIN teacher_batch_students tbs ON tbs.teacher_batch_id = tb.id
-       JOIN students s ON s.id = tbs.student_id
-       JOIN users u ON u.id = s.user_id
-       WHERE tb.coordinator_id = $1 AND u.status IN ('approved', 'active')`,
-      [coordinator.id]
-    );
-    const currentStudents = Number(currentCount.rows[0]?.student_count || 0);
-    const limit = Number(coordinator.student_limit);
-    if (Number.isInteger(limit) && currentStudents >= limit) {
-      return res.status(400).json({
-        error: `Cannot approve student. This coordinator has reached their student limit of ${limit}.`,
-      });
     }
 
     const result = await pool.query(
@@ -638,14 +626,19 @@ const permanentDeleteStudent = async (req, res) => {
 // List archived students (removed by coordinators).
 const getArchivedStudents = async (req, res) => {
   try {
+    await ensureIntakeSchema();
     const result = await pool.query(
       `SELECT u.id, u.email, u.role, u.status, u.created_at, u.updated_at,
               s.first_name, s.last_name, s.student_number, s.grade_level, s.section,
-              s.track_strand, s.school, s.preferred_company, s.archived_at
+              s.track_strand, s.school, s.preferred_company, s.archived_at, ${uploaderName} AS uploaded_by_teacher
        FROM users u
        JOIN students s ON u.id = s.user_id
+       LEFT JOIN users uploader_account ON uploader_account.id = s.uploaded_by_teacher_id
+       LEFT JOIN teachers uploader ON uploader.user_id = uploader_account.id
        WHERE u.role = 'student' AND s.archived_at IS NOT NULL
+         AND ($1::int IS NULL OR s.intake_teacher_id = $1)
        ORDER BY s.archived_at DESC`,
+      [req.user.role === 'teacher' ? req.user.id : null],
     );
     res.json({ students: result.rows });
   } catch (err) {
@@ -667,18 +660,9 @@ const bulkApproveStudents = async (req, res) => {
     const result = await client.query(
       `UPDATE users
        SET status = 'approved', updated_at = CURRENT_TIMESTAMP
-       WHERE id = ANY($1) AND role = 'student'
+       WHERE id = ANY($1) AND role = 'student' AND status = 'pending'
        RETURNING id`,
       [student_ids],
-    );
-
-    await client.query(
-      `INSERT INTO submission_logs (submission_id, actor_id, action, remarks)
-       SELECT srs.id, $2, 'Approved', 'Bulk approval by coordinator.'
-       FROM student_requirement_submissions srs
-       JOIN students s ON s.user_id = srs.student_id
-       WHERE s.user_id = ANY($1)`,
-      [result.rows.map((r) => r.id), req.user.id],
     );
 
     await client.query('COMMIT');

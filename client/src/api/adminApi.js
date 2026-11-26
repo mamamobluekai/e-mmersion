@@ -45,15 +45,40 @@ function authHeaders(extra = {}) {
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
 }
 
+export function fetchAdminMonitoring(role, { userId, params, signal } = {}) {
+  const path = userId ? `${role}/${encodeURIComponent(userId)}` : role;
+  const search = params?.toString();
+  return fetchJsonOrThrow(`${API_BASE}/admin/monitoring/${path}${search ? `?${search}` : ''}`, {
+    headers: authHeaders(),
+    signal,
+  });
+}
+
+export function fetchAdminAttendance(path, signal) {
+  return fetchJsonOrThrow(`${API_BASE}/admin/student-attendance${path}`, { headers: authHeaders(), signal });
+}
+
 export async function loginAdmin(credentials) {
   // Same reason as loginUser: a fresh browser has no CSRF token in production,
   // where the cookie is on the API origin and unreadable from the app origin.
-  await ensureCsrfToken();
+  await ensureCsrfToken({ force: true });
   return fetchJsonOrThrow(`${API_BASE}/admin/login`, {
     method: 'POST',
     headers: withCsrf({ 'Content-Type': 'application/json' }),
     credentials: 'include',
     body: JSON.stringify(credentials),
+  });
+}
+
+export function getAdminLoginActivity(filters, signal) {
+  const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== ''));
+  return fetchJsonOrThrow(`${API_BASE}/admin/login-activity?${params}`, { headers: authHeaders(), signal });
+}
+
+export function updateAdminLoginAccess(view, userId, id) {
+  const target = view === 'sessions' ? `sessions/${encodeURIComponent(id)}` : `devices/${encodeURIComponent(id)}/trust`;
+  return fetchJsonOrThrow(`${API_BASE}/admin/login-activity/${encodeURIComponent(userId)}/${target}`, {
+    method: 'DELETE', headers: authHeaders(),
   });
 }
 
@@ -438,5 +463,36 @@ export async function archiveReportedStudent(reportId, resolutionNote = '') {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ resolution_note: resolutionNote }),
+  });
+}
+
+export async function getSupportReports(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  return fetchJsonOrThrow(`${API_BASE}/support/reports${qs ? `?${qs}` : ''}`, {
+    headers: authHeaders(),
+  });
+}
+
+export async function getSupportReportStats() {
+  return fetchJsonOrThrow(`${API_BASE}/support/reports/stats`, { headers: authHeaders() });
+}
+
+export async function getSupportReport(reportId) {
+  return fetchJsonOrThrow(`${API_BASE}/support/reports/${reportId}`, { headers: authHeaders() });
+}
+
+export async function updateSupportReport(reportId, updates) {
+  return fetchJsonOrThrow(`${API_BASE}/support/reports/${reportId}`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function addSupportReportReply(reportId, reply) {
+  return fetchJsonOrThrow(`${API_BASE}/support/reports/${reportId}/replies`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(reply),
   });
 }

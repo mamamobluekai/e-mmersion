@@ -4,21 +4,12 @@ import {
   getAllStudents,
   getStudentStrands,
   getArchivedStudents,
-  createStudentAccountReport,
-  resendStudentApprovalEmail,
-  updateStudentEmail,
-  restoreStudent,
-  permanentDeleteStudent,
 } from '../../../api/coordinatorApi';
 import {
-  Mail,
-  MoreHorizontal,
   Search,
-  Trash2,
   UserCheck,
   X,
   Archive,
-  Flag,
 } from 'lucide-react';
 import styles from './StudentApprovals.module.css';
 
@@ -58,14 +49,6 @@ const getDeploymentLabel = (deploymentStatus) => {
   return map[deploymentStatus] || 'Unknown';
 };
 
-const REPORT_REASONS = [
-  { value: 'remove_account', label: 'Request account removal' },
-  { value: 'duplicate_account', label: 'Duplicate account' },
-  { value: 'incorrect_information', label: 'Incorrect student information' },
-  { value: 'access_problem', label: 'Account access problem' },
-  { value: 'other', label: 'Other concern' },
-];
-
 function StudentList() {
   const [students, setStudents] = useState([]);
   const [archivedStudents, setArchivedStudents] = useState([]);
@@ -80,26 +63,9 @@ function StudentList() {
   const [searchTerm, setSearchTerm] = useState('');
   const loadRequestId = useRef(0);
 
-  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   const [archivedModalOpen, setArchivedModalOpen] = useState(false);
-  const [reportingStudent, setReportingStudent] = useState(null);
-  const [reportReason, setReportReason] = useState('');
-  const [reportComments, setReportComments] = useState('');
-  const [submittingReport, setSubmittingReport] = useState(false);
-
-  // Tracks which student's Resend button is in flight, so only that row spins.
-  const [resendingId, setResendingId] = useState(null);
-
-  // Edit email modal state
-  const [editingEmailId, setEditingEmailId] = useState(null);
-  const [editEmailValue, setEditEmailValue] = useState('');
-  const [updatingEmailId, setUpdatingEmailId] = useState(null);
-
-  // Dropdown menu state
-  const [openDropdownId, setOpenDropdownId] = useState(null);
-
   const load = async () => {
     const requestId = ++loadRequestId.current;
     setLoading(true);
@@ -165,148 +131,6 @@ function StudentList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strandFilter, requirementsFilter, activityFilter, deploymentFilter, searchTerm]);
 
-  // Auto-dismiss the floating toast so it pops up and clears itself.
-  useEffect(() => {
-    if (!message) return undefined;
-    const timer = setTimeout(() => setMessage(''), 4000);
-    return () => clearTimeout(timer);
-  }, [message]);
-
-  useEffect(() => {
-    if (!error) return undefined;
-    const timer = setTimeout(() => setError(''), 6000);
-    return () => clearTimeout(timer);
-  }, [error]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (openDropdownId && !event.target.closest(`.dropdown-menu-${openDropdownId}`) && !event.target.closest(`.dropdown-toggle-${openDropdownId}`)) {
-        setOpenDropdownId(null);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [openDropdownId]);
-
-  const handleResendEmail = async (studentId) => {
-    setResendingId(studentId);
-    setMessage('');
-    setError('');
-    try {
-      const data = await resendStudentApprovalEmail(studentId);
-      setMessage(data.message || 'Set-password email resent successfully.');
-      if (data.emailSent === false) {
-        setError('Email could not be sent. Please check the email configuration.');
-      }
-      load();
-    } catch (err) {
-      setError(err.message || 'Failed to resend email.');
-    } finally {
-      setResendingId(null);
-    }
-  };
-
-  const handleEditEmail = (student) => {
-    setEditingEmailId(student.id);
-    setEditEmailValue(student.email);
-  };
-
-  const handleSaveEmail = async () => {
-    if (!editingEmailId || !editEmailValue) return;
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(editEmailValue)) {
-      setError('Invalid email format.');
-      return;
-    }
-
-    setUpdatingEmailId(editingEmailId);
-    setError('');
-    setMessage('');
-    try {
-      await updateStudentEmail(editingEmailId, editEmailValue);
-      setMessage('Student email updated successfully.');
-      setEditingEmailId(null);
-      setEditEmailValue('');
-      load();
-    } catch (err) {
-      setError(err.message || 'Failed to update email.');
-    } finally {
-      setUpdatingEmailId(null);
-    }
-  };
-
-  const handleCancelEditEmail = () => {
-    setEditingEmailId(null);
-    setEditEmailValue('');
-  };
-
-  const handleOpenReport = (student) => {
-    setReportingStudent(student);
-    setReportReason('');
-    setReportComments('');
-    setError('');
-  };
-
-  const handleSubmitReport = async () => {
-    if (!reportingStudent || !reportReason || !reportComments.trim()) {
-      setError('Choose a reason and add comments before sending the report.');
-      return;
-    }
-
-    setSubmittingReport(true);
-    setError('');
-    try {
-      await createStudentAccountReport(reportingStudent.id, {
-        reason: reportReason,
-        comments: reportComments.trim(),
-      });
-      setMessage('Report sent to the admin team.');
-      setReportingStudent(null);
-    } catch (err) {
-      setError(err.message || 'Failed to send report.');
-    } finally {
-      setSubmittingReport(false);
-    }
-  };
-
-
-  const handleRestore = async (id) => {
-    try {
-      await restoreStudent(id);
-      setMessage('Student restored.');
-      load();
-    } catch (err) {
-      setError(err.message || 'Failed to restore student.');
-    }
-  };
-
-  const handlePermanentDelete = async (id) => {
-    try {
-      await permanentDeleteStudent(id);
-      setMessage('Student permanently deleted.');
-      load();
-    } catch (err) {
-      setError(err.message || 'Failed to permanently delete student.');
-    }
-  };
-
-  const filteredStudents = students.filter((student) => {
-    if (activityFilter !== 'all' && student.activity_status !== activityFilter) {
-      return false;
-    }
-    if (deploymentFilter !== 'all' && student.deployment_status !== deploymentFilter) {
-      return false;
-    }
-    if (!searchTerm) return true;
-    const fullName = `${student.first_name || ''} ${student.last_name || ''}`.toLowerCase();
-    const email = (student.email || '').toLowerCase();
-    const studentNumber = (student.student_number || '').toLowerCase();
-    const search = searchTerm.toLowerCase();
-    return fullName.includes(search) || email.includes(search) || studentNumber.includes(search);
-  });
-
   const totalStudents = students.length;
   const activeCount = students.filter((s) => s.activity_status === 'active').length;
   const idleCount = students.filter((s) => s.activity_status === 'idle').length;
@@ -319,13 +143,6 @@ function StudentList() {
   return (
     <div className={styles.page}>
       <div className={styles.toastStack} role="region" aria-live="polite" aria-label="Notifications">
-        {message && (
-          <div className={`${styles.alert} ${styles.alertSuccess}`} role="alert">
-            <span className={styles.alertIcon}>✓</span>
-            {message}
-            <button onClick={() => setMessage('')} aria-label="Dismiss">×</button>
-          </div>
-        )}
         {error && (
           <div className={`${styles.alert} ${styles.alertError}`} role="alert">
             <span className={styles.alertIcon}>✕</span>
@@ -381,7 +198,7 @@ function StudentList() {
             <input
               type="text"
               className={styles.searchInput}
-              placeholder="Search by name, email, or student ID..."
+              placeholder="Search by student, email, ID, or teacher…"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -465,7 +282,7 @@ function StudentList() {
               <span className={styles.spinnerDark}></span>
               <p>Loading students…</p>
             </div>
-          ) : filteredStudents.length === 0 ? (
+          ) : students.length === 0 ? (
             <div className={styles.empty}>
               <div className={styles.emptyIcon}>👥</div>
               <h4>No students found</h4>
@@ -483,11 +300,11 @@ function StudentList() {
                   <th>Activity Status</th>
                   <th>Deployment Status</th>
                   <th>Date Created</th>
-                  <th className={styles.actionHeader}>Actions</th>
+                  <th>Uploaded by teacher</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredStudents.map((student) => (
+                {students.map((student) => (
                   <tr key={student.id}>
                     <td data-label="Student">
                       <div className={styles.studentCell}>
@@ -525,54 +342,7 @@ function StudentList() {
                     <td className={styles.registeredDate} data-label="Date Created">
                       {new Date(student.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                     </td>
-                    <td className={styles.actions} data-label="Actions">
-                      <div className={styles.dropdownContainer}>
-                        <button
-                          className={`${styles.dropdownToggle} dropdown-toggle-${student.id}`}
-                          onClick={() => setOpenDropdownId(openDropdownId === student.id ? null : student.id)}
-                          aria-label="More actions"
-                          title="More actions"
-                        >
-                          <MoreHorizontal size={18} />
-                        </button>
-                        {openDropdownId === student.id && (
-                          <div className={`${styles.dropdownMenu} dropdown-menu-${student.id}`} role="menu">
-                            {student.activity_status !== 'active' && (
-                              <>
-                                {student.needs_password_setup && (
-                                  <button
-                                    className={styles.dropdownItem}
-                                    onClick={() => { handleResendEmail(student.id); setOpenDropdownId(null); }}
-                                    disabled={resendingId === student.id}
-                                    role="menuitem"
-                                  >
-                                    <Mail size={14} />
-                                    {student.status === 'pending_activation'
-                                      ? 'Resend temporary credentials'
-                                      : 'Resend set-password email'}
-                                  </button>
-                                )}
-                                <button
-                                  className={styles.dropdownItem}
-                                  onClick={() => { handleEditEmail(student); setOpenDropdownId(null); }}
-                                  disabled={updatingEmailId === student.id}
-                                  role="menuitem"
-                                >
-                                  <Mail size={14} /> Edit email
-                                </button>
-                              </>
-                            )}
-                            <button
-                              className={styles.dropdownItem}
-                              onClick={() => { handleOpenReport(student); setOpenDropdownId(null); }}
-                              role="menuitem"
-                            >
-                              <Flag size={14} /> Report account issue
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </td>
+                    <td data-label="Uploaded by teacher">{student.uploaded_by_teacher || 'Not recorded'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -616,7 +386,7 @@ function StudentList() {
                       <th>Student ID</th>
                       <th>Strand</th>
                       <th>Archived At</th>
-                      <th className={styles.actionHeader}>Actions</th>
+                      <th>Uploaded by teacher</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -636,26 +406,7 @@ function StudentList() {
                         <td className={styles.registeredDate}>
                           {student.archived_at ? new Date(student.archived_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
                         </td>
-                        <td className={styles.actions}>
-                          <div className={styles.actions}>
-                            <button
-                              className={styles.approveBtn}
-                              onClick={() => handleRestore(student.id)}
-                              title="Restore"
-                              aria-label="Restore student"
-                            >
-                              <Archive size={15} />
-                            </button>
-                            <button
-                              className={styles.deleteBtn}
-                              onClick={() => handlePermanentDelete(student.id)}
-                              title="Delete permanently"
-                              aria-label="Delete student permanently"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </div>
-                        </td>
+                        <td>{student.uploaded_by_teacher || 'Not recorded'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -666,95 +417,6 @@ function StudentList() {
         </div>
       </div>
 
-      {/* Edit Email Modal */}
-      {editingEmailId && (
-        <div className={`${styles.editEmailOverlay}`} onClick={handleCancelEditEmail} role="dialog" aria-modal="true" aria-labelledby="edit-email-title">
-          <div className={styles.editEmailModal} onClick={(e) => e.stopPropagation()}>
-            <h2 id="edit-email-title">Edit Student Email</h2>
-            <input
-              type="email"
-              className={styles.editEmailInput}
-              value={editEmailValue}
-              onChange={(e) => setEditEmailValue(e.target.value)}
-              placeholder="Enter new email address"
-              autoFocus
-            />
-            <div className={styles.editEmailActions}>
-              <button
-                className={styles.editEmailCancelBtn}
-                onClick={handleCancelEditEmail}
-                disabled={updatingEmailId}
-              >
-                Cancel
-              </button>
-              <button
-                className={styles.editEmailSaveBtn}
-                onClick={handleSaveEmail}
-                disabled={updatingEmailId}
-              >
-                {updatingEmailId ? <span className={styles.spinnerDark} /> : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {reportingStudent && (
-        <div
-          className={styles.editEmailOverlay}
-          onClick={() => !submittingReport && setReportingStudent(null)}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="student-report-title"
-        >
-          <div className={styles.editEmailModal} onClick={(e) => e.stopPropagation()}>
-            <h2 id="student-report-title">Report student account issue</h2>
-            <p>
-              The admin team will review this report. An account will only be archived after an admin reviews a removal request.
-            </p>
-            <label htmlFor="student-report-reason">Reason</label>
-            <select
-              id="student-report-reason"
-              className={styles.editEmailInput}
-              value={reportReason}
-              onChange={(e) => setReportReason(e.target.value)}
-              required
-            >
-              <option value="">Select a reason</option>
-              {REPORT_REASONS.map((reason) => (
-                <option key={reason.value} value={reason.value}>{reason.label}</option>
-              ))}
-            </select>
-            <label htmlFor="student-report-comments">Comments</label>
-            <textarea
-              id="student-report-comments"
-              className={styles.editEmailInput}
-              value={reportComments}
-              onChange={(e) => setReportComments(e.target.value)}
-              placeholder="Explain the issue for the admin team..."
-              maxLength={2000}
-              rows={5}
-              required
-            />
-            <div className={styles.editEmailActions}>
-              <button
-                className={styles.editEmailCancelBtn}
-                onClick={() => setReportingStudent(null)}
-                disabled={submittingReport}
-              >
-                Cancel
-              </button>
-              <button
-                className={styles.editEmailSaveBtn}
-                onClick={handleSubmitReport}
-                disabled={submittingReport}
-              >
-                {submittingReport ? <span className={styles.spinnerDark} /> : 'Send report'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
